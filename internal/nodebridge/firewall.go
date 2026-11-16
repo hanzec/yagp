@@ -161,24 +161,7 @@ func (m *FirewallManager) Reconcile(ctx context.Context, ports FirewallPorts) er
 	if !m.status.Managed || m.configErr != nil {
 		return m.configErr
 	}
-
-	nftApplyMu.Lock()
-	defer nftApplyMu.Unlock()
-	executable, supportErr := firewallExecutable(m.backend)
-	err := ctx.Err()
-	if err == nil {
-		switch {
-		case supportErr != nil:
-			err = supportErr
-		case m.backend == firewallUFW:
-			err = m.reconcileUFW(ctx, executable, ports)
-		case m.backend == firewallFirewalld:
-			err = m.reconcileFirewalld(ctx, ports)
-		default:
-			err = m.reconcile(ctx, executable, ports)
-		}
-	}
-
+	supportErr, err := m.apply(ctx, ports, false)
 	m.statusMu.Lock()
 	m.status.Supported = supportErr == nil && !errors.Is(err, errUFWInactive) && !errors.Is(err, errFirewalldInactive)
 	m.status.Synchronized = err == nil
@@ -191,6 +174,33 @@ func (m *FirewallManager) Reconcile(ctx context.Context, ports FirewallPorts) er
 	}
 	m.statusMu.Unlock()
 	return err
+}
+
+func (m *FirewallManager) clear(ctx context.Context) error {
+	_, err := m.apply(ctx, FirewallPorts{}, true)
+	return err
+}
+
+func (m *FirewallManager) apply(ctx context.Context, ports FirewallPorts, clearing bool) (error, error) {
+	nftApplyMu.Lock()
+	defer nftApplyMu.Unlock()
+	executable, supportErr := firewallExecutable(m.backend)
+	err := ctx.Err()
+	if err == nil {
+		switch {
+		case supportErr != nil:
+			err = supportErr
+		case m.backend == firewallUFW:
+			err = m.reconcileUFW(ctx, executable, ports)
+		case m.backend == firewallFirewalld:
+			err = m.reconcileFirewalld(ctx, ports)
+		case clearing:
+			err = m.clearNft(ctx, executable)
+		default:
+			err = m.reconcile(ctx, executable, ports)
+		}
+	}
+	return supportErr, err
 }
 
 func (m *FirewallManager) reconcile(ctx context.Context, nft string, ports FirewallPorts) error {
@@ -206,17 +216,46 @@ func (m *FirewallManager) reconcile(ctx context.Context, nft string, ports Firew
 	if err != nil {
 		return err
 	}
-	batch := m.batch(live, sets)
-	if len(batch) > 0 {
-		if err := runNft(ctx, nft, batch, "-c", "-f", "-"); err != nil {
-			return fmt.Errorf("check firewall update: %w", err)
-		}
-		if err := runNft(ctx, nft, batch, "-f", "-"); err != nil {
-			return fmt.Errorf("apply firewall update: %w", err)
-		}
+	if err := applyNftFirewallBatch(ctx, nft, m.batch(live, sets)); err != nil {
+		return err
 	}
 	if !live.delegated {
 		return fmt.Errorf("firewall input chain inet %s %s needs an unconditional jump to %s before its deny rules", m.config.Table, m.config.InputChain, m.prefix+"input")
+	}
+	return nil
+}
+
+func (m *FirewallManager) clearNft(ctx context.Context, nft string) error {
+	sets, err := m.desiredSets(FirewallPorts{})
+	if err != nil {
+		return err
+	}
+	output, err := nftOutput(ctx, nft, nil, "-j", "-nn", "list", "table", "inet", m.config.Table)
+	if err != nil {
+		return fmt.Errorf("read firewall table inet %s: %w", m.config.Table, err)
+	}
+	live, err := m.readRuleset(output, sets)
+	if err != nil {
+		return err
+	}
+	var batch strings.Builder
+	for _, set := range sets {
+		if current, exists := live.sets[set.name]; exists && len(current.Elements) != 0 {
+			fmt.Fprintf(&batch, "flush set inet %s %s\n", m.config.Table, set.name)
+		}
+	}
+	return applyNftFirewallBatch(ctx, nft, []byte(batch.String()))
+}
+
+func applyNftFirewallBatch(ctx context.Context, nft string, batch []byte) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	if err := runNft(ctx, nft, batch, "-c", "-f", "-"); err != nil {
+		return fmt.Errorf("check firewall update: %w", err)
+	}
+	if err := runNft(ctx, nft, batch, "-f", "-"); err != nil {
+		return fmt.Errorf("apply firewall update: %w", err)
 	}
 	return nil
 }

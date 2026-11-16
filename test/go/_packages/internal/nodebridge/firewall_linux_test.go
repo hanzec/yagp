@@ -140,6 +140,30 @@ func TestNativeFirewallDelegationAndDrift(t *testing.T) {
 	if got := run("-a", "list", "chain", "inet", table, otherChain); got != otherBefore {
 		t.Fatalf("reconcile changed an unrelated host chain:\n%s\n%s", otherBefore, got)
 	}
+	disabled := false
+	control := &controlServer{config: Config{NodeID: nodeID, Firewall: config}}
+	control.firewall.Store(restarted)
+	policy := firewallPolicy{ready: true}
+	policy.update(control, &disabled)
+	interrupted, stop := context.WithCancel(ctx)
+	stop()
+	policy.reconcile(interrupted, control)
+	if got := control.firewall.Load().Status(); got.LastError == nil || policy.cleanup == nil {
+		t.Fatalf("interrupted last exit cleanup was not retained: %+v", got)
+	}
+	policy.reconcile(ctx, control)
+	if got := control.firewall.Load().Status(); got.Managed || got.DisabledReason != "no_exit_endpoint" || got.LastError != nil {
+		t.Fatalf("last exit cleanup status = %+v", got)
+	}
+	assertConnection(second, false)
+	assertConnection(admin, true)
+	if got := run("-a", "list", "chain", "inet", table, hostChain); got != hostBefore {
+		t.Fatalf("last exit cleanup changed the host input chain:\n%s\n%s", hostBefore, got)
+	}
+	if got := run("-a", "list", "chain", "inet", table, otherChain); got != otherBefore {
+		t.Fatalf("last exit cleanup changed an unrelated host chain:\n%s\n%s", otherBefore, got)
+	}
+	assertReconcile(restarted, secondPorts)
 
 	// Keep an incompatible set in use outside YAGP's chain so the kernel rejects its replacement.
 	udpSet := fmt.Sprintf("yagp_%d_udp", nodeID)

@@ -30,5 +30,4 @@ service v1 {
   rpc StartTunnelProbe(.google.protobuf.Empty) returns (.yagp.node.v1.TunnelProbeEndpoint);
   rpc ProbeTunnel(.yagp.node.v1.TunnelProbeRequest) returns (.yagp.node.v1.TunnelProbeReply);
   rpc GetFirewallStatus(.google.protobuf.Empty) returns (.yagp.node.v1.FirewallStatus);
-  rpc EnableFirewall(.google.protobuf.Empty) returns (.yagp.node.v1.FirewallStatus);
 }

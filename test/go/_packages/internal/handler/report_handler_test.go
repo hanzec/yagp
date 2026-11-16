@@ -144,6 +144,66 @@ func TestReportStreamAuthenticatesOneNodeIdentity(t *testing.T) {
 	}
 }
 
+func TestNodeConfigReportsExitEndpointPresence(t *testing.T) {
+	f := newHandlerHTTPFixture(t)
+	nodes := []model.GostNode{
+		{Name: "node", Username: "node", Password: "secret"},
+		{Name: "other", Username: "other", Password: "other-secret"},
+	}
+	if err := f.db.Create(&nodes).Error; err != nil {
+		t.Fatal(err)
+	}
+	node, other := nodes[0], nodes[1]
+	initial := []model.GostRule{
+		{Name: "entry", NodeID: &node.ID, Role: model.EndpointRoleEntry, ListenPort: 12001},
+		{Name: "other exit", NodeID: &other.ID, Role: model.EndpointRoleExit, ListenPort: 12002},
+	}
+	if err := f.db.Create(&initial).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Create(&model.GostTunnel{Name: "outbound tunnel", EntryNodeID: node.ID, ExitNodeID: other.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	stream := startTestReportStream(t, ctx, startTestReportServer(t, f.db), node, nil)
+	assertPolicy := func(want bool) {
+		t.Helper()
+		config, err := stream.GetNodeConfig(ctx, &emptypb.Empty{})
+		if err != nil || config.HasExitEndpoint == nil || config.GetHasExitEndpoint() != want {
+			t.Fatalf("explicit exit endpoint policy = %v, %v; want %t", config, err, want)
+		}
+	}
+	assertPolicy(false)
+
+	exits := []model.GostRule{
+		{Name: "stopped exit", NodeID: &node.ID, Role: model.EndpointRoleExit, Status: model.RuleStatusStopped, ListenPort: 12003},
+		{Name: "second exit", NodeID: &node.ID, Role: model.EndpointRoleExit, Status: model.RuleStatusStopped, ListenPort: 12004},
+	}
+	if err := f.db.Create(&exits).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertPolicy(true)
+	if err := f.db.Delete(&exits[0]).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertPolicy(true)
+	if err := f.db.Delete(&exits[1]).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertPolicy(false)
+
+	legacy := model.GostTunnel{Name: "legacy exit", EntryNodeID: other.ID, ExitNodeID: node.ID, Status: model.TunnelStatusRunning}
+	if err := f.db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertPolicy(true)
+	if err := f.db.Delete(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	assertPolicy(false)
+}
+
 func TestReportStreamAuthenticationTimeoutKeepsEstablishedStream(t *testing.T) {
 	f := newHandlerHTTPFixture(t)
 	node := model.GostNode{Name: "registered", Username: "node", Password: "secret"}

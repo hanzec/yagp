@@ -2,16 +2,188 @@ package nodebridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"yagp/pkg/nodegrpc"
+
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+func TestFirewallPolicyFollowsExitEndpointAndCachesChanges(t *testing.T) {
+	enabled := true
+	disabled := false
+	control := &controlServer{config: Config{NodeID: 42, ConfigFile: filepath.Join(t.TempDir(), "node.yaml"),
+		Firewall: FirewallConfig{Enabled: &disabled, Table: "host-filter", InputChain: "host-input"}}}
+	legacy, err := newFirewallManager(42, control.config.Firewall, firewallNFT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := newFirewallPolicy(control, legacy)
+	status := func() *nodegrpc.FirewallStatus {
+		t.Helper()
+		reply, err := control.GetFirewallStatus(t.Context(), &emptypb.Empty{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reply
+	}
+	if got := status(); got.GetManaged() || got.GetDisabledReason() != "waiting_panel" {
+		t.Fatalf("initial status = %v", got)
+	}
+	client := &firewallPolicyClient{config: &nodegrpc.NodeConfig{}}
+	policy.refresh(t.Context(), control, client)
+	if got := status(); got.GetManaged() || got.GetDisabledReason() != "explicitly_disabled" {
+		t.Fatalf("legacy status = %v", got)
+	}
+	client.config = &nodegrpc.NodeConfig{HasExitEndpoint: &enabled, NftTemplate: "initial"}
+	policy.refresh(t.Context(), control, client)
+	if got := status(); !got.GetManaged() {
+		t.Fatalf("exit did not enable automatic rules: %v", got)
+	}
+	if cached, err := readPanelConfig(control.config.ConfigFile); err != nil || !cached.GetHasExitEndpoint() {
+		t.Fatalf("enabled policy was not cached: %v, %v", cached, err)
+	}
+	client.config = &nodegrpc.NodeConfig{HasExitEndpoint: &enabled, NftTemplate: "unchanged policy"}
+	policy.refresh(t.Context(), control, client)
+	if cached, err := readPanelConfig(control.config.ConfigFile); err != nil || cached.GetNftTemplate() != "initial" {
+		t.Fatalf("same policy overwrote cache: %v, %v", cached, err)
+	}
+	client.err = errors.New("panel not available")
+	policy.refresh(t.Context(), control, client)
+	client.err = nil
+	client.config = &nodegrpc.NodeConfig{}
+	policy.refresh(t.Context(), control, client)
+	if got := status(); !got.GetManaged() {
+		t.Fatalf("absent policy cleared a known exit: %v", got)
+	}
+	client.config = &nodegrpc.NodeConfig{HasExitEndpoint: &disabled}
+	policy.refresh(t.Context(), control, client)
+	if got := status(); got.GetManaged() || got.GetDisabledReason() != "no_exit_endpoint" {
+		t.Fatalf("last exit deletion did not disable automatic rules: %v", got)
+	}
+	newFirewallPolicy(control, legacy)
+	if got := status(); got.GetManaged() || got.GetDisabledReason() != "no_exit_endpoint" {
+		t.Fatalf("cached policy was not restored: %v", got)
+	}
+}
+
+type firewallPolicyClient struct {
+	nodegrpc.V1Client
+	config *nodegrpc.NodeConfig
+	err    error
+}
+
+func (c *firewallPolicyClient) GetNodeConfig(context.Context, *emptypb.Empty, ...grpc.CallOption) (*nodegrpc.NodeConfig, error) {
+	return c.config, c.err
+}
+
+func TestFirewallRestartRechecksBackendAndLiveRules(t *testing.T) {
+	var reads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reads.Add(1)
+		_, _ = fmt.Fprint(w, `{"error":"configuration unavailable"}`)
+	}))
+	t.Cleanup(server.Close)
+	control := firewallTestControl(server)
+	control.config.NodeID = 42
+	control.config.Firewall = FirewallConfig{Table: "host-filter", InputChain: "host-input"}
+	control.firewallChanged = make(chan struct{}, 1)
+	manager, err := newFirewallManager(42, control.config.Firewall, firewallNFT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastCheck := time.Now().UTC()
+	manager.status.Synchronized = true
+	manager.status.DisabledReason = ""
+	manager.status.LastError = nil
+	manager.status.LastSync = &lastCheck
+	control.firewall.Store(manager)
+	policy := firewallPolicy{ready: true}
+
+	control.queueFirewallRestartCheck()
+	select {
+	case <-control.firewallChanged:
+	default:
+		t.Fatal("restart did not wake firewall checking")
+	}
+	got, err := control.GetFirewallStatus(t.Context(), &emptypb.Empty{})
+	if err != nil || got.GetSynchronized() || got.GetDisabledReason() != "checking_firewall" || got.LastError != nil ||
+		!got.GetLastSync().AsTime().Equal(lastCheck) {
+		t.Fatalf("queued restart status = %v, %v", got, err)
+	}
+	detections := 0
+	policy.check(t.Context(), control, func(FirewallConfig) string {
+		detections++
+		return firewallNFT
+	})
+	got, err = control.GetFirewallStatus(t.Context(), &emptypb.Empty{})
+	if err != nil || detections != 1 || reads.Load() != 1 || got.GetDisabledReason() != "" || !strings.Contains(got.GetLastError(), "missing services") {
+		t.Fatalf("restart status = %v, %v, detections=%d, Gost reads=%d", got, err, detections, reads.Load())
+	}
+}
+
+func TestFirewallRedetectsUFWAfterEarlyNftablesFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"error":"configuration unavailable"}`)
+	}))
+	t.Cleanup(server.Close)
+	enabled := true
+	control := firewallTestControl(server)
+	control.config.NodeID = 42
+	control.config.Firewall.Enabled = &enabled
+	manager, err := newFirewallManager(42, control.config.Firewall, firewallNFT)
+	if err == nil || manager.Status().DisabledReason != "invalid_configuration" {
+		t.Fatalf("expected invalid initial nftables backend: %v, %v", manager.Status(), err)
+	}
+	control.firewall.Store(manager)
+	policy := firewallPolicy{ready: true}
+	detections := 0
+	policy.check(t.Context(), control, func(FirewallConfig) string {
+		detections++
+		return firewallUFW
+	})
+	got := control.firewall.Load().Status()
+	if detections != 1 || got.Backend != firewallUFW || !got.Managed || got.DisabledReason == "invalid_configuration" || policy.cleanup != nil {
+		t.Fatalf("late backend was not selected: %+v, detections=%d, cleanup=%v", got, detections, policy.cleanup)
+	}
+}
+
+func TestFirewallRestartRecheckRetainsNewerRequest(t *testing.T) {
+	disabled := false
+	control := &controlServer{config: Config{NodeID: 42, Firewall: FirewallConfig{Enabled: &disabled}}}
+	manager, err := newFirewallManager(42, control.config.Firewall, firewallNFT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.status.DisabledReason = "no_exit_endpoint"
+	control.firewall.Store(manager)
+	policy := firewallPolicy{ready: true, hasExitEndpoint: &disabled}
+	control.queueFirewallRestartCheck()
+	policy.check(t.Context(), control, func(FirewallConfig) string {
+		control.queueFirewallRestartCheck()
+		return firewallNFT
+	})
+	got, err := control.GetFirewallStatus(t.Context(), &emptypb.Empty{})
+	if err != nil || got.GetDisabledReason() != "checking_firewall" {
+		t.Fatalf("newer restart cleared by previous check: %v, %v", got, err)
+	}
+	policy.check(t.Context(), control, func(FirewallConfig) string { return firewallNFT })
+	got, err = control.GetFirewallStatus(t.Context(), &emptypb.Empty{})
+	if err != nil || got.GetManaged() || got.GetDisabledReason() != "no_exit_endpoint" {
+		t.Fatalf("no-exit mode changed after restart checks: %v, %v", got, err)
+	}
+}
 
 func TestFirewallReadsManagedGostListeners(t *testing.T) {
 	const services = `{"services":[

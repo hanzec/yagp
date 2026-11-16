@@ -4,32 +4,210 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"yagp/pkg/gost"
 	"yagp/pkg/nodegrpc"
+
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 const firewallSyncInterval = 15 * time.Second
 
-func (s *controlServer) maintainFirewall(ctx context.Context) {
+func wakeFirewallWorker(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func (s *controlServer) queueFirewallRestartCheck() {
+	s.firewallRestartRequested.Add(1)
+	wakeFirewallWorker(s.firewallChanged)
+}
+
+type firewallPolicy struct {
+	legacy          *FirewallManager
+	ready           bool
+	hasExitEndpoint *bool
+	cleanup         *FirewallManager
+	cleanupRequired bool
+}
+
+func newFirewallPolicy(s *controlServer, legacy *FirewallManager) firewallPolicy {
+	policy := firewallPolicy{legacy: legacy}
+	if s.config.ConfigFile != "" {
+		if config, err := readPanelConfig(s.config.ConfigFile); err == nil {
+			policy.update(s, config.HasExitEndpoint)
+			return policy
+		}
+	}
+	config := s.config.Firewall
+	disabled := false
+	config.Enabled = &disabled
+	waiting, _ := newFirewallManager(s.config.NodeID, config, legacy.backend)
+	waiting.status.DisabledReason = "waiting_panel"
+	s.firewall.Store(waiting)
+	return policy
+}
+
+func (s *controlServer) maintainFirewall(ctx context.Context, current *atomic.Pointer[nodegrpc.Session], policy firewallPolicy) {
 	ticker := time.NewTicker(firewallSyncInterval)
 	defer ticker.Stop()
 	for ctx.Err() == nil {
-		if manager := s.firewallManager(); manager != nil && manager.Status().DisabledReason == "" {
-			s.syncFirewall(ctx, manager)
+		if session := current.Load(); session != nil {
+			policy.refresh(ctx, s, nodegrpc.NewV1Client(session))
 		}
+		policy.check(ctx, s, hostFirewallBackend)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		case <-s.firewallChanged:
 		}
+	}
+}
+
+func (p *firewallPolicy) check(ctx context.Context, s *controlServer, detect func(FirewallConfig) string) {
+	requested := s.firewallRestartRequested.Load()
+	checkRestart := requested != s.firewallRestartChecked.Load()
+	manager := s.firewall.Load()
+	// Some hosts start UFW after the daemon initially falls back to nftables.
+	if checkRestart || (manager.Status().Managed &&
+		(manager.backend == "" || (manager.backend == firewallNFT && manager.config.Table == "" && manager.config.InputChain == ""))) {
+		p.redetect(s, detect(s.config.Firewall))
+	}
+	p.reconcile(ctx, s)
+	if checkRestart && p.ready {
+		s.firewallRestartChecked.Store(requested)
+	}
+}
+
+func (p *firewallPolicy) redetect(s *controlServer, backend string) {
+	previous := s.firewall.Load()
+	if backend == "" || previous.backend == backend {
+		return
+	}
+	manager, err := newFirewallManager(s.config.NodeID, previous.config, backend)
+	if err != nil {
+		log.Printf("configure redetected firewall backend: %v", err)
+	}
+	switch previous.Status().DisabledReason {
+	case "waiting_panel":
+		manager.status.DisabledReason = "waiting_panel"
+		p.legacy, _ = newFirewallManager(s.config.NodeID, s.config.Firewall, backend)
+	case "no_exit_endpoint":
+		manager.status.DisabledReason = "no_exit_endpoint"
+		if p.cleanup == nil {
+			p.prepareCleanup(s, manager)
+		}
+	case "":
+		if p.cleanup == nil {
+			p.cleanup = previous
+			p.cleanupRequired = true
+		}
+	}
+	// A second detection may return to the backend we have not cleared yet.
+	if p.cleanup != nil && p.cleanup.backend == backend && manager.status.DisabledReason == "" {
+		p.cleanup = nil
+		p.cleanupRequired = false
+	}
+	s.firewall.Store(manager)
+}
+
+func (p *firewallPolicy) refresh(ctx context.Context, s *controlServer, client nodegrpc.V1Client) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	config, err := client.GetNodeConfig(ctx, &emptypb.Empty{})
+	if err != nil || !p.update(s, config.HasExitEndpoint) || s.config.ConfigFile == "" {
+		return
+	}
+	if err := storePanelConfig(s.config.ConfigFile, config); err != nil {
+		log.Printf("cache automatic firewall policy: %v", err)
+	}
+}
+
+func (p *firewallPolicy) update(s *controlServer, hasExitEndpoint *bool) bool {
+	previous := s.firewall.Load()
+	if !p.ready {
+		p.ready = true
+		previous = p.legacy
+		if hasExitEndpoint == nil {
+			s.firewall.Store(previous)
+		}
+	}
+	// An old panel or interrupted lookup does not revoke a known decision.
+	if hasExitEndpoint == nil || (p.hasExitEndpoint != nil && *p.hasExitEndpoint == *hasExitEndpoint) {
+		return false
+	}
+	config := s.config.Firewall
+	config.Enabled = hasExitEndpoint
+	manager, err := newFirewallManager(s.config.NodeID, config, previous.backend)
+	if err != nil {
+		log.Printf("configure firewall for exit endpoints: %v", err)
+	}
+	p.hasExitEndpoint = hasExitEndpoint
+	if *hasExitEndpoint && p.cleanup != nil && (!p.cleanupRequired || p.cleanup.backend == manager.backend) {
+		p.cleanup = nil
+		p.cleanupRequired = false
+	}
+	if !*hasExitEndpoint {
+		manager.status.DisabledReason = "no_exit_endpoint"
+		if p.cleanup == nil {
+			p.prepareCleanup(s, previous)
+		}
+	}
+	s.firewall.Store(manager)
+	return true
+}
+
+func (p *firewallPolicy) prepareCleanup(s *controlServer, previous *FirewallManager) {
+	if previous.Status().DisabledReason == "" {
+		p.cleanup = previous
+		p.cleanupRequired = true
+		return
+	}
+	// An earlier daemon may have left allowances when it stopped. Check a valid
+	// backend without treating a host that was never managed as an error.
+	config := s.config.Firewall
+	enabled := true
+	config.Enabled = &enabled
+	if manager, err := newFirewallManager(s.config.NodeID, config, previous.backend); err == nil && manager.Status().Supported {
+		p.cleanup = manager
+	}
+}
+
+func (p *firewallPolicy) reconcile(ctx context.Context, s *controlServer) {
+	if !p.ready {
+		return
+	}
+	manager := s.firewall.Load()
+	if p.cleanup != nil {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		err := p.cleanup.clear(ctx)
+		if err != nil {
+			if p.cleanupRequired {
+				manager.recordSyncError(fmt.Errorf("clear automatic firewall rules: %w", err))
+			}
+			return
+		}
+		if manager.configErr == nil {
+			manager.statusMu.Lock()
+			manager.status.LastError = nil
+			manager.statusMu.Unlock()
+		}
+		p.cleanup = nil
+	}
+	if manager.Status().DisabledReason == "" {
+		s.syncFirewall(ctx, manager)
 	}
 }
 

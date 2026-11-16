@@ -620,11 +620,12 @@ func (x *NftConfig) GetLiveConfig() string {
 }
 
 type NodeConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ConfigYaml    []byte                 `protobuf:"bytes,1,opt,name=config_yaml,json=configYaml,proto3" json:"config_yaml,omitempty"`
-	NftTemplate   string                 `protobuf:"bytes,2,opt,name=nft_template,json=nftTemplate,proto3" json:"nft_template,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	ConfigYaml      []byte                 `protobuf:"bytes,1,opt,name=config_yaml,json=configYaml,proto3" json:"config_yaml,omitempty"`
+	NftTemplate     string                 `protobuf:"bytes,2,opt,name=nft_template,json=nftTemplate,proto3" json:"nft_template,omitempty"`
+	HasExitEndpoint *bool                  `protobuf:"varint,3,opt,name=has_exit_endpoint,json=hasExitEndpoint,proto3,oneof" json:"has_exit_endpoint,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *NodeConfig) Reset() {
@@ -669,6 +670,13 @@ func (x *NodeConfig) GetNftTemplate() string {
 		return x.NftTemplate
 	}
 	return ""
+}
+
+func (x *NodeConfig) GetHasExitEndpoint() bool {
+	if x != nil && x.HasExitEndpoint != nil {
+		return *x.HasExitEndpoint
+	}
+	return false
 }
 
 type TrafficQuotaRequest struct {
@@ -1939,12 +1947,14 @@ const file_node_proto_rawDesc = "" +
 	"\x06config\x18\x01 \x01(\tR\x06config\x12\x14\n" +
 	"\x05table\x18\x02 \x01(\tR\x05table\x12\x1f\n" +
 	"\vlive_config\x18\x03 \x01(\tR\n" +
-	"liveConfig\"P\n" +
+	"liveConfig\"\x97\x01\n" +
 	"\n" +
 	"NodeConfig\x12\x1f\n" +
 	"\vconfig_yaml\x18\x01 \x01(\fR\n" +
 	"configYaml\x12!\n" +
-	"\fnft_template\x18\x02 \x01(\tR\vnftTemplate\"\x85\x02\n" +
+	"\fnft_template\x18\x02 \x01(\tR\vnftTemplate\x12/\n" +
+	"\x11has_exit_endpoint\x18\x03 \x01(\bH\x00R\x0fhasExitEndpoint\x88\x01\x01B\x14\n" +
+	"\x12_has_exit_endpoint\"\x85\x02\n" +
 	"\x13TrafficQuotaRequest\x12\x1f\n" +
 	"\vlimit_bytes\x18\x01 \x01(\x04R\n" +
 	"limitBytes\x12\x1d\n" +
@@ -2121,6 +2131,7 @@ func file_node_proto_init() {
 	if File_node_proto != nil {
 		return
 	}
+	file_node_proto_msgTypes[10].OneofWrappers = []any{}
 	file_node_proto_msgTypes[11].OneofWrappers = []any{}
 	file_node_proto_msgTypes[20].OneofWrappers = []any{}
 	file_node_proto_msgTypes[28].OneofWrappers = []any{}
