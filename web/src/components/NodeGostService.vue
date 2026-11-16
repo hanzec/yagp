@@ -2,96 +2,106 @@
   <section id="node-gost-service" aria-labelledby="node-gost-title">
     <header class="ops-panel-header">
       <h2 class="ops-section-title" id="node-gost-title" tabindex="-1"><el-icon aria-hidden="true"><Monitor /></el-icon>服务状态</h2>
-      <div class="gost-actions">
-        <el-button :icon="Refresh" :loading="statusLoading || firewallLoading || logsLoading" :disabled="restarting" @click="refresh">刷新</el-button>
-        <el-button
-          :icon="SwitchButton"
-          type="warning"
-          plain
-          :loading="restarting"
-          :disabled="statusLoading || logsLoading || !!statusError || service?.load_state !== 'loaded'"
-          @click="restart"
-        >重启 Gost</el-button>
-      </div>
+      <el-button class="service-refresh" :icon="Refresh" :loading="statusLoading || firewallLoading || logsLoading" :disabled="restarting" @click="refresh">刷新</el-button>
     </header>
 
-    <section class="gost-status" aria-labelledby="gost-status-title" :aria-busy="statusLoading || restarting">
-      <div class="gost-title">
-        <h3 class="ops-subsection-title" id="gost-status-title">Gost</h3>
-        <span v-if="service && !statusError" class="ops-status" :class="'is-' + statusTone" role="status">{{ statusLabel }}</span>
-      </div>
-      <p v-if="statusError" class="gost-error" role="alert">{{ statusError }}</p>
-      <dl v-else-if="service" class="ops-panel-details">
-        <div><dt>后端类型</dt><dd class="ops-mono">systemd</dd></div>
-        <div><dt>服务单元</dt><dd class="ops-mono">{{ service.unit || '未知' }}</dd></div>
-        <div><dt>加载状态</dt><dd class="ops-mono">{{ service.load_state || '未知' }}</dd></div>
-        <div><dt>子状态</dt><dd class="ops-mono">{{ service.sub_state || '未知' }}</dd></div>
-      </dl>
-      <p v-else class="ops-muted" role="status">
-        {{ statusLoading ? '正在读取服务状态…' : '节点当前未在线。可手动刷新以查询服务状态。' }}
-      </p>
-      <p v-if="restartError" class="gost-error" role="alert">{{ restartError }}</p>
-    </section>
-
-    <div class="gost-log-section">
-      <div class="gost-log-actions">
-        <button
-          type="button"
-          class="gost-log-toggle"
-          :aria-expanded="logsOpen"
-          aria-controls="node-gost-logs"
-          @click="toggleLogs"
-        >
-          <el-icon aria-hidden="true"><Document /></el-icon>
-          <span>服务日志</span>
-          <small class="ops-muted">最近 100 条</small>
-          <el-icon class="gost-log-chevron" aria-hidden="true"><ArrowDown /></el-icon>
-        </button>
-        <el-button @click="$emit('upgrade')">升级 Gost</el-button>
-      </div>
-      <div v-show="logsOpen" id="node-gost-logs" class="gost-log-content" :aria-busy="logsLoading || restarting">
-        <p v-if="logsError" class="gost-error" role="alert">{{ logsError }}</p>
-        <p v-else-if="!logs.length" class="ops-muted" role="status">{{ logsLoading || restarting ? '正在读取日志…' : '暂无日志' }}</p>
-        <ol v-else class="gost-logs ops-mono" tabindex="0" aria-label="Gost 服务日志，最新记录在前">
-          <li v-for="(entry, index) in logs" :key="index">
-            <div class="gost-log-meta ops-muted">{{ formatTimestamp(entry.timestamp_unix_micros) }} · {{ priorityLabels[entry.priority ?? 0] || '未知级别' }}</div>
-            <div class="gost-log-message">{{ entry.message }}</div>
-          </li>
-        </ol>
-      </div>
-    </div>
-
-    <section id="node-firewall-status" class="gost-status firewall-status" aria-labelledby="firewall-status-title" :aria-busy="firewallLoading">
-      <h3 class="ops-subsection-title" id="firewall-status-title">自动防火墙规则</h3>
-      <p v-if="firewallError" class="gost-error" role="alert">{{ firewallError }}</p>
-      <template v-else-if="firewall">
-        <dl class="ops-panel-details">
-          <div><dt>后端类型</dt><dd class="ops-mono">{{ firewallBackend }}</dd></div>
-          <div>
-            <dt>启动状态</dt>
-            <dd><span class="ops-status" :class="automaticRules ? 'is-success' : 'is-muted'">{{ automaticRules ? '已启用' : '未启用' }}</span></dd>
-          </div>
-          <div v-if="!automaticRules" class="firewall-disabled-reason"><dt>未启用原因</dt><dd>{{ firewallDisabledReason }}</dd></div>
-          <div v-if="automaticRules">
-            <dt>同步状态</dt>
-            <dd><span class="ops-status" :class="firewallSync.tone">{{ firewallSync.label }}</span></dd>
-          </div>
-          <div v-if="firewall.last_sync"><dt>最近成功同步</dt><dd><time :datetime="firewall.last_sync">{{ formatTime(firewall.last_sync) }}</time></dd></div>
+    <div class="service-columns">
+      <section class="service-column" aria-labelledby="gost-status-title" :aria-busy="statusLoading || restarting">
+        <div class="service-title">
+          <h3 class="ops-subsection-title" id="gost-status-title">Gost</h3>
+          <span v-if="service && !statusError" class="ops-status" :class="'is-' + statusTone" role="status">{{ statusLabel }}</span>
+        </div>
+        <p v-if="statusError" class="gost-error" role="alert">{{ statusError }}</p>
+        <dl v-else-if="service" class="service-facts">
+          <div><dt>后端类型</dt><dd class="ops-mono">systemd</dd></div>
+          <div><dt>服务单元</dt><dd class="ops-mono">{{ service.unit || '未知' }}</dd></div>
+          <div><dt>加载状态</dt><dd class="ops-mono">{{ service.load_state || '未知' }}</dd></div>
+          <div><dt>子状态</dt><dd class="ops-mono">{{ service.sub_state || '未知' }}</dd></div>
         </dl>
-        <p v-if="automaticRules && firewallHelp" class="ops-muted">{{ firewallHelp }}</p>
-        <p v-if="firewall.last_error" class="gost-error" role="alert">{{ firewall.last_error }}</p>
-      </template>
-      <p v-else class="ops-muted" role="status">
-        {{ firewallLoading ? '正在读取防火墙状态…' : legacyFirewall ? '守护程序版本较旧，无法查询防火墙状态。' : '节点当前未在线。' }}
-      </p>
-    </section>
+        <p v-else class="ops-muted" role="status">
+          {{ statusLoading ? '正在读取服务状态…' : '节点当前未在线。可手动刷新以查询服务状态。' }}
+        </p>
+        <p v-if="restartError" class="gost-error" role="alert">{{ restartError }}</p>
+
+        <div class="gost-actions">
+          <el-button
+            :icon="SwitchButton"
+            type="warning"
+            plain
+            :loading="restarting"
+            :disabled="statusLoading || logsLoading || !!statusError || service?.load_state !== 'loaded'"
+            @click="restart"
+          >重启 Gost</el-button>
+          <el-button @click="$emit('upgrade')">升级 Gost</el-button>
+        </div>
+        <div class="gost-log-section">
+          <button
+            type="button"
+            class="gost-log-toggle"
+            :aria-expanded="logsOpen"
+            aria-controls="node-gost-logs"
+            @click="toggleLogs"
+          >
+            <el-icon aria-hidden="true"><Document /></el-icon>
+            <span>服务日志</span>
+            <small class="ops-muted">最近 100 条</small>
+            <el-icon class="gost-log-chevron" aria-hidden="true"><ArrowDown /></el-icon>
+          </button>
+          <div v-show="logsOpen" id="node-gost-logs" class="gost-log-content" :aria-busy="logsLoading || restarting">
+            <p v-if="logsError" class="gost-error" role="alert">{{ logsError }}</p>
+            <p v-else-if="!logs.length" class="ops-muted" role="status">{{ logsLoading || restarting ? '正在读取日志…' : '暂无日志' }}</p>
+            <ol v-else class="gost-logs ops-mono" tabindex="0" aria-label="Gost 服务日志，最新记录在前">
+              <li v-for="(entry, index) in logs" :key="index">
+                <div class="gost-log-meta ops-muted">{{ formatTimestamp(entry.timestamp_unix_micros) }} · {{ priorityLabels[entry.priority ?? 0] || '未知级别' }}</div>
+                <div class="gost-log-message">{{ entry.message }}</div>
+              </li>
+            </ol>
+          </div>
+        </div>
+      </section>
+
+      <section id="node-firewall-status" class="service-column" aria-labelledby="firewall-status-title" :aria-busy="firewallLoading">
+        <div class="service-title">
+          <h3 class="ops-subsection-title" id="firewall-status-title">自动防火墙规则</h3>
+          <span v-if="firewall" class="ops-status firewall-startup" :class="automaticRules ? 'is-success' : 'is-warning'" role="status">{{ automaticRules ? '已启用' : '未启用' }}</span>
+        </div>
+        <p v-if="firewallError" class="gost-error" role="alert">{{ firewallError }}</p>
+        <template v-else-if="firewall">
+          <dl class="service-facts">
+            <div><dt>自动放行后端</dt><dd class="ops-mono">{{ firewallBackend }}</dd></div>
+            <div v-if="automaticRules">
+              <dt>同步状态</dt>
+              <dd><span class="ops-status" :class="firewallSync.tone">{{ firewallSync.label }}</span></dd>
+            </div>
+            <div v-if="firewall.last_sync"><dt>最近成功同步</dt><dd><time :datetime="firewall.last_sync">{{ formatTime(firewall.last_sync) }}</time></dd></div>
+          </dl>
+          <p v-if="!automaticRules" class="firewall-reason">
+            <el-icon aria-hidden="true"><InfoFilled /></el-icon>
+            <span>{{ firewallDisabledReason }}</span>
+          </p>
+          <p v-else-if="firewallHelp && !firewall.synchronized" class="ops-muted">{{ firewallHelp }}</p>
+          <p v-if="firewall.last_error" class="gost-error" role="alert">{{ firewall.last_error }}</p>
+          <NodeFirewallSetup
+            v-if="showFirewallSetup"
+            :backend="firewall.backend"
+            :node-id="node.id"
+            :gost-unit="service?.unit"
+            :repair="firewall.disabled_reason === 'invalid_configuration'"
+          />
+        </template>
+        <p v-else class="ops-muted" role="status">
+          {{ firewallLoading ? '正在读取防火墙状态…' : legacyFirewall ? '守护程序版本较旧，无法查询防火墙状态。' : '节点当前未在线。' }}
+        </p>
+      </section>
+    </div>
   </section>
 </template>
 
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, Document, Monitor, Refresh, SwitchButton } from '@element-plus/icons-vue'
+import { ArrowDown, Document, InfoFilled, Monitor, Refresh, SwitchButton } from '@element-plus/icons-vue'
+import NodeFirewallSetup from '@/components/NodeFirewallSetup.vue'
 import { formatTime } from '@/utils/node-display'
 import { confirmPanelAction } from '@/utils/panel-dialog'
 import { getGostLogs, getGostService, getNodeFirewallStatus, restartGostService } from '@/api/node'
@@ -127,6 +137,9 @@ const firewallBackend = computed(() => {
   return backend === 'ufw' ? 'UFW' : backend || '未识别'
 })
 const automaticRules = computed(() => firewall.value?.managed && !firewall.value.disabled_reason)
+const showFirewallSetup = computed(() => !automaticRules.value &&
+  firewall.value?.disabled_reason !== 'unsupported_environment' &&
+  ['ufw', 'firewalld', 'nftables'].includes(firewall.value?.backend))
 const firewallDisabledReason = computed(() => {
   switch (firewall.value?.disabled_reason) {
     case 'explicitly_disabled': return '节点配置将 firewall.enabled 设为 false。'
@@ -231,25 +244,57 @@ watch(() => props.node.status, (status) => {
 </script>
 
 <style scoped>
-.gost-title, .gost-actions {
+.service-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr));
+  gap: var(--ops-section-gap);
+  padding-top: var(--ops-section-gap);
+  margin-top: 12px;
+  border-top: 1px solid var(--ops-border);
+}
+.service-column {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  padding: var(--ops-inset-padding);
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius-inset);
+  background: var(--ops-inset);
+}
+.service-title, .gost-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
-
-.gost-actions .el-button { min-height: 44px; margin: 0; }
-.gost-status { display: grid; gap: 8px; min-width: 0; }
+.service-title .ops-status { flex: none; }
+.service-refresh, .gost-actions .el-button { min-height: 44px; margin: 0; }
+.service-facts {
+  display: grid;
+  margin: 0;
+  border: 1px solid var(--ops-border);
+  border-radius: var(--ops-radius-inset);
+  background: var(--ops-panel);
+}
+.service-facts > div {
+  display: grid;
+  grid-template-columns: minmax(5em, 1fr) minmax(0, 2fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+}
+.service-facts > div + div { border-top: 1px solid var(--ops-border); }
+.service-facts dt { color: var(--ops-muted); font-size: var(--ops-text-sm); }
+.service-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .gost-error { color: var(--ops-danger); white-space: pre-wrap; overflow-wrap: anywhere; }
-.firewall-status { border-top: 1px solid var(--ops-border); padding-top: var(--ops-section-gap); }
-.firewall-disabled-reason { grid-column: 1 / -1; }
+.firewall-reason { display: flex; align-items: baseline; gap: 8px; color: var(--ops-muted); }
+.firewall-reason .el-icon { flex: none; align-self: flex-start; margin-top: 4px; color: var(--ops-warning); }
 
 .gost-log-section { min-width: 0; border-top: 1px solid var(--ops-border); }
-.gost-log-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding-top: 4px; }
-.gost-log-actions .el-button { min-height: 44px; margin: 0; }
 .gost-log-toggle {
   display: flex;
-  flex: 1 1 auto;
+  width: 100%;
   align-items: center;
   gap: 8px;
   min-height: 44px;

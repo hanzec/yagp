@@ -15,6 +15,8 @@
     </div>
   </header>
 
+  <NodeGostService :key="node.id" :node="node" class="ops-panel ops-panel-body detail-service-status" @upgrade="$emit('action', 'upgrade-gost')" />
+
   <div class="detail-cards">
     <section class="ops-panel ops-panel-body detail-overview" aria-labelledby="node-network-title">
       <header class="ops-panel-header">
@@ -33,13 +35,13 @@
         </div>
       </dl>
     </section>
-    <NodeGostService :key="node.id" :node="node" class="ops-panel ops-panel-body" @upgrade="$emit('action', 'upgrade-gost')" />
+    <section class="ops-panel ops-panel-body detail-traffic" aria-labelledby="node-traffic-title">
+      <header class="ops-panel-header">
+        <h2 class="ops-section-title" id="node-traffic-title"><el-icon aria-hidden="true"><PieChart /></el-icon>流量统计与配额</h2>
+      </header>
+      <p class="ops-mono">{{ formatNodeTrafficUsage(node) }}</p>
+    </section>
   </div>
-
-  <section class="ops-panel ops-panel-body detail-traffic" aria-labelledby="node-traffic-title">
-    <h2 class="ops-section-title" id="node-traffic-title"><el-icon aria-hidden="true"><PieChart /></el-icon>流量统计与配额</h2>
-    <p class="ops-mono">{{ formatNodeTrafficUsage(node) }}</p>
-  </section>
 </template>
 
 <script setup>
@@ -96,11 +98,4 @@ const endpoints = computed(() => [
 }
 .detail-cards > .ops-panel { display: grid; align-content: start; gap: var(--ops-section-gap); }
 .detail-address-list { grid-column: 1 / -1; }
-.detail-traffic { display: grid; min-width: 0; gap: var(--ops-section-gap); }
-.detail-traffic h2 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.detail-traffic h2 .el-icon { color: var(--ops-accent); }
 </style>

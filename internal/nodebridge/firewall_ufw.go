@@ -26,6 +26,17 @@ type ufwBackend struct {
 	ipv6     bool
 }
 
+func hostUFWActive() bool {
+	executable, err := exec.LookPath("ufw")
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	status, err := runUFWCommand(ctx, executable, nil, "status")
+	return err == nil && ufwStatusActive(status)
+}
+
 func (m *FirewallManager) reconcileUFW(ctx context.Context, executable string, ports FirewallPorts) error {
 	_, systemd := os.Stat("/run/systemd/system")
 	_, ipv6 := os.Stat("/proc/sys/net/ipv6")
@@ -104,8 +115,7 @@ func (b ufwBackend) active(ctx context.Context, executable string) (bool, error)
 	if err != nil {
 		return false, fmt.Errorf("read UFW status: %w", err)
 	}
-	line, _, _ := strings.Cut(string(status), "\n")
-	if strings.TrimSpace(line) != "Status: active" {
+	if !ufwStatusActive(status) {
 		return false, errUFWInactive
 	}
 	defaults, err := b.readFile("/etc/default/ufw")
@@ -113,6 +123,11 @@ func (b ufwBackend) active(ctx context.Context, executable string) (bool, error)
 		return false, fmt.Errorf("read UFW defaults: %w", err)
 	}
 	return b.ipv6 && ufwSetting(defaults, "IPV6") == "yes", nil
+}
+
+func ufwStatusActive(status []byte) bool {
+	line, _, _ := strings.Cut(string(status), "\n")
+	return strings.TrimSpace(line) == "Status: active"
 }
 
 func ufwSetting(config []byte, name string) string {

@@ -160,7 +160,8 @@ describe('inline node service status', () => {
     const view = mountService()
     await flushPromises()
     const health = view.get('#node-firewall-status')
-    expect(statusFields(health)).toMatchObject({ 后端类型: 'nftables', 启动状态: '已启用', 同步状态: '同步异常' })
+    expect(statusFields(health)).toMatchObject({ 自动放行后端: 'nftables', 同步状态: '同步异常' })
+    expect(health.get('.firewall-startup').text()).toBe('已启用')
     expect(health.text()).toContain('inet input 链')
     expect(health.text()).toContain('missing firewall jump')
     expect(health.text()).toContain('最近成功同步')
@@ -170,6 +171,7 @@ describe('inline node service status', () => {
     await click(view, '刷新')
     expect(statusFields(health).同步状态).toBe('已同步')
     expect(health.text()).not.toContain('missing firewall jump')
+    expect(health.find('#node-firewall-setup').exists()).toBe(false)
   })
 
   it.each([
@@ -186,8 +188,79 @@ describe('inline node service status', () => {
     const view = mountService()
     await flushPromises()
     const health = view.get('#node-firewall-status')
-    expect(statusFields(health)).toEqual({ 后端类型: 'nftables', 启动状态: '未启用', 未启用原因: message })
+    expect(statusFields(health)).toEqual({ 自动放行后端: 'nftables' })
+    expect(health.get('.firewall-startup').text()).toBe('未启用')
+    expect(health.text()).toContain(message)
+    expect(health.find('#node-firewall-setup').exists()).toBe(disabledReason !== 'unsupported_environment')
     expect(api.getNodeNftConfig).not.toHaveBeenCalled()
+  })
+
+  it('shows UFW setup steps when automatic rules are off and removes them after synchronization', async () => {
+    api.getGostService.mockResolvedValue(response(active))
+    api.getNodeFirewallStatus
+      .mockResolvedValueOnce(response({ backend: 'ufw', supported: true, managed: false, disabled_reason: 'not_configured' }))
+      .mockResolvedValueOnce(response({ backend: 'ufw', supported: true, managed: true, synchronized: true }))
+    const view = mountService()
+    await flushPromises()
+    const health = view.get('#node-firewall-status')
+    expect(statusFields(health).自动放行后端).toBe('UFW')
+    expect(health.get('.firewall-startup').text()).toBe('未启用')
+    const setup = health.get('details#node-firewall-setup')
+    const summary = setup.get('summary')
+    expect(summary.text()).toBe('查看开启步骤')
+    expect(setup.attributes('open')).toBeUndefined()
+    await summary.trigger('click')
+    expect(setup.attributes('open')).toBeDefined()
+    expect(setup.text()).toContain('ufw status')
+    expect(setup.text()).toContain('/etc/yagp-daemon/node.yaml')
+    expect(setup.text()).toContain('enabled: true')
+    expect(setup.text()).toContain('systemctl restart yagp-daemon')
+    expect(setup.text()).toContain('刷新')
+    expect(setup.text()).not.toContain('input_chain')
+
+    await click(view, '刷新')
+    expect(health.get('.firewall-startup').text()).toBe('已启用')
+    expect(statusFields(health).同步状态).toBe('已同步')
+    expect(health.find('#node-firewall-setup').exists()).toBe(false)
+  })
+
+  it('offers nftables configuration steps for invalid configuration', async () => {
+    api.getGostService.mockResolvedValue(response(active))
+    api.getNodeFirewallStatus.mockResolvedValue(response({
+      backend: 'nftables', supported: true, managed: true, disabled_reason: 'invalid_configuration', last_error: 'missing input_chain'
+    }))
+    const view = mountService()
+    await flushPromises()
+    const health = view.get('#node-firewall-status')
+    const setup = health.get('details#node-firewall-setup')
+    expect(setup.get('summary').text()).toBe('查看配置步骤')
+    expect(setup.text()).toContain('input_chain')
+    expect(setup.text()).toContain('yagp_7_input')
+    expect(health.get('[role="alert"]').text()).toContain('missing input_chain')
+  })
+
+  it('shows the delegated policy when configuring firewalld', async () => {
+    api.getGostService.mockResolvedValue(response(active))
+    api.getNodeFirewallStatus.mockResolvedValue(response({
+      backend: 'firewalld', supported: true, managed: false, disabled_reason: 'explicitly_disabled'
+    }))
+    const view = mountService()
+    await flushPromises()
+    const health = view.get('#node-firewall-status')
+    const setup = health.get('details#node-firewall-setup')
+    expect(setup.get('summary').text()).toBe('查看开启步骤')
+    expect(setup.text()).toContain('policy: yagp-7')
+    expect(setup.text()).not.toContain('input_chain')
+  })
+
+  it('does not offer configuration steps for an unrecognized backend', async () => {
+    api.getGostService.mockResolvedValue(response(active))
+    api.getNodeFirewallStatus.mockResolvedValue(response({ supported: false, managed: false, disabled_reason: 'not_configured' }))
+    const view = mountService()
+    await flushPromises()
+    const health = view.get('#node-firewall-status')
+    expect(statusFields(health).自动放行后端).toBe('未识别')
+    expect(health.find('#node-firewall-setup').exists()).toBe(false)
   })
 
   it('shows older daemon support independently of the running Gost service', async () => {
@@ -207,7 +280,8 @@ describe('inline node service status', () => {
     const view = mountService()
     await flushPromises()
     const health = view.get('#node-firewall-status')
-    expect(statusFields(health)).toMatchObject({ 后端类型: 'UFW', 启动状态: '已启用', 同步状态: '后端不可用' })
+    expect(statusFields(health)).toMatchObject({ 自动放行后端: 'UFW', 同步状态: '后端不可用' })
+    expect(health.get('.firewall-startup').text()).toBe('已启用')
     expect(health.text()).toContain('UFW 已启用并运行')
     expect(health.text()).toContain('UFW is inactive')
     expect(health.text()).not.toContain('inet input 链')
@@ -222,7 +296,8 @@ describe('inline node service status', () => {
     const view = mountService()
     await flushPromises()
     const health = view.get('#node-firewall-status')
-    expect(statusFields(health)).toMatchObject({ 后端类型: 'firewalld', 启动状态: '已启用', 同步状态: '待同步' })
+    expect(statusFields(health)).toMatchObject({ 自动放行后端: 'firewalld', 同步状态: '待同步' })
+    expect(health.get('.firewall-startup').text()).toBe('已启用')
     expect(health.text()).toContain('管理员配置的入站 policy')
     expect(health.text()).not.toContain('inet input 链')
 
