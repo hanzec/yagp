@@ -15,6 +15,7 @@ vi.mock('@/api/node', () => ({
   restartGostService: vi.fn(),
   getNodeNftConfig: vi.fn(),
   getNodeFirewallStatus: vi.fn(),
+  enableNodeFirewall: vi.fn(),
   getNodeUpgradeStatus: vi.fn(),
   updateNodeUpgradePolicy: vi.fn(),
   upgradeNodeComponent: vi.fn()
@@ -171,7 +172,7 @@ describe('inline node service status', () => {
     await click(view, '刷新')
     expect(statusFields(health).同步状态).toBe('已同步')
     expect(health.text()).not.toContain('missing firewall jump')
-    expect(health.find('#node-firewall-setup').exists()).toBe(false)
+    expect(health.find('.firewall-enable').exists()).toBe(false)
   })
 
   it.each([
@@ -191,76 +192,102 @@ describe('inline node service status', () => {
     expect(statusFields(health)).toEqual({ 自动放行后端: 'nftables' })
     expect(health.get('.firewall-startup').text()).toBe('未启用')
     expect(health.text()).toContain(message)
-    expect(health.find('#node-firewall-setup').exists()).toBe(disabledReason !== 'unsupported_environment')
+    expect(health.find('.firewall-enable').exists()).toBe(disabledReason !== 'unsupported_environment')
     expect(api.getNodeNftConfig).not.toHaveBeenCalled()
   })
 
-  it('shows UFW setup steps when automatic rules are off and removes them after synchronization', async () => {
+  it('enables UFW remotely and displays the separately refreshed synchronization status', async () => {
+    const pending = deferred()
     api.getGostService.mockResolvedValue(response(active))
     api.getNodeFirewallStatus
       .mockResolvedValueOnce(response({ backend: 'ufw', supported: true, managed: false, disabled_reason: 'not_configured' }))
       .mockResolvedValueOnce(response({ backend: 'ufw', supported: true, managed: true, synchronized: true }))
+    api.enableNodeFirewall.mockReturnValueOnce(pending.promise)
     const view = mountService()
     await flushPromises()
     const health = view.get('#node-firewall-status')
     expect(statusFields(health).自动放行后端).toBe('UFW')
     expect(health.get('.firewall-startup').text()).toBe('未启用')
-    const setup = health.get('details#node-firewall-setup')
-    const summary = setup.get('summary')
-    expect(summary.text()).toBe('查看开启步骤')
-    expect(setup.attributes('open')).toBeUndefined()
-    await summary.trigger('click')
-    expect(setup.attributes('open')).toBeDefined()
-    expect(setup.text()).toContain('ufw status')
-    expect(setup.text()).toContain('/etc/yagp-daemon/node.yaml')
-    expect(setup.text()).toContain('enabled: true')
-    expect(setup.text()).toContain('systemctl restart yagp-daemon')
-    expect(setup.text()).toContain('刷新')
-    expect(setup.text()).not.toContain('input_chain')
+    expect(health.text()).not.toContain('查看开启步骤')
+    expect(health.find('details').exists()).toBe(false)
+    await click(health, '启用自动放行')
+    expect(api.enableNodeFirewall).toHaveBeenCalledExactlyOnceWith(node.id)
+    expect(health.attributes('aria-busy')).toBe('true')
+    expect(button(health, '启用自动放行').element.disabled).toBe(true)
+    expect(button(view, '刷新').element.disabled).toBe(true)
+
+    pending.resolve(response({ backend: 'ufw', supported: true, managed: true, synchronized: false }))
+    await flushPromises()
+    expect(statusFields(health).同步状态).toBe('待同步')
+    expect(health.get('.firewall-startup').text()).toBe('已启用')
+    expect(messages.success).toHaveBeenCalledWith('自动放行配置已保存')
+    expect(health.find('.firewall-enable').exists()).toBe(false)
 
     await click(view, '刷新')
-    expect(health.get('.firewall-startup').text()).toBe('已启用')
     expect(statusFields(health).同步状态).toBe('已同步')
-    expect(health.find('#node-firewall-setup').exists()).toBe(false)
   })
 
-  it('offers nftables configuration steps for invalid configuration', async () => {
+  it('allows remote enable after a previously invalid nftables configuration is repaired', async () => {
     api.getGostService.mockResolvedValue(response(active))
     api.getNodeFirewallStatus.mockResolvedValue(response({
-      backend: 'nftables', supported: true, managed: true, disabled_reason: 'invalid_configuration', last_error: 'missing input_chain'
+      backend: 'nftables', supported: false, managed: true, disabled_reason: 'invalid_configuration', last_error: 'missing input_chain'
     }))
+    api.enableNodeFirewall.mockResolvedValue(response({ backend: 'nftables', supported: true, managed: true, synchronized: true }))
     const view = mountService()
     await flushPromises()
     const health = view.get('#node-firewall-status')
-    const setup = health.get('details#node-firewall-setup')
-    expect(setup.get('summary').text()).toBe('查看配置步骤')
-    expect(setup.text()).toContain('input_chain')
-    expect(setup.text()).toContain('yagp_7_input')
     expect(health.get('[role="alert"]').text()).toContain('missing input_chain')
+    await click(health, '启用自动放行')
+    expect(api.enableNodeFirewall).toHaveBeenCalledExactlyOnceWith(node.id)
+    expect(health.get('.firewall-startup').text()).toBe('已启用')
+    expect(statusFields(health).同步状态).toBe('已同步')
+    expect(health.find('[role="alert"]').exists()).toBe(false)
   })
 
-  it('shows the delegated policy when configuring firewalld', async () => {
+  it('shows a delegated firewalld failure and allows a retry', async () => {
     api.getGostService.mockResolvedValue(response(active))
     api.getNodeFirewallStatus.mockResolvedValue(response({
       backend: 'firewalld', supported: true, managed: false, disabled_reason: 'explicitly_disabled'
     }))
+    api.enableNodeFirewall.mockRejectedValueOnce(apiError('请先配置 firewalld 入站 policy'))
+      .mockResolvedValueOnce(response({ backend: 'firewalld', supported: true, managed: true, synchronized: false, last_error: 'policy is not active' }))
     const view = mountService()
     await flushPromises()
     const health = view.get('#node-firewall-status')
-    const setup = health.get('details#node-firewall-setup')
-    expect(setup.get('summary').text()).toBe('查看开启步骤')
-    expect(setup.text()).toContain('policy: yagp-7')
-    expect(setup.text()).not.toContain('input_chain')
+    await click(health, '启用自动放行')
+    expect(health.get('[role="alert"]').text()).toBe('请先配置 firewalld 入站 policy')
+    expect(health.get('.firewall-startup').text()).toBe('未启用')
+    expect(messages.success).not.toHaveBeenCalled()
+    await click(health, '启用自动放行')
+    expect(api.enableNodeFirewall).toHaveBeenCalledTimes(2)
+    expect(health.get('.firewall-startup').text()).toBe('已启用')
+    expect(statusFields(health).同步状态).toBe('同步异常')
+    expect(health.get('[role="alert"]').text()).toBe('policy is not active')
   })
 
-  it('does not offer configuration steps for an unrecognized backend', async () => {
+  it('explains when the daemon can report status but needs an upgrade to enable remotely', async () => {
+    api.getGostService.mockResolvedValue(response(active))
+    api.getNodeFirewallStatus.mockResolvedValue(response({ backend: 'ufw', supported: true, managed: false }))
+    api.enableNodeFirewall.mockRejectedValueOnce({ response: { status: 501 } })
+    const view = mountService()
+    await flushPromises()
+    const health = view.get('#node-firewall-status')
+    await click(health, '启用自动放行')
+    expect(health.get('[role="alert"]').text()).toBe('请升级节点的 yagp-daemon 后再启用自动放行。')
+    expect(health.find('.firewall-enable').exists()).toBe(false)
+    await click(view, '刷新')
+    expect(health.find('[role="alert"]').exists()).toBe(false)
+    expect(button(health, '启用自动放行').element.disabled).toBe(false)
+  })
+
+  it('does not offer remote enable for an unrecognized backend', async () => {
     api.getGostService.mockResolvedValue(response(active))
     api.getNodeFirewallStatus.mockResolvedValue(response({ supported: false, managed: false, disabled_reason: 'not_configured' }))
     const view = mountService()
     await flushPromises()
     const health = view.get('#node-firewall-status')
     expect(statusFields(health).自动放行后端).toBe('未识别')
-    expect(health.find('#node-firewall-setup').exists()).toBe(false)
+    expect(health.find('.firewall-enable').exists()).toBe(false)
   })
 
   it('shows older daemon support independently of the running Gost service', async () => {

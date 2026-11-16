@@ -20,6 +20,12 @@ func (c *Client) GetFirewallStatus(ctx context.Context) (*nodegrpc.FirewallStatu
 	})
 }
 
+func (c *Client) EnableFirewall(ctx context.Context) (*nodegrpc.FirewallStatus, error) {
+	return callNode(ctx, c, nodeMutationTimeout, func(ctx context.Context, client nodegrpc.V1Client) (*nodegrpc.FirewallStatus, error) {
+		return client.EnableFirewall(ctx, &emptypb.Empty{})
+	})
+}
+
 func (c *Client) ApplyNftConfig(ctx context.Context, config string) (*nodegrpc.NftConfig, error) {
 	return callNode(ctx, c, nodeMutationTimeout, func(ctx context.Context, client nodegrpc.V1Client) (*nodegrpc.NftConfig, error) {
 		return client.ApplyNftConfig(ctx, &nodegrpc.NftConfig{Config: config})

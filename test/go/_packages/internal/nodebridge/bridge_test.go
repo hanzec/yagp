@@ -161,6 +161,9 @@ func TestNodeBridgeControlAndReport(t *testing.T) {
 	if _, err = nodegrpc.NewV1Client(observerConn).GetFirewallStatus(timeout, &emptypb.Empty{}); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("local observer exposed firewall status RPC: %v", err)
 	}
+	if _, err = nodegrpc.NewV1Client(observerConn).EnableFirewall(timeout, &emptypb.Empty{}); status.Code(err) != codes.Unimplemented {
+		t.Fatalf("local observer exposed firewall enable RPC: %v", err)
+	}
 	observation := &observer.ObserveRequest{Events: []*observer.Event{{
 		Kind: "service", Service: "rule-5", Type: "stats", Stats: &observer.Stats{InputBytes: 800, OutputBytes: 300},
 	}}}
@@ -189,6 +192,9 @@ func TestNodeBridgeControlAndReport(t *testing.T) {
 		if err != nil || firewall == nil || firewall.GetManaged() || firewall.GetSynchronized() ||
 			firewall.GetLastSync() != nil || firewall.LastError != nil || firewall.GetDisabledReason() != "not_configured" {
 			t.Fatalf("unmanaged firewall status on connection %d: %v, %v", attempt, firewall, err)
+		}
+		if _, err := panelClient.EnableFirewall(timeout, &emptypb.Empty{}); status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("firewall enable without node configuration on connection %d: %v", attempt, err)
 		}
 		if _, err := panelClient.GetNodeConfig(timeout, &emptypb.Empty{}); status.Code(err) != codes.Unimplemented {
 			t.Fatalf("node configuration RPC in reverse direction: %v", err)

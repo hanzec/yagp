@@ -13,7 +13,7 @@ vi.mock('@/api/node', () => ({
   calibrateNodeTraffic: vi.fn(),
   issueNodeRegistrationToken: vi.fn(), getNodeConfig: vi.fn(),
   getGostService: vi.fn(), getGostLogs: vi.fn(), restartGostService: vi.fn(),
-  getNodeNftConfig: vi.fn(), getNodeFirewallStatus: vi.fn(),
+  getNodeNftConfig: vi.fn(), getNodeFirewallStatus: vi.fn(), enableNodeFirewall: vi.fn(),
   getNodeUpgradeStatus: vi.fn(), updateNodeUpgradePolicy: vi.fn(), upgradeNodeComponent: vi.fn()
 }))
 vi.mock('@/api/system', () => ({ getPublicSystemConfig: vi.fn() }))

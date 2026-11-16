@@ -10,10 +10,20 @@ import (
 )
 
 func (s *controlServer) GetFirewallStatus(context.Context, *emptypb.Empty) (*nodegrpc.FirewallStatus, error) {
-	if s.firewall == nil {
+	manager := s.firewallManager()
+	if manager == nil {
 		return &nodegrpc.FirewallStatus{}, nil
 	}
-	state := s.firewall.Status()
+	return firewallStatusReply(manager.Status()), nil
+}
+
+func (s *controlServer) firewallManager() *FirewallManager {
+	s.firewallMu.RLock()
+	defer s.firewallMu.RUnlock()
+	return s.firewall
+}
+
+func firewallStatusReply(state FirewallStatus) *nodegrpc.FirewallStatus {
 	reply := &nodegrpc.FirewallStatus{
 		Supported: state.Supported, Managed: state.Managed, Synchronized: state.Synchronized,
 		LastError: state.LastError, Backend: state.Backend, DisabledReason: state.DisabledReason,
@@ -21,5 +31,5 @@ func (s *controlServer) GetFirewallStatus(context.Context, *emptypb.Empty) (*nod
 	if state.LastSync != nil {
 		reply.LastSync = timestamppb.New(*state.LastSync)
 	}
-	return reply, nil
+	return reply
 }
