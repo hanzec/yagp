@@ -54,15 +54,47 @@ func TestEndpointTunnelUsesExitOwnedPolicyAndTransport(t *testing.T) {
 		}
 	}
 	assertPolicy(&destination)
-	requireServiceError(t, tunnels.Stop(tunnel.ID, testAdmin, testIP, testAgent), nil)
+	oldPort := destination.ListenPort
 	destination.Protocol, destination.ListenPort, destination.Strategy = "h3", 18004, "hash"
 	destination.Targets = []string{"updated-one.test:8443", "updated-two.test:8443"}
-	requireServiceError(t, db.Model(&destination).Select("Protocol", "ListenPort", "Targets", "Strategy").Updates(&destination).Error, nil)
+	rules := NewRuleService(db)
+	_, err = rules.Update(destination.ID, &dto.UpdateRuleReq{
+		Name: destination.Name, Protocol: string(destination.Protocol), ListenPort: destination.ListenPort,
+		Targets: destination.Targets, Strategy: destination.Strategy,
+	}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
+	_, err = rules.Update(source.ID, &dto.UpdateRuleReq{
+		Name: source.Name, Protocol: string(source.Protocol), ListenPort: 18005,
+	}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
+	if relay := exitRemote.service(tunnel.ServiceID); relay.Addr != ":18002" || relay.Listener.Type != "tls" {
+		t.Fatalf("saving edited endpoint changed the live Relay: %+v", relay)
+	}
+	if forward := entryRemote.service(tunnel.EntryRule.ServiceID); forward.Addr != ":18001" || forward.Forwarder.Nodes[0].Addr != "one.test:443" {
+		t.Fatalf("saving edited endpoint changed the live ingress: %+v", forward)
+	}
+	active, err := tunnels.GetByID(tunnel.ID)
+	requireServiceError(t, err, nil)
+	if active.EntryRule.ListenPort != source.ListenPort || active.ExitRule.ListenPort != oldPort || active.ExitRule.Targets[0] != "one.test:443" {
+		t.Fatalf("running tunnel did not report its applied settings: %+v", active)
+	}
+	listed, total, err := tunnels.List(&dto.TunnelListReq{})
+	requireServiceError(t, err, nil)
+	if total != 1 || len(listed) != 1 || listed[0].ExitRule.ListenPort != oldPort {
+		t.Fatalf("tunnel list did not report the applied listener: %+v", listed)
+	}
+	_, err = rules.Create(&dto.CreateRuleReq{Name: "conflicting listener", NodeID: &exit.ID,
+		Role: "exit", Protocol: "tcp", ListenPort: oldPort, Targets: []string{"app.test:443"}}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, bizerrors.ErrRulePortExists)
+	requireServiceError(t, tunnels.Stop(tunnel.ID, testAdmin, testIP, testAgent), nil)
 	tunnels = NewTunnelService(db)
 	requireServiceError(t, tunnels.Start(tunnel.ID, testAdmin, testIP, testAgent), nil)
 	assertPolicy(&destination)
 	if exitRemote.service(relayServiceName(tunnel.ID)).Addr != ":18004" {
 		t.Fatal("restart did not use the current exit listener port")
+	}
+	if forward := entryRemote.service(tunnel.EntryRule.ServiceID); forward.Addr != ":18005" {
+		t.Fatal("restart did not use the current entry listener port")
 	}
 	requireServiceError(t, tunnels.Stop(tunnel.ID, testAdmin, testIP, testAgent), nil)
 	_, err = tunnels.Update(tunnel.ID, &dto.UpdateTunnelReq{Name: "replacement", EntryRuleID: source.ID, ExitRuleID: replacement.ID,
@@ -129,9 +161,20 @@ func TestExitClashPolicyValidatesIngressAndDrivesRulesetSync(t *testing.T) {
 	if !slices.Equal(bypass.Matchers, []string{".exit-policy.test"}) {
 		t.Fatalf("ruleset did not reach the entry of an exit-owned Clash tunnel: %+v", bypass)
 	}
+	fixed := false
+	_, err = NewRuleService(f.db).Update(f.destination.ID, &dto.UpdateRuleReq{
+		Name: f.destination.Name, Protocol: "tls", ListenPort: f.destination.ListenPort,
+		Targets: []string{"fixed.test:443"}, UseClashRuleset: &fixed,
+	}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
+	setMatchers(".edited-while-running.test")
+	subscriptions.sync(t.Context(), map[uint]bool{})
+	f.entryNode.read("/config/bypasses/"+gost.TransparentBypassName, &bypass)
+	if !slices.Equal(bypass.Matchers, []string{".edited-while-running.test"}) {
+		t.Fatal("saving a changed desired policy disabled ruleset synchronization for the running tunnel")
+	}
 	requireServiceError(t, f.stop(), nil)
-	f.destination.Targets, f.destination.UseClashRuleset = []string{"fixed.test:443"}, false
-	requireServiceError(t, f.db.Model(&f.destination).Select("Targets", "UseClashRuleset").Updates(&f.destination).Error, nil)
+	f.assertStopped(t)
 	// Obsolete source and tunnel flags must not re-enable Clash after the exit switches to fixed targets.
 	requireServiceError(t, f.db.Model(&f.source).Update("use_clash_ruleset", true).Error, nil)
 	requireServiceError(t, f.db.Model(&f.tunnel).Updates(map[string]any{"use_clash_ruleset": true, "strategy": "round"}).Error, nil)
@@ -143,7 +186,7 @@ func TestExitClashPolicyValidatesIngressAndDrivesRulesetSync(t *testing.T) {
 	setMatchers(".must-not-sync.test")
 	subscriptions.sync(t.Context(), map[uint]bool{})
 	f.entryNode.read("/config/bypasses/"+gost.TransparentBypassName, &bypass)
-	if !slices.Equal(bypass.Matchers, []string{".exit-policy.test"}) {
+	if !slices.Equal(bypass.Matchers, []string{".edited-while-running.test"}) {
 		t.Fatal("obsolete flags caused fixed-target tunnel ruleset synchronization")
 	}
 	requireServiceError(t, f.stop(), nil)

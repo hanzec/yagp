@@ -81,6 +81,8 @@ func TestTunnelProbeRejectsUnmanagedDestination(t *testing.T) {
 	control := &controlServer{}
 	for _, req := range []*nodegrpc.TunnelProbeRequest{
 		{ChainName: "tunnel-1-chain", Address: "192.0.2.1:12345", Token: make([]byte, sha256.Size)},
+		{ChainName: "tunnel-1-chain", Address: "/run/other.sock", Token: make([]byte, sha256.Size)},
+		{ChainName: "tunnel-1-chain", Address: nodegrpc.TunnelProbeDomain + ":443", Token: make([]byte, sha256.Size)},
 		{ChainName: "tunnel-1-clash-chain", Address: "127.0.0.1:12345", Token: make([]byte, sha256.Size)},
 		{ChainName: "tunnel-1-chain", Address: "127.0.0.1:12345", Token: []byte("invalid")},
 	} {
@@ -252,7 +254,11 @@ func TestTunnelProbeThroughGostRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The production daemon resolves Gost relative to its own config file.
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp("", "yagp-domain-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	if err := os.Symlink(binary, filepath.Join(dir, "gost")); err != nil {
 		t.Fatal(err)
 	}
@@ -352,6 +358,38 @@ func TestTunnelProbeThroughGostRelay(t *testing.T) {
 			t.Fatalf("unexpected diagnostics for an allowed source and forbidden target: %v", info.GetMetadata())
 		}
 
+		domain, err := listenTunnelProbeDomain(control.config.ConfigFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer domain.listener.Close()
+		control.probeDomain = domain
+		go domain.serve()
+		writeConfig(t, http.MethodPost, "/config/bypasses", map[string]any{
+			"name": gost.TunnelProbeBypassName, "whitelist": true, "network": "unix", "matchers": []string{nodegrpc.TunnelProbeDomain},
+		})
+		relay.Bypasses = []string{gost.TunnelProbeBypassName}
+		writeConfig(t, http.MethodPut, "/config/services/"+relay.Name, relay)
+
+		endpoint, err := control.StartTunnelProbe(t.Context(), &emptypb.Empty{})
+		if err != nil || endpoint.GetDomainAddress() != nodegrpc.TunnelProbeDomain {
+			t.Fatalf("start domain probe: %v", err)
+		}
+		request := &nodegrpc.TunnelProbeRequest{ChainName: chain.Name, Address: endpoint.GetAddress(), Token: endpoint.GetToken()}
+		_, err = control.ProbeTunnel(t.Context(), request)
+		info = requireTunnelProbeFailure(t, err, codes.Unavailable, "relay_read")
+		if info.GetMetadata()["gost_error"] != "relay_target_forbidden" {
+			t.Fatalf("probe domain rule also allowed the TCP loopback target: %v", info.GetMetadata())
+		}
+		request.Address = endpoint.GetDomainAddress()
+		if _, err := control.ProbeTunnel(t.Context(), request); err != nil {
+			t.Fatalf("test domain through target-restricted Gost Relay: %v", err)
+		}
+		if _, err := control.ProbeTunnel(t.Context(), request); err == nil {
+			t.Fatal("test domain accepted a used token")
+		}
+		control.probeDomain = nil
+
 		admission.Matchers = []string{"192.0.2.1"}
 		writeConfig(t, http.MethodPut, "/config/admissions/"+admission.Name, admission)
 		_, err = probe()
@@ -406,6 +444,7 @@ func startTunnelProbeTestRelay(t *testing.T, binary, dir string, relay gost.Serv
 		t.Fatal(err)
 	}
 	cmd := exec.Command(binary, "-C", path)
+	cmd.Dir = dir
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

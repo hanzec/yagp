@@ -7,6 +7,7 @@ import (
 	"yagp/internal/errors"
 	"yagp/internal/model"
 	"yagp/internal/utils"
+	"yagp/pkg/gost"
 	"yagp/pkg/logger"
 	"yagp/pkg/nodegrpc"
 
@@ -84,9 +85,7 @@ func (s *TunnelService) Test(ctx context.Context, id uint) (*TunnelTestResult, e
 	}
 	result.record("exit_listener", "passed", "出口 daemon 已启动临时回环测试监听。")
 
-	reply, err := utils.GetGostClient(tunnel.EntryNode).ProbeTunnel(probeCtx, &nodegrpc.TunnelProbeRequest{
-		ChainName: tunnel.ChainID, Address: endpoint.GetAddress(), Token: endpoint.GetToken(),
-	})
+	reply, err := probeTunnelEndpoint(probeCtx, utils.GetGostClient(tunnel.EntryNode), tunnel.ChainID, endpoint, false)
 	if err != nil {
 		cancel()
 		businessErr := tunnelProbeError(err, tunnelProbeEntry)
@@ -106,6 +105,29 @@ func (s *TunnelService) Test(ctx context.Context, id uint) (*TunnelTestResult, e
 	result.record("entry_gost_process", "passed", "入口的临时 Gost 测试进程已就绪。")
 	result.record("relay_round_trip", "passed", "测试数据已通过 Relay 往返，返回内容校验通过。")
 	return result, nil
+}
+
+func probeTunnelEndpoint(ctx context.Context, client *gost.Client, chain string, endpoint *nodegrpc.TunnelProbeEndpoint, measureTTL bool) (*nodegrpc.TunnelProbeReply, error) {
+	request := &nodegrpc.TunnelProbeRequest{
+		ChainName: chain, Address: endpoint.GetAddress(), Token: endpoint.GetToken(), MeasureReplyIpTtl: measureTTL,
+	}
+	reply, err := client.ProbeTunnel(ctx, request)
+	if err == nil || endpoint.GetDomainAddress() != nodegrpc.TunnelProbeDomain {
+		return reply, err
+	}
+	for _, detail := range status.Convert(err).Details() {
+		info, ok := detail.(*errdetails.ErrorInfo)
+		if !ok || info.GetDomain() != "yagp.tunnel_probe" || info.GetMetadata()["gost_error"] != "relay_target_forbidden" {
+			continue
+		}
+		request.Address = endpoint.GetDomainAddress()
+		// Older ingress daemons and already running Relays can still use the original diagnosis.
+		if domainReply, domainErr := client.ProbeTunnel(ctx, request); domainErr == nil {
+			return domainReply, nil
+		}
+		break
+	}
+	return reply, err
 }
 
 func (r *TunnelTestResult) checkTunnel(t *model.GostTunnel) error {

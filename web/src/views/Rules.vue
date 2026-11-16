@@ -124,8 +124,7 @@
                   >
                     {{ row.status === 'running' ? '停止' : '启动' }}
                   </el-button>
-                  <el-button v-if="canEditEndpoint(row)" text :aria-label="'编辑 ' + row.name" @click="openDialog(row)">编辑</el-button>
-                  <RouterLink v-else class="rule-form-link" to="/tunnels">隧道管理</RouterLink>
+                  <el-button text :aria-label="'编辑 ' + row.name" @click="openDialog(row)">编辑</el-button>
                   <el-dropdown trigger="click" @command="handleRowCommand(row, $event)">
                     <el-button text :aria-label="row.name + '的更多操作'">
                       更多 <el-icon aria-hidden="true"><ArrowDown /></el-icon>
@@ -178,15 +177,15 @@
         <section class="rule-form-section" aria-labelledby="rule-entry-title">
           <header>
             <h3 id="rule-entry-title">端点与监听</h3>
-            <p class="ops-muted">入口接收流量，出口配置目标与策略。到 <RouterLink class="rule-form-link" to="/tunnels">隧道管理</RouterLink> 连接入口与出口。</p>
-            <p v-if="boundExitEdit" class="ops-muted">关联隧道已停止，可修改出口的目标与策略；监听地址保持不变。</p>
+            <p v-if="boundTunnelCount" class="ops-muted">保存后，{{ restartHint }}</p>
+            <p v-else class="ops-muted">入口接收流量，出口配置目标与策略。在隧道管理中连接入口与出口。</p>
           </header>
           <div class="rule-form-grid">
             <el-form-item label="端点名称" prop="name" class="rule-form-wide">
               <el-input v-model.trim="form.name" placeholder="例如 办公网络端点" maxlength="100" />
             </el-form-item>
             <el-form-item label="端点方向" prop="role">
-              <el-select v-model="form.role" :disabled="boundExitEdit">
+              <el-select v-model="form.role" :disabled="boundTunnelCount > 0">
                 <el-option v-if="isEdit && !form.role" label="未指定（旧端点）" value="" disabled />
                 <el-option label="入口" value="entry" />
                 <el-option label="出口" value="exit" />
@@ -209,7 +208,6 @@
               <el-select
                 :model-value="form.listen_ip"
                 :empty-values="[null, undefined]"
-                :disabled="boundExitEdit"
                 filterable
                 allow-create
                 default-first-option
@@ -226,7 +224,7 @@
               </p>
             </el-form-item>
             <el-form-item label="监听端口" prop="listen_port">
-              <el-input-number v-model="form.listen_port" :disabled="boundExitEdit" :min="1" :max="65535" :step-strictly="true" placeholder="填写端口" controls-position="right" aria-describedby="rule-listen-endpoint" />
+              <el-input-number v-model="form.listen_port" :min="1" :max="65535" :step-strictly="true" placeholder="填写端口" controls-position="right" aria-describedby="rule-listen-endpoint" />
               <p v-if="form.listen_port" id="rule-listen-endpoint" class="rule-form-hint ops-muted">
                 监听地址 <span class="ops-mono">{{ formatEndpoint(form.listen_ip, form.listen_port) }}</span>
                 <span v-if="selectedConnectEndpoint" class="rule-connect-endpoint">
@@ -338,12 +336,12 @@ const summary = computed(() => {
 
 const dialogVisible = ref(false)
 const isEdit = ref(false)
-const boundExitEdit = ref(false)
+const boundTunnelCount = ref(0)
+const restartHint = computed(() => boundTunnelCount.value > 1
+  ? '请先停止全部关联隧道，再逐条启动以应用配置。'
+  : '请重启关联隧道以应用配置。')
 const endpointRoles = { entry: '入口', exit: '出口' }
 const hasTunnelBindings = rule => !!(rule.linked_tunnels?.length || rule.linked_tunnel_id)
-const canEditEndpoint = rule => !hasTunnelBindings(rule) || (rule.role === 'exit' && (rule.linked_tunnels?.length
-  ? rule.linked_tunnels.every(tunnel => tunnel.status === 'stopped')
-  : rule.linked_tunnel_status === 'stopped'))
 const strategies = { round: '轮询', rand: '随机', fifo: '先进先出', hash: '哈希' }
 const editId = ref(null)
 const submitLoading = ref(false)
@@ -478,7 +476,7 @@ const clearFilters = () => {
 const openDialog = (row = null, copy = false) => {
   isEdit.value = !!row && !copy
   editId.value = isEdit.value ? row.id : null
-  boundExitEdit.value = isEdit.value && row.role === 'exit' && hasTunnelBindings(row)
+  boundTunnelCount.value = isEdit.value && hasTunnelBindings(row) ? row.linked_tunnels?.length || 1 : 0
   savedProtocolOptions = isEdit.value && !!Object.keys(row.protocol_options || {}).length
   savedRelayConfig = isEdit.value ? { nodeId: row.node_id, protocol: row.protocol, mptcp: row.protocol_options?.mptcp } : null
   editingNode.value = row?.node || null
@@ -538,11 +536,12 @@ const handleSubmit = async () => {
     if (isEdit.value) {
       await updateRule(editId.value, payload)
       listenerChecks.delete(editId.value)
+      ElMessage.success(boundTunnelCount.value ? `端点已保存。${restartHint.value}` : '端点已保存')
     } else {
       const result = await createRule(payload)
       if (result.data?.id) checkListener(result.data, true)
+      ElMessage.success('端点已创建')
     }
-    ElMessage.success(isEdit.value ? '端点已保存' : '端点已创建')
     dialogVisible.value = false
     fetchData()
   } catch {
@@ -839,7 +838,6 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
 
 .rule-connect-endpoint { display: block; overflow-wrap: anywhere; }
 
-.rule-form-link { color: var(--ops-accent); }
 
 .rule-form-grid :deep(.el-select),
 .rule-form-grid :deep(.el-input-number) {

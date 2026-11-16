@@ -43,7 +43,7 @@ func TestEntranceBindingAppearsInDetailsAndFilteredLists(t *testing.T) {
 		}
 		assertBinding(&filtered[0], endpoint.role)
 
-		_, err = rules.Update(id, &dto.UpdateRuleReq{Name: "must stay bound"}, testAdmin, testIP, testAgent)
+		_, err = rules.Update(id, &dto.UpdateRuleReq{Role: endpoint.role}, testAdmin, testIP, testAgent)
 		requireServiceError(t, err, bizerrors.ErrRuleTunnelLinked)
 		requireServiceError(t, rules.Start(id, testAdmin, testIP, testAgent), bizerrors.ErrRuleTunnelLinked)
 		requireServiceError(t, rules.Stop(id, testAdmin, testIP, testAgent), bizerrors.ErrRuleTunnelLinked)

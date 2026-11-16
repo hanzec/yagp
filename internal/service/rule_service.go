@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -137,25 +138,23 @@ func (s *RuleService) Create(req *dto.CreateRuleReq, username, ip, userAgent str
 	return rule, nil
 }
 
-// Update also permits policy changes on an exit whose tunnel has stopped.
+// Update saves bound endpoint changes for the next tunnel start.
 func (s *RuleService) Update(id uint, req *dto.UpdateRuleReq, username, ip, userAgent string) (*model.GostRule, error) {
+	endpointTunnelRuntime.Lock()
+	defer endpointTunnelRuntime.Unlock()
 	rule, err := s.getByID(id)
 	if err != nil {
 		return nil, err
 	}
-	if rule.LinkedTunnelID != nil && (rule.Role != model.EndpointRoleExit || rule.LinkedTunnelStatus != model.TunnelStatusStopped) {
-		return nil, errors.ErrRuleTunnelLinked
-	}
-
-	// 检查是否在运行中
-	if rule.Status == model.RuleStatusRunning {
+	bound := rule.LinkedTunnelID != nil
+	if !bound && rule.Status == model.RuleStatusRunning {
 		return nil, errors.ErrRuleRunning
 	}
-	if rule.LinkedTunnelID != nil && ((req.NodeID != nil && (rule.NodeID == nil || *req.NodeID != *rule.NodeID)) ||
-		(req.Role != "" && model.EndpointRole(req.Role) != rule.Role) || req.ListenPort != rule.ListenPort ||
-		(req.ListenIP != nil && *req.ListenIP != rule.ListenIP)) {
+	if bound && ((req.NodeID != nil && (rule.NodeID == nil || *req.NodeID != *rule.NodeID)) ||
+		(req.Role != "" && model.EndpointRole(req.Role) != rule.Role)) {
 		return nil, errors.ErrRuleTunnelLinked
 	}
+	previous := rule.WithAppliedEndpoint().EndpointConfig()
 
 	// 获取入口节点 ID（用于端口冲突检查）
 	entryNodeID := ruleEntryNodeID(rule)
@@ -176,6 +175,9 @@ func (s *RuleService) Update(id uint, req *dto.UpdateRuleReq, username, ip, user
 	listenIP, err = normalizeRuleListenIP(model.RuleProtocol(req.Protocol), listenIP)
 	if err != nil {
 		return nil, err
+	}
+	if rule.Role == "" && rule.TunnelRole == "exit" && !relayBindReachable(listenIP) {
+		return nil, errors.ErrTunnelExitInvalid
 	}
 	useClashRuleset := rule.UseClashRuleset
 	if req.UseClashRuleset != nil {
@@ -255,6 +257,11 @@ func (s *RuleService) Update(id uint, req *dto.UpdateRuleReq, username, ip, user
 	}
 	rule.EnableTLS = req.EnableTLS
 	rule.Remark = req.Remark
+	if bound && rule.LinkedTunnelStatus != model.TunnelStatusStopped && !reflect.DeepEqual(previous, rule.EndpointConfig()) {
+		rule.AppliedEndpoint = &previous
+	} else {
+		rule.AppliedEndpoint = nil
+	}
 
 	if err = s.ruleRepo.Update(rule); err != nil {
 		return nil, err

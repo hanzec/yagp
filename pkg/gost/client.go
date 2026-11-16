@@ -47,6 +47,7 @@ type ServiceConfig struct {
 	Admission  string           `json:"admission,omitempty"`
 	Admissions []string         `json:"admissions,omitempty"`
 	Bypass     string           `json:"bypass,omitempty"`
+	Bypasses   []string         `json:"bypasses,omitempty"`
 	Handler    *HandlerConfig   `json:"handler,omitempty"`
 	Listener   *ListenerConfig  `json:"listener,omitempty"`
 	Forwarder  *ForwarderConfig `json:"forwarder,omitempty"`

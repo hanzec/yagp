@@ -186,6 +186,8 @@ message TransparentRedirectReply {
 message TunnelProbeEndpoint {
   string address = 1;
   bytes token = 2;
+  // Reserved probe target hosted by the exit daemon on a local Unix socket.
+  string domain_address = 3;
 }
 
 message TunnelProbeRequest {

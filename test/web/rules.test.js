@@ -202,8 +202,8 @@ describe('forwarding rule inventory', () => {
     expect(row(wrapper, 'DNS').text()).toContain('[2001:db8::8]:65535')
     expect(row(wrapper, 'Relay destination').text()).toContain('隧道目的端')
     expect(row(wrapper, 'Relay destination').find('[aria-label="启动 Relay destination"]').exists()).toBe(false)
-    expect(row(wrapper, 'Relay destination').find('[aria-label="编辑 Relay destination"]').exists()).toBe(false)
-    expect(row(wrapper, 'Relay destination').text()).toContain('隧道管理')
+    expect(row(wrapper, 'Relay destination').find('[aria-label="编辑 Relay destination"]').exists()).toBe(true)
+    expect(row(wrapper, 'Relay destination').text()).not.toContain('隧道管理')
     expect(row(wrapper, 'Unlinked port').text()).toContain('未知节点')
     expect(row(wrapper, 'Unlinked port').get('.rule-traffic-total').text()).toBe('0 B')
 
@@ -616,34 +616,39 @@ describe('forwarding rule editor and actions', () => {
     })
   })
 
-  it('edits a stopped tunnel exit policy while locking its role and listener, and copies the exit policy', async () => {
-    const exit = { ...relayRule, name: 'Saved exit', role: 'exit', protocol: 'wss', linked_tunnel_id: 8, linked_tunnel_status: 'stopped', targets: ['saved.example:443'], strategy: 'rand',
+  it('edits a running tunnel exit and stages its listener and policy for restart', async () => {
+    const exit = { ...relayRule, name: 'Saved exit', role: 'exit', protocol: 'wss', status: 'running', linked_tunnel_id: 8, linked_tunnel_status: 'running', targets: ['saved.example:443'], strategy: 'rand',
       protocol_options: { path: '/saved', tls_server_name: 'relay.example' } }
-    getRuleList.mockResolvedValue(result([exit, { ...exit, id: 20, name: 'Running exit', status: 'running', linked_tunnel_status: 'running' }, direct]))
+    getRuleList.mockResolvedValue(result([exit, direct]))
     const wrapper = mountInventory(Rules)
     await flushPromises()
     expect(row(wrapper, 'Saved exit').text()).toContain('出口')
     expect(row(wrapper, 'HTTPS').text()).toContain('未指定')
-    expect(row(wrapper, 'Running exit').find('[aria-label="编辑 Running exit"]').exists()).toBe(false)
     expect(row(wrapper, 'Saved exit').find('[aria-label="启动 Saved exit"]').exists()).toBe(false)
     await wrapper.get('[aria-label="编辑 Saved exit"]').trigger('click')
     let dialog = editDialog(wrapper)
+    expect(dialog.text()).toContain('保存后，请重启关联隧道以应用配置。')
     expect(selectField(dialog, 'node_id').props('disabled')).toBe(true)
     expect(selectField(dialog, 'role').props('disabled')).toBe(true)
-    expect(selectField(dialog, 'listen_ip').props('disabled')).toBe(true)
-    expect(field(dialog, 'listen_port').get('input').element.disabled).toBe(true)
+    expect(selectField(dialog, 'listen_ip').get('input').element.disabled).toBe(false)
+    expect(field(dialog, 'listen_port').get('input').element.disabled).toBe(false)
     expect(selectField(dialog, 'protocol').props('modelValue')).toBe('wss')
     expect(dialog.get('[data-protocol-option="path"] input').element.value).toBe('/saved')
     expect(dialog.get('[data-protocol-option="tls_server_name"] input').element.value).toBe('relay.example')
     expect(dialog.get('input[aria-label="目标地址 1"]').element.value).toBe('saved.example:443')
     await choose(selectField(dialog, 'protocol'), 'kcp')
+    await choose(selectField(dialog, 'listen_ip'), entryNode.ipv4)
+    await field(dialog, 'listen_port').get('input').setValue('9443')
     await dialog.get('input[aria-label="目标地址 1"]').setValue('updated.example:8443')
     await button(dialog, '保存端点').trigger('click')
     await flushPromises()
     expect(updateRule).toHaveBeenCalledExactlyOnceWith(exit.id, {
-      node_id: entryNode.id, name: exit.name, role: 'exit', protocol: 'kcp', listen_ip: exit.listen_ip, listen_port: exit.listen_port, remark: '',
+      node_id: entryNode.id, name: exit.name, role: 'exit', protocol: 'kcp', listen_ip: entryNode.ipv4, listen_port: 9443, remark: '',
       use_clash_ruleset: false, targets: ['updated.example:8443'], strategy: 'rand', protocol_options: {}
     })
+    expect(ElMessage.success).toHaveBeenCalledWith('端点已保存。请重启关联隧道以应用配置。')
+    expect(stopRule).not.toHaveBeenCalled()
+    expect(startRule).not.toHaveBeenCalled()
     await command(row(wrapper, 'Saved exit'), 'copy')
     dialog = editDialog(wrapper)
     expect(selectField(dialog, 'role').props('modelValue')).toBe('exit')
@@ -655,7 +660,7 @@ describe('forwarding rule editor and actions', () => {
     expect(field(dialog, 'listen_port').get('input').element.value).toBe('')
   })
 
-  it('displays every exit binding count and only offers policy editing once all associated tunnels are stopped', async () => {
+  it('edits a shared exit while a tunnel is running and explains how to restart all bindings', async () => {
     const stopped = { id: 8, status: 'stopped' }
     const running = { id: 9, status: 'running' }
     const exit = { ...relayRule, role: 'exit', name: 'Shared exit', linked_tunnel_status: 'stopped',
@@ -668,13 +673,13 @@ describe('forwarding rule editor and actions', () => {
 
     const activeRow = row(wrapper, exit.name)
     expect(activeRow.text()).toContain('关联 2 条隧道')
-    expect(activeRow.find('[aria-label="编辑 Shared exit"]').exists()).toBe(false)
-    expect(activeRow.get('a').text()).toBe('隧道管理')
+    expect(activeRow.find('a[href="/tunnels"]').exists()).toBe(false)
     expect(row(wrapper, idleExit.name).text()).toContain('关联 2 条隧道')
-    await wrapper.get('[aria-label="编辑 Idle shared exit"]').trigger('click')
+    await activeRow.get('[aria-label="编辑 Shared exit"]').trigger('click')
     const editor = editDialog(wrapper)
+    expect(editor.text()).toContain('保存后，请先停止全部关联隧道，再逐条启动以应用配置。')
     expect(selectField(editor, 'role').props('disabled')).toBe(true)
-    expect(selectField(editor, 'listen_ip').props('disabled')).toBe(true)
+    expect(selectField(editor, 'listen_ip').get('input').element.disabled).toBe(false)
   })
 
   it('binds a mapped local IP and displays its public endpoint with the same port', async () => {
@@ -788,7 +793,7 @@ describe('forwarding rule editor and actions', () => {
     })
   })
 
-  it('shows the tunnel link for a running Clash entry', async () => {
+  it('offers editing for a running legacy Clash entry', async () => {
     getRuleList.mockResolvedValueOnce(result([{
       ...relayRule, protocol: 'tcp', listen_ip: '127.0.0.1', listen_port: 443,
       use_clash_ruleset: true, targets: [], status: 'running', linked_tunnel_id: 8, tunnel_role: 'entry'
@@ -798,7 +803,17 @@ describe('forwarding rule editor and actions', () => {
     expect(row(wrapper, 'DNS').text()).not.toContain('Clash 规则集')
     expect(row(wrapper, 'DNS').text()).toContain('隧道源端')
     expect(row(wrapper, 'DNS').find('[aria-label="停止 DNS"]').exists()).toBe(false)
-    expect(row(wrapper, 'DNS').text()).toContain('隧道管理')
+    expect(row(wrapper, 'DNS').text()).not.toContain('隧道管理')
+    await row(wrapper, 'DNS').get('[aria-label="编辑 DNS"]').trigger('click')
+    const editor = editDialog(wrapper)
+    expect(selectField(editor, 'role').props('disabled')).toBe(true)
+    expect(selectField(editor, 'node_id').props('disabled')).toBe(true)
+    await field(editor, 'listen_port').get('input').setValue('1443')
+    await button(editor, '保存端点').trigger('click')
+    await flushPromises()
+    expect(updateRule).toHaveBeenCalledExactlyOnceWith(relayRule.id, {
+      node_id: entryNode.id, name: relayRule.name, protocol: 'tcp', listen_ip: '127.0.0.1', listen_port: 1443, remark: ''
+    })
   })
 
   it('keeps edits on a failed save, leaves existing targets unchanged, and copies only endpoint settings', async () => {

@@ -55,8 +55,9 @@ func (r *RuleRepository) Update(rule *model.GostRule) error {
 				return err
 			}
 		}
-		return tx.Omit("relay_counter_id", "relay_input_bytes", "relay_output_bytes",
-			"relay_last_input_bytes", "relay_last_output_bytes", "relay_service_created_at").Save(rule).Error
+		return tx.Model(rule).Select("NodeID", "Name", "Role", "Protocol", "ListenIP", "ListenPort", "ProtocolOptions",
+			"Targets", "UseClashRuleset", "UseOriginalTarget", "RulesetIDs", "ManualDomains", "Strategy", "EnableTLS",
+			"Remark", "AppliedEndpoint", "UpdatedAt").Updates(rule).Error
 	})
 }
 
@@ -134,22 +135,23 @@ func (r *RuleRepository) EntranceBindings(ruleIDs []uint) ([]model.GostTunnel, e
 func (r *RuleRepository) ListenerConflicts(nodeID uint, protocol model.RuleProtocol, ip string, port int, excludeID ...uint) (bool, error) {
 	tunnels := r.DB.Model(&model.GostTunnel{}).Select("id").Where("entry_node_id = ?", nodeID)
 	db := r.DB.Model(&model.GostRule{}).
-		Where("listen_port = ?", port).
+		Where("(listen_port = ? OR applied_endpoint IS NOT NULL)", port).
 		Where("((type = ? AND node_id = ?) OR (type = ? AND tunnel_id IN (?)))",
 			model.RuleTypeForward, nodeID, model.RuleTypeTunnel, tunnels)
-	if ip != "" {
-		db = db.Where("listen_ip IN ?", []string{"", ip})
-	}
 	if len(excludeID) > 0 {
 		db = db.Where("id != ?", excludeID[0])
 	}
-	var protocols []model.RuleProtocol
-	if err := db.Pluck("protocol", &protocols).Error; err != nil {
+	var rules []model.GostRule
+	if err := db.Select("protocol", "listen_ip", "listen_port", "applied_endpoint").Find(&rules).Error; err != nil {
 		return false, err
 	}
 	network := protocol.ListenerNetwork()
-	return slices.ContainsFunc(protocols, func(saved model.RuleProtocol) bool {
-		return saved.ListenerNetwork() == network
+	matches := func(listener model.EndpointConfig) bool {
+		return listener.ListenPort == port && listener.Protocol.ListenerNetwork() == network &&
+			(ip == "" || listener.ListenIP == "" || listener.ListenIP == ip)
+	}
+	return slices.ContainsFunc(rules, func(rule model.GostRule) bool {
+		return matches(rule.EndpointConfig()) || rule.AppliedEndpoint != nil && matches(*rule.AppliedEndpoint)
 	}), nil
 }
 
@@ -168,6 +170,13 @@ func (r *RuleRepository) UpdateRuntime(id uint, serviceID string, status model.R
 	return r.UpdateFields(&model.GostRule{}, id, map[string]interface{}{
 		"service_id": serviceID,
 		"status":     status,
+	})
+}
+
+// StopEndpoint releases both the active listener and its saved configuration.
+func (r *RuleRepository) StopEndpoint(id uint) error {
+	return r.UpdateFields(&model.GostRule{}, id, map[string]any{
+		"service_id": "", "status": model.RuleStatusStopped, "applied_endpoint": nil,
 	})
 }
 

@@ -42,8 +42,20 @@ func (s *controlServer) StartTunnelProbe(ctx context.Context, _ *emptypb.Empty) 
 	}
 	token := make([]byte, sha256.Size)
 	rand.Read(token)
-	go serveTunnelProbe(listener, token, time.Now().Add(tunnelProbeTTL))
-	return &nodegrpc.TunnelProbeEndpoint{Address: listener.Addr().String(), Token: token}, nil
+	endpoint := &nodegrpc.TunnelProbeEndpoint{Address: listener.Addr().String(), Token: token}
+	domain := s.probeDomain
+	if domain != nil {
+		endpoint.DomainAddress = nodegrpc.TunnelProbeDomain
+		domain.pending.Store([sha256.Size]byte(token), listener)
+	}
+	deadline := time.Now().Add(tunnelProbeTTL)
+	go func() {
+		if domain != nil {
+			defer domain.pending.Delete([sha256.Size]byte(token))
+		}
+		serveTunnelProbe(listener, token, deadline)
+	}()
+	return endpoint, nil
 }
 
 func serveTunnelProbe(listener *net.TCPListener, token []byte, deadline time.Time) {
@@ -68,7 +80,8 @@ func serveTunnelProbe(listener *net.TCPListener, token []byte, deadline time.Tim
 func (s *controlServer) ProbeTunnel(ctx context.Context, req *nodegrpc.TunnelProbeRequest) (*nodegrpc.TunnelProbeReply, error) {
 	name, address, token := req.GetChainName(), req.GetAddress(), req.GetToken()
 	target, err := netip.ParseAddrPort(address)
-	if err != nil || target.Addr() != netip.MustParseAddr(tunnelProbeHost) || target.Port() == 0 || len(token) != sha256.Size ||
+	validTarget := address == nodegrpc.TunnelProbeDomain || (err == nil && target.Addr() == netip.MustParseAddr(tunnelProbeHost) && target.Port() != 0)
+	if !validTarget || len(token) != sha256.Size ||
 		!tunnelChainName.MatchString(name) || strings.HasSuffix(name, "-clash-chain") || strings.HasSuffix(name, "-shared-chain") {
 		return nil, status.Error(codes.InvalidArgument, "无效的隧道测试请求")
 	}
@@ -226,6 +239,9 @@ func tunnelProbeConfig(chain json.RawMessage, chainName, socket, target string) 
 	service.Listener.Type = "unix"
 	service.Handler.Chain = chainName
 	service.Forwarder.Nodes[0].Network = "tcp"
+	if target == nodegrpc.TunnelProbeDomain {
+		service.Forwarder.Nodes[0].Network = "unix"
+	}
 	return json.Marshal(struct {
 		Services []*gost.ServiceConfig `json:"services"`
 		Chains   []json.RawMessage     `json:"chains"`

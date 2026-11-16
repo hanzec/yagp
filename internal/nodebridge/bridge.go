@@ -107,6 +107,16 @@ func run(ctx context.Context, cfg Config, dial func(context.Context, string, str
 		},
 	}
 	defer control.client.CloseIdleConnections()
+	if cfg.ConfigFile != "" {
+		probe, err := listenTunnelProbeDomain(cfg.ConfigFile)
+		if err != nil {
+			log.Printf("listen for tunnel probe domain: %v", err)
+		} else {
+			defer probe.listener.Close()
+			control.probeDomain = probe
+			go probe.serve()
+		}
+	}
 	manager, firewallErr := NewFirewallManager(cfg.NodeID, cfg.Firewall)
 	policy := newFirewallPolicy(control, manager)
 	if firewallErr != nil {
@@ -163,6 +173,7 @@ type controlServer struct {
 	nodegrpc.UnimplementedV1Server
 	config                   Config
 	client                   *http.Client
+	probeDomain              *tunnelProbeDomain
 	firewall                 atomic.Pointer[FirewallManager]
 	firewallChanged          chan struct{}
 	firewallRestartRequested atomic.Uint64

@@ -222,8 +222,12 @@ func (s *TunnelService) startEndpointTunnel(t *model.GostTunnel) error {
 	if err := validateTunnelEndpointRoles(t.EntryRule, t.ExitRule); err != nil {
 		return err
 	}
+	if err := s.checkEndpointRestart(t); err != nil {
+		return err
+	}
+	t.RelayPort = t.ExitRule.ListenPort
 	if t.ExitRule.Role == model.EndpointRoleExit {
-		t.Protocol, t.RelayPort = string(t.ExitRule.Protocol), t.ExitRule.ListenPort
+		t.Protocol = string(t.ExitRule.Protocol)
 		t.ProtocolOptions = nil
 	}
 	if err := validateTunnelTargets(t); err != nil {
@@ -357,6 +361,12 @@ func (s *TunnelService) provisionEndpointRelay(t *model.GostTunnel, entryClient,
 	if err != nil {
 		return err
 	}
+	if relay.Bypass != "" {
+		if err := exitClient.EnsureTunnelProbeBypass(); err != nil {
+			return err
+		}
+		relay.Bypasses = []string{gost.TunnelProbeBypassName}
+	}
 	if len(peers) != 0 {
 		if err := s.configureSharedRelay(exitClient, relay, append(peers, t)); err != nil {
 			return err
@@ -445,7 +455,9 @@ func (s *TunnelService) cleanupEndpointTunnel(t *model.GostTunnel, save bool) er
 	if err != nil {
 		return err
 	}
-	source := endpointTargetRule(t)
+	active := *t
+	active.EntryRule, active.ExitRule = t.EntryRule.WithAppliedEndpoint(), t.ExitRule.WithAppliedEndpoint()
+	source := endpointTargetRule(&active)
 	transparent := source.UseOriginalTarget || source.UseClashRuleset
 	if len(entryPeers) > 0 {
 		if err := s.restoreEndpointIngress(entryClient, entryPeers); err != nil {
@@ -507,12 +519,12 @@ func (s *TunnelService) cleanupEndpointTunnel(t *model.GostTunnel, save bool) er
 	if err := s.tunnelRepo.DB.Transaction(func(tx *gorm.DB) error {
 		rules := repository.NewRuleRepository(tx)
 		if len(entryPeers) == 0 {
-			if err := rules.UpdateRuntime(t.EntryRule.ID, "", model.RuleStatusStopped); err != nil {
+			if err := rules.StopEndpoint(t.EntryRule.ID); err != nil {
 				return err
 			}
 		}
 		if len(exitPeers) == 0 {
-			if err := rules.UpdateRuntime(t.ExitRule.ID, "", model.RuleStatusStopped); err != nil {
+			if err := rules.StopEndpoint(t.ExitRule.ID); err != nil {
 				return err
 			}
 		}
@@ -523,6 +535,10 @@ func (s *TunnelService) cleanupEndpointTunnel(t *model.GostTunnel, save bool) er
 	if len(entryPeers) == 0 {
 		t.EntryRule.ServiceID = ""
 		t.EntryRule.Status = model.RuleStatusStopped
+		t.EntryRule.AppliedEndpoint = nil
+	}
+	if len(exitPeers) == 0 {
+		t.ExitRule.AppliedEndpoint = nil
 	}
 	t.Status = model.TunnelStatusStopped
 	return nil
