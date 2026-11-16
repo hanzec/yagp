@@ -143,7 +143,7 @@ systemd 服务启动失败时执行 `journalctl -u yagp-daemon -u yagp-gost`。�
 | 查看节点流量 | **节点清单**和**节点详情**按 GB 显示本期用量和上限。设置上限时显示当前配额周期的计量值。无上限时显示已采集的节点转发和出口 Relay 累计用量，上限显示 `Unlimited`。无用量数据时显示「未统计」。 |
 | 查看实时流量 | **运行总览**。隧道流量按出口 Relay 统计，运行中的旧隧道在下次启动后开始采集。 |
 | 查看或重启 Gost | **节点详情 → 服务状态 → Gost**。需要 systemd 版守护进程，重启会中断活动连接。 |
-| 查看自动防火墙规则 | **节点详情 → 服务状态 → 自动防火墙规则**。显示放行后端、同步状态、关闭原因和开启步骤。 |
+| 查看或启用自动防火墙规则 | **节点详情 → 服务状态 → 自动防火墙规则**。显示放行后端、同步状态和关闭原因。未启用时可点击 **启用自动放行**。 |
 | 预览 nftables 规则 | **节点详情 → 配置 → nft 配置**。旧版守护进程显示上次保存的规则。 |
 | 限制 Relay 来源 IP | 新建隧道自动使用入口节点的来源 IP 生成白名单。Gost `admissions` 仅加入公网来源 IP。入口暂无来源 IP 时，上报后自动生效。 |
 | 订阅 Clash 规则集 | **系统设置 → Clash 规则集**。可为多个 HTTPS 订阅命名，支持 `payload:` YAML 和文本规则集。 |
@@ -153,14 +153,11 @@ systemd 服务启动失败时执行 `journalctl -u yagp-daemon -u yagp-gost`。�
 
 `yagp-daemon` 可以自动放行 Gost 转发和 Relay 的运行中监听端口。功能默认关闭。通过节点安装脚本部署时，配置文件位于 `/etc/yagp-daemon/node.yaml`。守护进程启动时根据发行版、节点配置和主机上的 UFW 运行状态选择自动放行后端。
 
+在节点详情的 **服务状态 → 自动防火墙规则** 点击 **启用自动放行** 后，守护程序会在实际使用的 `node.yaml` 中将 `firewall.enabled` 写为 `true`，随即开始同步规则。nftables 所用的表和入站基链、firewalld 所用的 policy 需已在节点配置中指定。节点使用支持远程启用的 `yagp-daemon` 后即可在面板操作。
+
 #### UFW
 
-Ubuntu 和 Ubuntu 衍生发行版使用 UFW。Debian 等其他非 RHEL 系发行版在 UFW 正在运行、且 `firewall.table` 和 `firewall.input_chain` 均未填写时，也使用 UFW。用 `sudo ufw status` 确认状态为 `active`。自动放行还要求 UFW 已启用，systemd 主机可用 `systemctl is-enabled ufw.service` 检查。将以下内容合并到节点的 `node.yaml`，然后重启 `yagp-daemon`。
-
-```yaml
-firewall:
-  enabled: true
-```
+Ubuntu 和 Ubuntu 衍生发行版使用 UFW。Debian 等其他非 RHEL 系发行版在 UFW 正在运行、且 `firewall.table` 和 `firewall.input_chain` 均未填写时，也使用 UFW。用 `sudo ufw status` 确认状态为 `active`。自动放行还要求 UFW 已启用，systemd 主机可用 `systemctl is-enabled ufw.service` 检查。确认后可在面板点击 **启用自动放行**。
 
 UFW 缺失、停用或未运行时，自动放行不可用，面板会显示错误。UFW 的启停、重载和主机防火墙策略由管理员维护。
 

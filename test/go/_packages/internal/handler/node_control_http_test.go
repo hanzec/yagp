@@ -39,7 +39,7 @@ func (f *handlerHTTPFixture) enrollFixtureNode(t *testing.T, name string, nodeCo
 	dispatch := nodegrpc.NewDispatcher(nodeControl,
 		nodegrpc.V1_Execute_FullMethodName, nodegrpc.V1_GetGostServiceStatus_FullMethodName, nodegrpc.V1_RestartGostService_FullMethodName,
 		nodegrpc.V1_GetGostLogs_FullMethodName, nodegrpc.V1_GetNftConfig_FullMethodName,
-		nodegrpc.V1_GetFirewallStatus_FullMethodName,
+		nodegrpc.V1_GetFirewallStatus_FullMethodName, nodegrpc.V1_EnableFirewall_FullMethodName,
 		nodegrpc.V1_GetUpgradeStatus_FullMethodName, nodegrpc.V1_StartUpgrade_FullMethodName, nodegrpc.V1_SyncTrafficQuota_FullMethodName)
 	startTestReportStream(t, t.Context(), startTestReportServer(t, f.db), node, func(ctx context.Context, method string, body []byte) ([]byte, error) {
 		if err := nodeControl.before(method); err != nil {
@@ -52,16 +52,17 @@ func (f *handlerHTTPFixture) enrollFixtureNode(t *testing.T, name string, nodeCo
 
 type handlerNodeControl struct {
 	nodegrpc.UnimplementedV1Server
-	admin       http.Handler
-	mu          sync.Mutex
-	nft         string
-	nftLive     string
-	firewall    *nodegrpc.FirewallStatus
-	upgrade     *nodegrpc.NodeUpgradeRequest
-	quota       *nodegrpc.TrafficQuotaRequest
-	calibrates  bool
-	failures    map[string]codes.Code
-	restartCall int
+	admin           http.Handler
+	mu              sync.Mutex
+	nft             string
+	nftLive         string
+	firewall        *nodegrpc.FirewallStatus
+	firewallEnabled *nodegrpc.FirewallStatus
+	upgrade         *nodegrpc.NodeUpgradeRequest
+	quota           *nodegrpc.TrafficQuotaRequest
+	calibrates      bool
+	failures        map[string]codes.Code
+	restartCall     int
 }
 
 func (n *handlerNodeControl) reject(method string, code codes.Code) {
@@ -116,6 +117,16 @@ func (n *handlerNodeControl) GetNftConfig(context.Context, *emptypb.Empty) (*nod
 func (n *handlerNodeControl) GetFirewallStatus(context.Context, *emptypb.Empty) (*nodegrpc.FirewallStatus, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	return n.firewall, nil
+}
+
+func (n *handlerNodeControl) EnableFirewall(ctx context.Context, request *emptypb.Empty) (*nodegrpc.FirewallStatus, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.firewallEnabled == nil {
+		return n.UnimplementedV1Server.EnableFirewall(ctx, request)
+	}
+	n.firewall = n.firewallEnabled
 	return n.firewall, nil
 }
 
@@ -553,6 +564,46 @@ func TestNodeHTTPFirewallStatus(t *testing.T) {
 	}
 	control.reject(nodegrpc.V1_GetFirewallStatus_FullMethodName, codes.Unimplemented)
 	f.request(t, "GET", path, "", 501)
+}
+
+func TestNodeHTTPEnableFirewall(t *testing.T) {
+	f := newHandlerHTTPFixture(t)
+	f.registerNodes()
+	f.registerSettings()
+	control := &handlerNodeControl{
+		firewall: &nodegrpc.FirewallStatus{Backend: "ufw", Supported: true, DisabledReason: "not_configured"},
+		failures: make(map[string]codes.Code),
+	}
+	node := f.enrollFixtureNode(t, "firewall-enable", control)
+	path := fmt.Sprintf("/nodes/%d/firewall", node.ID)
+	f.request(t, "POST", "/nodes/0/firewall/enable", "", http.StatusBadRequest)
+	f.request(t, "POST", "/nodes/999/firewall/enable", "", http.StatusNotFound)
+	f.request(t, "POST", path+"/enable", "", http.StatusNotImplemented)
+	control.reject(nodegrpc.V1_EnableFirewall_FullMethodName, codes.FailedPrecondition)
+	if result := f.request(t, "POST", path+"/enable", "", http.StatusConflict); result.Message != "fixture node error" {
+		t.Fatalf("enable prerequisite message = %q", result.Message)
+	}
+	if result := handlerData[nodeFirewallStatus](t, f.request(t, "GET", path, "", http.StatusOK)); result.Managed || result.DisabledReason != "not_configured" {
+		t.Fatalf("failed enable changed the firewall status: %+v", result)
+	}
+
+	// The daemon can save the enablement before its first synchronization succeeds.
+	control.reject(nodegrpc.V1_EnableFirewall_FullMethodName, codes.OK)
+	lastError := "automatic port allowance requires UFW to be enabled and active"
+	control.mu.Lock()
+	control.firewallEnabled = &nodegrpc.FirewallStatus{Backend: "ufw", Supported: false, Managed: true, LastError: &lastError}
+	control.mu.Unlock()
+	result := handlerData[nodeFirewallStatus](t, f.request(t, "POST", path+"/enable", "", http.StatusOK))
+	if result.Backend != "ufw" || !result.Managed || result.Synchronized || result.DisabledReason != "" || result.LastError == nil || *result.LastError != lastError {
+		t.Fatalf("unexpected enable response: %+v", result)
+	}
+	if refreshed := handlerData[nodeFirewallStatus](t, f.request(t, "GET", path, "", http.StatusOK)); !refreshed.Managed {
+		t.Fatalf("firewall status did not reflect enablement: %+v", refreshed)
+	}
+	audit := handlerData[handlerPage[model.OperationLog]](t, f.request(t, "GET", "/logs?resource_type=node", "", http.StatusOK))
+	if audit.Total != 1 || len(audit.List) != 1 || audit.List[0].ResourceID != node.ID || audit.List[0].Username != "test-admin" || audit.List[0].Details != "启用自动防火墙规则" {
+		t.Fatalf("only successful firewall enablement should appear in the audit log: %+v", audit)
+	}
 }
 
 func TestNodeHTTPUpgradeLifecycle(t *testing.T) {

@@ -68,8 +68,7 @@ func TestFirewallSyncRecordsGostReadFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	control.firewall = manager
-	control.syncFirewall(context.Background())
+	control.syncFirewall(context.Background(), manager)
 	state := manager.Status()
 	if state.Synchronized || state.LastError == nil || !strings.Contains(*state.LastError, "missing services") {
 		t.Fatalf("firewall status = %+v", state)

@@ -105,6 +105,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 		authRoutes.GET("/nodes/:id/gost/logs", nodeHandler.GostLogs)
 		authRoutes.GET("/nodes/:id/nft", nodeHandler.GetNftConfig)
 		authRoutes.GET("/nodes/:id/firewall", nodeHandler.GetFirewallStatus)
+		authRoutes.POST("/nodes/:id/firewall/enable", nodeHandler.EnableFirewall)
 
 		// 规则管理
 		authRoutes.GET("/rules", ruleHandler.List)

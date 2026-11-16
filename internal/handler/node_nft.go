@@ -36,6 +36,24 @@ func (h *NodeHandler) GetFirewallStatus(c *gin.Context) {
 		nodeOperationError(c, err)
 		return
 	}
+	response.Success(c, firewallStatusResponse(state))
+}
+
+func (h *NodeHandler) EnableFirewall(c *gin.Context) {
+	client, id := h.nodeClient(c)
+	if client == nil {
+		return
+	}
+	state, err := client.EnableFirewall(c.Request.Context())
+	if err != nil {
+		nodeOperationError(c, err)
+		return
+	}
+	h.recordOperation(c, id, "启用自动防火墙规则")
+	response.Success(c, firewallStatusResponse(state))
+}
+
+func firewallStatusResponse(state *nodegrpc.FirewallStatus) nodeFirewallStatus {
 	result := nodeFirewallStatus{
 		Supported: state.GetSupported(), Managed: state.GetManaged(), Synchronized: state.GetSynchronized(),
 		LastError: state.LastError, Backend: state.GetBackend(), DisabledReason: state.GetDisabledReason(),
@@ -44,7 +62,7 @@ func (h *NodeHandler) GetFirewallStatus(c *gin.Context) {
 		lastSync := timestamp.AsTime()
 		result.LastSync = &lastSync
 	}
-	response.Success(c, result)
+	return result
 }
 
 func nftTemplate(table string) string {

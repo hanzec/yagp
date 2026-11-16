@@ -21,7 +21,9 @@ func (s *controlServer) maintainFirewall(ctx context.Context) {
 	ticker := time.NewTicker(firewallSyncInterval)
 	defer ticker.Stop()
 	for ctx.Err() == nil {
-		s.syncFirewall(ctx)
+		if manager := s.firewallManager(); manager != nil && manager.Status().DisabledReason == "" {
+			s.syncFirewall(ctx, manager)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -31,15 +33,15 @@ func (s *controlServer) maintainFirewall(ctx context.Context) {
 	}
 }
 
-func (s *controlServer) syncFirewall(ctx context.Context) {
+func (s *controlServer) syncFirewall(ctx context.Context, manager *FirewallManager) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	ports, err := s.firewallPorts(ctx)
 	if err != nil {
-		s.firewall.recordSyncError(err)
+		manager.recordSyncError(err)
 		return
 	}
-	_ = s.firewall.Reconcile(ctx, ports)
+	_ = manager.Reconcile(ctx, ports)
 }
 
 func (s *controlServer) firewallPorts(ctx context.Context) (FirewallPorts, error) {

@@ -110,6 +110,10 @@ export function getNodeFirewallStatus(id) {
     return request.get(`/nodes/${id}/firewall`, { silentError: true })
 }
 
+export function enableNodeFirewall(id) {
+    return request.post(`/nodes/${id}/firewall/enable`, null, { timeout: 25000, silentError: true })
+}
+
 export function getNodeUpgradeStatus(id) {
     return request.get(`/nodes/${id}/upgrade`, { silentError: true })
 }

@@ -96,7 +96,8 @@ func run(ctx context.Context, cfg Config, dial func(context.Context, string, str
 	}
 
 	control := &controlServer{
-		config: cfg,
+		config:          cfg,
+		firewallChanged: make(chan struct{}, 1),
 		client: &http.Client{
 			Transport: &http.Transport{},
 			Timeout:   5 * time.Second,
@@ -139,10 +140,7 @@ func run(ctx context.Context, cfg Config, dial func(context.Context, string, str
 		cancelChannel()
 		firewallWorker.Wait()
 	}()
-	if manager.Status().DisabledReason == "" {
-		control.firewallChanged = make(chan struct{}, 1)
-		firewallWorker.Go(func() { control.maintainFirewall(channelCtx) })
-	}
+	firewallWorker.Go(func() { control.maintainFirewall(channelCtx) })
 	go maintainCredentials(channelCtx, credentials)
 	go maintainPanelChannel(channelCtx, credentials, cfg.ConfigFile, &current, controlDispatcher(control))
 
@@ -165,6 +163,7 @@ type controlServer struct {
 	nodegrpc.UnimplementedV1Server
 	config          Config
 	client          *http.Client
+	firewallMu      sync.RWMutex
 	firewall        *FirewallManager
 	firewallChanged chan struct{}
 }
