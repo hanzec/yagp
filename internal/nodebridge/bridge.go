@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -140,7 +139,7 @@ func run(ctx context.Context, cfg Config, dial func(context.Context, string, str
 		cancelChannel()
 		firewallWorker.Wait()
 	}()
-	if firewallErr == nil && runtime.GOOS == "linux" && manager.Status().Managed {
+	if manager.Status().DisabledReason == "" {
 		control.firewallChanged = make(chan struct{}, 1)
 		firewallWorker.Go(func() { control.maintainFirewall(channelCtx) })
 	}

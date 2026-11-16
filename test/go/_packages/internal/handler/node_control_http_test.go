@@ -532,6 +532,13 @@ func TestNodeHTTPFirewallStatus(t *testing.T) {
 	if !read.Supported || read.Managed || read.Synchronized || read.LastSync != nil || read.LastError != nil {
 		t.Fatalf("unmanaged firewall status = %+v", read)
 	}
+	control.mu.Lock()
+	control.firewall = &nodegrpc.FirewallStatus{Supported: true, Backend: "nftables", DisabledReason: "explicitly_disabled"}
+	control.mu.Unlock()
+	read = handlerData[nodeFirewallStatus](t, f.request(t, "GET", path, "", 200))
+	if read.Managed || read.Backend != "nftables" || read.DisabledReason != "explicitly_disabled" {
+		t.Fatalf("disabled firewall status = %+v", read)
+	}
 
 	lastSync := time.Date(2026, 11, 13, 3, 30, 0, 0, time.UTC)
 	lastError := "missing firewall jump"

@@ -1807,15 +1807,16 @@ func (x *TunnelProbeReply) GetRoundTripMs() int64 {
 }
 
 type FirewallStatus struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Supported     bool                   `protobuf:"varint,1,opt,name=supported,proto3" json:"supported,omitempty"`
-	Managed       bool                   `protobuf:"varint,2,opt,name=managed,proto3" json:"managed,omitempty"`
-	Synchronized  bool                   `protobuf:"varint,3,opt,name=synchronized,proto3" json:"synchronized,omitempty"`
-	LastSync      *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=last_sync,json=lastSync,proto3" json:"last_sync,omitempty"`
-	LastError     *string                `protobuf:"bytes,5,opt,name=last_error,json=lastError,proto3,oneof" json:"last_error,omitempty"`
-	Backend       string                 `protobuf:"bytes,6,opt,name=backend,proto3" json:"backend,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Supported      bool                   `protobuf:"varint,1,opt,name=supported,proto3" json:"supported,omitempty"`
+	Managed        bool                   `protobuf:"varint,2,opt,name=managed,proto3" json:"managed,omitempty"`
+	Synchronized   bool                   `protobuf:"varint,3,opt,name=synchronized,proto3" json:"synchronized,omitempty"`
+	LastSync       *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=last_sync,json=lastSync,proto3" json:"last_sync,omitempty"`
+	LastError      *string                `protobuf:"bytes,5,opt,name=last_error,json=lastError,proto3,oneof" json:"last_error,omitempty"`
+	Backend        string                 `protobuf:"bytes,6,opt,name=backend,proto3" json:"backend,omitempty"`
+	DisabledReason string                 `protobuf:"bytes,7,opt,name=disabled_reason,json=disabledReason,proto3" json:"disabled_reason,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *FirewallStatus) Reset() {
@@ -1886,6 +1887,13 @@ func (x *FirewallStatus) GetLastError() string {
 func (x *FirewallStatus) GetBackend() string {
 	if x != nil {
 		return x.Backend
+	}
+	return ""
+}
+
+func (x *FirewallStatus) GetDisabledReason() string {
+	if x != nil {
+		return x.DisabledReason
 	}
 	return ""
 }
@@ -2029,7 +2037,7 @@ const file_node_proto_rawDesc = "" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x14\n" +
 	"\x05token\x18\x03 \x01(\fR\x05token\"6\n" +
 	"\x10TunnelProbeReply\x12\"\n" +
-	"\rround_trip_ms\x18\x01 \x01(\x03R\vroundTripMs\"\xf2\x01\n" +
+	"\rround_trip_ms\x18\x01 \x01(\x03R\vroundTripMs\"\x9b\x02\n" +
 	"\x0eFirewallStatus\x12\x1c\n" +
 	"\tsupported\x18\x01 \x01(\bR\tsupported\x12\x18\n" +
 	"\amanaged\x18\x02 \x01(\bR\amanaged\x12\"\n" +
@@ -2037,7 +2045,8 @@ const file_node_proto_rawDesc = "" +
 	"\tlast_sync\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\blastSync\x12\"\n" +
 	"\n" +
 	"last_error\x18\x05 \x01(\tH\x00R\tlastError\x88\x01\x01\x12\x18\n" +
-	"\abackend\x18\x06 \x01(\tR\abackendB\r\n" +
+	"\abackend\x18\x06 \x01(\tR\abackend\x12'\n" +
+	"\x0fdisabled_reason\x18\a \x01(\tR\x0edisabledReasonB\r\n" +
 	"\v_last_error*\xc0\x01\n" +
 	"\x19TransparentRedirectAction\x12+\n" +
 	"'TRANSPARENT_REDIRECT_ACTION_UNSPECIFIED\x10\x00\x12'\n" +

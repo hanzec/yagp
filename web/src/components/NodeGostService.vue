@@ -1,12 +1,9 @@
 <template>
   <section id="node-gost-service" aria-labelledby="node-gost-title">
     <header class="ops-panel-header">
-      <div class="gost-title">
-        <h2 class="ops-section-title" id="node-gost-title" tabindex="-1"><el-icon aria-hidden="true"><Monitor /></el-icon>Gost 服务</h2>
-        <span v-if="service && !statusError" class="ops-status" :class="'is-' + statusTone">{{ statusLabel }}</span>
-      </div>
+      <h2 class="ops-section-title" id="node-gost-title" tabindex="-1"><el-icon aria-hidden="true"><Monitor /></el-icon>服务状态</h2>
       <div class="gost-actions">
-        <el-button :icon="Refresh" :loading="statusLoading || logsLoading" :disabled="restarting" @click="refresh">刷新</el-button>
+        <el-button :icon="Refresh" :loading="statusLoading || firewallLoading || logsLoading" :disabled="restarting" @click="refresh">刷新</el-button>
         <el-button
           :icon="SwitchButton"
           type="warning"
@@ -18,9 +15,14 @@
       </div>
     </header>
 
-    <div class="gost-status" :aria-busy="statusLoading || restarting">
+    <section class="gost-status" aria-labelledby="gost-status-title" :aria-busy="statusLoading || restarting">
+      <div class="gost-title">
+        <h3 class="ops-subsection-title" id="gost-status-title">Gost</h3>
+        <span v-if="service && !statusError" class="ops-status" :class="'is-' + statusTone" role="status">{{ statusLabel }}</span>
+      </div>
       <p v-if="statusError" class="gost-error" role="alert">{{ statusError }}</p>
       <dl v-else-if="service" class="ops-panel-details">
+        <div><dt>后端类型</dt><dd class="ops-mono">systemd</dd></div>
         <div><dt>服务单元</dt><dd class="ops-mono">{{ service.unit || '未知' }}</dd></div>
         <div><dt>加载状态</dt><dd class="ops-mono">{{ service.load_state || '未知' }}</dd></div>
         <div><dt>子状态</dt><dd class="ops-mono">{{ service.sub_state || '未知' }}</dd></div>
@@ -29,7 +31,7 @@
         {{ statusLoading ? '正在读取服务状态…' : '节点当前未在线。可手动刷新以查询服务状态。' }}
       </p>
       <p v-if="restartError" class="gost-error" role="alert">{{ restartError }}</p>
-    </div>
+    </section>
 
     <div class="gost-log-section">
       <div class="gost-log-actions">
@@ -58,6 +60,31 @@
         </ol>
       </div>
     </div>
+
+    <section id="node-firewall-status" class="gost-status firewall-status" aria-labelledby="firewall-status-title" :aria-busy="firewallLoading">
+      <h3 class="ops-subsection-title" id="firewall-status-title">自动防火墙规则</h3>
+      <p v-if="firewallError" class="gost-error" role="alert">{{ firewallError }}</p>
+      <template v-else-if="firewall">
+        <dl class="ops-panel-details">
+          <div><dt>后端类型</dt><dd class="ops-mono">{{ firewallBackend }}</dd></div>
+          <div>
+            <dt>启动状态</dt>
+            <dd><span class="ops-status" :class="automaticRules ? 'is-success' : 'is-muted'">{{ automaticRules ? '已启用' : '未启用' }}</span></dd>
+          </div>
+          <div v-if="!automaticRules" class="firewall-disabled-reason"><dt>未启用原因</dt><dd>{{ firewallDisabledReason }}</dd></div>
+          <div v-if="automaticRules">
+            <dt>同步状态</dt>
+            <dd><span class="ops-status" :class="firewallSync.tone">{{ firewallSync.label }}</span></dd>
+          </div>
+          <div v-if="firewall.last_sync"><dt>最近成功同步</dt><dd><time :datetime="firewall.last_sync">{{ formatTime(firewall.last_sync) }}</time></dd></div>
+        </dl>
+        <p v-if="automaticRules && firewallHelp" class="ops-muted">{{ firewallHelp }}</p>
+        <p v-if="firewall.last_error" class="gost-error" role="alert">{{ firewall.last_error }}</p>
+      </template>
+      <p v-else class="ops-muted" role="status">
+        {{ firewallLoading ? '正在读取防火墙状态…' : legacyFirewall ? '守护程序版本较旧，无法查询防火墙状态。' : '节点当前未在线。' }}
+      </p>
+    </section>
   </section>
 </template>
 
@@ -65,8 +92,9 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ArrowDown, Document, Monitor, Refresh, SwitchButton } from '@element-plus/icons-vue'
+import { formatTime } from '@/utils/node-display'
 import { confirmPanelAction } from '@/utils/panel-dialog'
-import { getGostLogs, getGostService, restartGostService } from '@/api/node'
+import { getGostLogs, getGostService, getNodeFirewallStatus, restartGostService } from '@/api/node'
 
 const props = defineProps({ node: { type: Object, required: true } })
 defineEmits(['upgrade'])
@@ -74,6 +102,10 @@ const service = ref(null)
 const logs = ref([])
 const logsOpen = ref(false)
 const statusLoading = ref(false)
+const firewall = ref(null)
+const firewallLoading = ref(false)
+const firewallError = ref('')
+const legacyFirewall = ref(false)
 const logsLoading = ref(false)
 const restarting = ref(false)
 const statusError = ref('')
@@ -89,6 +121,35 @@ const statusTone = computed(() => ({ active: 'success', failed: 'danger', activa
 const priorityLabels = ['紧急', '警报', '严重', '错误', '警告', '通知', '信息', '调试']
 const dateFormatter = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'medium' })
 const formatTimestamp = (microseconds) => microseconds ? dateFormatter.format(Number(microseconds) / 1000) : '未知时间'
+
+const firewallBackend = computed(() => {
+  const backend = firewall.value?.backend
+  return backend === 'ufw' ? 'UFW' : backend || '未识别'
+})
+const automaticRules = computed(() => firewall.value?.managed && !firewall.value.disabled_reason)
+const firewallDisabledReason = computed(() => {
+  switch (firewall.value?.disabled_reason) {
+    case 'explicitly_disabled': return '节点配置将 firewall.enabled 设为 false。'
+    case 'not_configured': return '节点未配置自动放行，默认关闭。'
+    case 'invalid_configuration': return '节点的防火墙配置无效。'
+    case 'unsupported_environment': return '当前节点环境不支持自动放行。'
+    default: return '节点配置未启用自动放行。'
+  }
+})
+const firewallHelp = computed(() => {
+  switch (firewall.value?.backend) {
+    case 'ufw': return '自动放行需要主机上的 UFW 已启用并运行。'
+    case 'firewalld': return '自动放行需要 firewalld 已启用并运行，以及管理员配置的入站 policy。'
+    case 'nftables': return '管理员在主机 inet input 链中接入 YAGP 放行链。'
+    default: return ''
+  }
+})
+const firewallSync = computed(() => {
+  if (!firewall.value.supported) return { label: '后端不可用', tone: 'is-danger' }
+  if (firewall.value.synchronized) return { label: '已同步', tone: 'is-success' }
+  if (firewall.value.last_error) return { label: '同步异常', tone: 'is-danger' }
+  return { label: '待同步', tone: 'is-warning' }
+})
 
 const readLogs = async () => {
   if (logsLoading.value) return
@@ -118,7 +179,26 @@ const readStatus = async () => {
   }
 }
 
-const refresh = () => Promise.all([readStatus(), logsOpen.value && readLogs()])
+const readFirewall = async () => {
+  if (firewallLoading.value) return
+  firewallLoading.value = true
+  firewall.value = null
+  firewallError.value = ''
+  legacyFirewall.value = false
+  try {
+    const res = await getNodeFirewallStatus(props.node.id)
+    firewall.value = res.data
+  } catch (error) {
+    legacyFirewall.value = error.response?.status === 501
+    if (!legacyFirewall.value) {
+      firewallError.value = error.response?.data?.message || '无法读取防火墙状态，请刷新重试。'
+    }
+  } finally {
+    firewallLoading.value = false
+  }
+}
+
+const refresh = () => Promise.all([readStatus(), readFirewall(), logsOpen.value && readLogs()])
 
 const toggleLogs = () => {
   logsOpen.value = !logsOpen.value
@@ -146,7 +226,7 @@ const restart = async () => {
 }
 
 watch(() => props.node.status, (status) => {
-  if (status === 'online') readStatus()
+  if (status === 'online') refresh()
 }, { immediate: true })
 </script>
 
@@ -161,6 +241,8 @@ watch(() => props.node.status, (status) => {
 .gost-actions .el-button { min-height: 44px; margin: 0; }
 .gost-status { display: grid; gap: 8px; min-width: 0; }
 .gost-error { color: var(--ops-danger); white-space: pre-wrap; overflow-wrap: anywhere; }
+.firewall-status { border-top: 1px solid var(--ops-border); padding-top: var(--ops-section-gap); }
+.firewall-disabled-reason { grid-column: 1 / -1; }
 
 .gost-log-section { min-width: 0; border-top: 1px solid var(--ops-border); }
 .gost-log-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding-top: 4px; }

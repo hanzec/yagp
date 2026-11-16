@@ -17,12 +17,13 @@ type nodeNftConfig struct {
 }
 
 type nodeFirewallStatus struct {
-	Supported    bool       `json:"supported"`
-	Managed      bool       `json:"managed"`
-	Synchronized bool       `json:"synchronized"`
-	LastSync     *time.Time `json:"last_sync"`
-	LastError    *string    `json:"last_error"`
-	Backend      string     `json:"backend"`
+	Supported      bool       `json:"supported"`
+	Managed        bool       `json:"managed"`
+	Synchronized   bool       `json:"synchronized"`
+	LastSync       *time.Time `json:"last_sync"`
+	LastError      *string    `json:"last_error"`
+	Backend        string     `json:"backend"`
+	DisabledReason string     `json:"disabled_reason,omitempty"`
 }
 
 func (h *NodeHandler) GetFirewallStatus(c *gin.Context) {
@@ -37,7 +38,7 @@ func (h *NodeHandler) GetFirewallStatus(c *gin.Context) {
 	}
 	result := nodeFirewallStatus{
 		Supported: state.GetSupported(), Managed: state.GetManaged(), Synchronized: state.GetSynchronized(),
-		LastError: state.LastError, Backend: state.GetBackend(),
+		LastError: state.LastError, Backend: state.GetBackend(), DisabledReason: state.GetDisabledReason(),
 	}
 	if timestamp := state.GetLastSync(); timestamp != nil && timestamp.IsValid() {
 		lastSync := timestamp.AsTime()

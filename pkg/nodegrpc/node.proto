@@ -204,4 +204,5 @@ message FirewallStatus {
   .google.protobuf.Timestamp last_sync = 4;
   optional string last_error = 5;
   string backend = 6;
+  string disabled_reason = 7;
 }
