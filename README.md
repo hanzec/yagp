@@ -142,19 +142,20 @@ systemd 服务启动失败时执行 `journalctl -u yagp-daemon -u yagp-gost`。�
 | 设置流量配额 | **节点管理 → 配置 → 基本设置**。单位为 GB（1 GB = 1,000,000,000 字节），留空或填 `0` 解除限制。周期按北京时间重置，需要支持配额的守护进程和 nftables。**流量校准**使用字节。 |
 | 查看节点流量 | **节点清单**和**节点详情**按 GB 显示本期用量和上限。设置上限时显示当前配额周期的计量值。无上限时显示已采集的节点转发和出口 Relay 累计用量，上限显示 `Unlimited`。无用量数据时显示「未统计」。 |
 | 查看实时流量 | **运行总览**。隧道流量按出口 Relay 统计，运行中的旧隧道在下次启动后开始采集。 |
-| 查看或重启 Gost | **节点详情 → Gost 服务**。需要 systemd 版守护进程，重启会中断活动连接。 |
-| 查看防火墙同步与 nftables | **节点管理 → 配置 → nft 配置**。可查看放行后端、同步结果以及节点的 nftables 规则。旧版守护进程显示上次保存的规则。 |
+| 查看或重启 Gost | **节点详情 → 服务状态 → Gost**。需要 systemd 版守护进程，重启会中断活动连接。 |
+| 查看自动防火墙规则 | **节点详情 → 服务状态 → 自动防火墙规则**。显示放行后端、同步状态、关闭原因和开启步骤。 |
+| 预览 nftables 规则 | **节点详情 → 配置 → nft 配置**。旧版守护进程显示上次保存的规则。 |
 | 限制 Relay 来源 IP | 新建隧道自动使用入口节点的来源 IP 生成白名单。Gost `admissions` 仅加入公网来源 IP。入口暂无来源 IP 时，上报后自动生效。 |
 | 订阅 Clash 规则集 | **系统设置 → Clash 规则集**。可为多个 HTTPS 订阅命名，支持 `payload:` YAML 和文本规则集。 |
 | 配置 SMTP 和 Bark | **系统设置 → 通知管理**。测试使用当前表单参数，确认后保存。SMTP 465 使用隐式 TLS 1.2+，私有 CA 须加入面板运行环境的系统信任库。 |
 
 ### 节点防火墙端口放行
 
-`yagp-daemon` 可以自动放行 Gost 转发和 Relay 的运行中监听端口。功能默认关闭。通过节点安装脚本部署时，配置文件位于 `/etc/yagp-daemon/node.yaml`。启用后，守护进程依据主机的 `/etc/os-release` 选择后端。
+`yagp-daemon` 可以自动放行 Gost 转发和 Relay 的运行中监听端口。功能默认关闭。通过节点安装脚本部署时，配置文件位于 `/etc/yagp-daemon/node.yaml`。守护进程启动时根据发行版、节点配置和主机上的 UFW 运行状态选择自动放行后端。
 
-#### Ubuntu 和 Ubuntu 衍生发行版
+#### UFW
 
-守护进程使用 UFW。自动放行要求主机已安装、启用并运行 UFW。将以下内容写入节点的 `node.yaml`，然后重启 `yagp-daemon`。
+Ubuntu 和 Ubuntu 衍生发行版使用 UFW。Debian 等其他非 RHEL 系发行版在 UFW 正在运行、且 `firewall.table` 和 `firewall.input_chain` 均未填写时，也使用 UFW。用 `sudo ufw status` 确认状态为 `active`。自动放行还要求 UFW 已启用，systemd 主机可用 `systemctl is-enabled ufw.service` 检查。将以下内容合并到节点的 `node.yaml`，然后重启 `yagp-daemon`。
 
 ```yaml
 firewall:
@@ -201,9 +202,9 @@ firewall:
 
 停用时，将 `firewall` 下的 `enabled` 改为 `false` 并重启 `yagp-daemon`。管理员按启用时的维护流程重载 firewalld，即可清除运行时放行。卸载、回退或更换 policy 前同样清理旧规则。
 
-#### 其他 Linux 发行版
+#### nftables
 
-守护进程使用 nftables。将 `filter` 和 `input` 换成主机现有的 `inet` 表名和 `filter` 类型的 `input` 基链名，然后写入节点的 `node.yaml`。
+非 Ubuntu、非 RHEL 系的 Linux 节点在未检测到运行中的 UFW，或已配置 nftables 表或入站基链时，使用 nftables。将 `filter` 和 `input` 换成主机现有的 `inet` 表名和 `filter` 类型的 `input` 基链名，然后写入节点的 `node.yaml`。
 
 ```yaml
 firewall:

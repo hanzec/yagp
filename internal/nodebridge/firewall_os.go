@@ -15,11 +15,20 @@ const (
 	firewallFirewalld = "firewalld"
 )
 
-func hostFirewallBackend() string {
+func hostFirewallBackend(config FirewallConfig) string {
 	if runtime.GOOS != "linux" {
 		return ""
 	}
-	return readFirewallBackend(os.ReadFile)
+	return selectFirewallBackend(config, os.ReadFile)
+}
+
+func selectFirewallBackend(config FirewallConfig, readFile func(string) ([]byte, error)) string {
+	backend := readFirewallBackend(readFile)
+	// Keep existing nftables delegation on nodes that have already configured it.
+	if backend == firewallNFT && config.Table == "" && config.InputChain == "" && hostUFWActive() {
+		return firewallUFW
+	}
+	return backend
 }
 
 func readFirewallBackend(readFile func(string) ([]byte, error)) string {

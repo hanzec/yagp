@@ -62,7 +62,7 @@ var (
 )
 
 func NewFirewallManager(nodeID uint64, config FirewallConfig) (*FirewallManager, error) {
-	return newFirewallManager(nodeID, config, hostFirewallBackend())
+	return newFirewallManager(nodeID, config, hostFirewallBackend(config))
 }
 
 func newFirewallManager(nodeID uint64, config FirewallConfig, backend string) (*FirewallManager, error) {

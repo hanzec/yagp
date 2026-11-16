@@ -2,6 +2,8 @@ package nodebridge
 
 import (
 	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"testing"
@@ -40,6 +42,42 @@ func TestFirewallBackendUsesOSRelease(t *testing.T) {
 			})
 			if got != test.want || !reflect.DeepEqual(paths, test.paths) {
 				t.Fatalf("backend = %q via %v, want %q via %v", got, paths, test.want, test.paths)
+			}
+		})
+	}
+}
+
+func TestFirewallBackendUsesActiveUFWOutsideUbuntu(t *testing.T) {
+	const (
+		active   = "printf 'Status: active\n\nTo Action From\n'"
+		inactive = "printf 'Status: inactive\n'"
+		failed   = "printf 'Status: active\n'; exit 1"
+	)
+	for _, test := range []struct {
+		name, distro, command string
+		config                FirewallConfig
+		want                  string
+	}{
+		{"Debian with active UFW", "debian", active, FirewallConfig{}, firewallUFW},
+		{"Debian with inactive UFW", "debian", inactive, FirewallConfig{}, firewallNFT},
+		{"Debian with unreadable UFW status", "debian", failed, FirewallConfig{}, firewallNFT},
+		{"Debian without UFW", "debian", "", FirewallConfig{}, firewallNFT},
+		{"Debian with nftables delegation", "debian", active, FirewallConfig{Table: "filter", InputChain: "input"}, firewallNFT},
+		{"Ubuntu with inactive UFW", "ubuntu", inactive, FirewallConfig{}, firewallUFW},
+		{"CentOS with active UFW", "centos", active, FirewallConfig{}, firewallFirewalld},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			commands := t.TempDir()
+			t.Setenv("PATH", commands)
+			if test.command != "" {
+				const statusOnly = "#!/bin/sh\n[ \"$#\" -eq 1 ] && [ \"$1\" = status ] || exit 2\n"
+				if err := os.WriteFile(filepath.Join(commands, "ufw"), []byte(statusOnly+test.command+"\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			readFile := func(string) ([]byte, error) { return []byte("ID=" + test.distro + "\n"), nil }
+			if got := selectFirewallBackend(test.config, readFile); got != test.want {
+				t.Fatalf("backend = %q, want %q", got, test.want)
 			}
 		})
 	}
