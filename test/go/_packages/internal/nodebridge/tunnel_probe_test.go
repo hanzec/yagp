@@ -150,6 +150,56 @@ func TestTunnelProbeReportsMissingOrInvalidGostSetup(t *testing.T) {
 	}
 }
 
+func TestTunnelProbeKeepsRelayIPTTLWhenGostDoesNotStart(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:8443", "[::1]:8443"} {
+		t.Run(address, func(t *testing.T) {
+			if ttl := probeRelayReplyTTL(t.Context(), address); ttl == nil {
+				t.Skip("loopback ICMP echo reply or IP ancillary data unavailable")
+			}
+			admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				node := &gost.NodeConfig{
+					Name: "exit-relay", Addr: address,
+					Connector: &gost.ConnectorConfig{Type: "relay"}, Dialer: gost.RelayDialer("tcp", nil),
+				}
+				chain := gost.ChainConfig{
+					Name: "tunnel-1-chain",
+					Hops: []*gost.HopConfig{{Name: "hop-0", Nodes: []*gost.NodeConfig{node}}},
+				}
+				if err := json.NewEncoder(w).Encode(map[string]gost.ChainConfig{"data": chain}); err != nil {
+					t.Errorf("encode live chain: %v", err)
+				}
+			}))
+			defer admin.Close()
+			control := &controlServer{config: Config{
+				AdminAddress: admin.Listener.Addr().String(), ConfigFile: filepath.Join(t.TempDir(), "node.yaml"),
+			}, client: admin.Client()}
+			req := &nodegrpc.TunnelProbeRequest{
+				ChainName: "tunnel-1-chain", Address: "127.0.0.1:12345", Token: make([]byte, sha256.Size),
+			}
+			for _, measure := range []bool{false, true} {
+				req.MeasureReplyIpTtl = measure
+				_, err := control.ProbeTunnel(t.Context(), req)
+				info := requireTunnelProbeFailure(t, err, codes.Internal, "entry_gost_process")
+				if info.GetMetadata()["gost_error"] != "binary_missing" {
+					t.Fatalf("missing Gost diagnostic: %v", info)
+				}
+				var ttl *uint32
+				for _, detail := range status.Convert(err).Details() {
+					if reply, ok := detail.(*nodegrpc.TunnelProbeReply); ok {
+						ttl = reply.ReplyIpTtl
+					}
+				}
+				if measure != (ttl != nil) {
+					t.Fatalf("TTL present = %t for measure = %t", ttl != nil, measure)
+				}
+				if ttl != nil && (*ttl == 0 || *ttl > 255) {
+					t.Fatalf("invalid IP TTL %d", *ttl)
+				}
+			}
+		})
+	}
+}
+
 func requireTunnelProbeFailure(t *testing.T, err error, code codes.Code, stages ...string) *errdetails.ErrorInfo {
 	t.Helper()
 	st := status.Convert(err)
@@ -240,11 +290,15 @@ func TestTunnelProbeThroughGostRelay(t *testing.T) {
 			t.Fatal(err)
 		}
 		return control.ProbeTunnel(context.Background(), &nodegrpc.TunnelProbeRequest{
-			ChainName: chain.Name, Address: endpoint.GetAddress(), Token: endpoint.GetToken(),
+			ChainName: chain.Name, Address: endpoint.GetAddress(), Token: endpoint.GetToken(), MeasureReplyIpTtl: true,
 		})
 	}
-	if _, err := probe(); err != nil {
+	result, err := probe()
+	if err != nil {
 		t.Fatalf("probe through live Gost Relay: %v", err)
+	}
+	if probeRelayReplyTTL(t.Context(), relayAddress) != nil && result.ReplyIpTtl == nil {
+		t.Fatal("probe through live Gost Relay omitted its IP reply TTL")
 	}
 	node := chain.Hops[0].Nodes[0]
 	for _, tc := range []struct {

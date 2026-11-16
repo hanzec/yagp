@@ -14,10 +14,22 @@ export function getTunnelList(params) {
 /**
  * 获取隧道详情
  */
-export function getTunnel(id) {
+export function getTunnel(id, signal) {
     return request({
         url: `/tunnels/${id}`,
-        method: 'get'
+        method: 'get',
+        signal,
+        silentError: true
+    })
+}
+
+export function getTunnelMetrics(id, range, signal) {
+    return request({
+        url: `/tunnels/${id}/metrics`,
+        method: 'get',
+        params: { range },
+        signal,
+        silentError: true
     })
 }
 

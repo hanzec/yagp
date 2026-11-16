@@ -81,12 +81,28 @@ func (s *controlServer) ProbeTunnel(ctx context.Context, req *nodegrpc.TunnelPro
 	if s.config.ConfigFile == "" {
 		return nil, tunnelProbeError(probeCtx, nil, codes.Internal, "entry_gost_process", "找不到节点安装目录")
 	}
+	var relayTTL <-chan *uint32
+	if req.GetMeasureReplyIpTtl() {
+		result := make(chan *uint32, 1)
+		relayTTL = result
+		go func() { result <- probeRelayReplyTTL(probeCtx, relay.Addr) }()
+	}
 	logs := tunnelProbeLog{recognized: make(chan struct{})}
 	elapsed, err := runTunnelProbe(probeCtx, s.config.ConfigFile, name, address, token, chain, &logs)
-	if err != nil {
-		return nil, diagnoseTunnelProbeFailure(ctx, err, relay, logs.failure)
+	reply := &nodegrpc.TunnelProbeReply{RoundTripMs: elapsed.Milliseconds()}
+	if relayTTL != nil {
+		reply.ReplyIpTtl = <-relayTTL
 	}
-	return &nodegrpc.TunnelProbeReply{RoundTripMs: elapsed.Milliseconds()}, nil
+	if err != nil {
+		err = diagnoseTunnelProbeFailure(ctx, err, relay, logs.failure)
+		if reply.ReplyIpTtl != nil {
+			if detailed, detailErr := status.Convert(err).WithDetails(reply); detailErr == nil {
+				err = detailed.Err()
+			}
+		}
+		return nil, err
+	}
+	return reply, nil
 }
 
 func (s *controlServer) tunnelProbeChain(ctx context.Context, name string) (*gost.NodeConfig, json.RawMessage, error) {

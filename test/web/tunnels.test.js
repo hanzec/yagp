@@ -1,4 +1,4 @@
-import { flushPromises } from '@vue/test-utils'
+import { flushPromises, RouterLinkStub } from '@vue/test-utils'
 import { ElDropdownItem, ElForm, ElMessage, ElMessageBox, ElOption, ElSelect } from 'element-plus'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Tunnels from '@/views/Tunnels.vue'
@@ -55,6 +55,15 @@ beforeEach(() => {
 })
 
 describe('Relay tunnel inventory', () => {
+  it('links each tunnel name to its own detail page', async () => {
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+
+    const link = row(wrapper, relay.name).getComponent(RouterLinkStub)
+    expect(link.props('to')).toEqual({ name: 'TunnelDetail', params: { id: relay.id } })
+    expect(link.attributes('aria-label')).toBe(`查看隧道详情：${relay.name}`)
+  })
+
   it('shows loading and offline states, retries both requests, and filters paginated results', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const list = Promise.withResolvers()

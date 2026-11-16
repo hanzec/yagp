@@ -127,6 +127,7 @@ var (
 	ErrTunnelDuplicateEndpoints   = New(10237, "这组入口和出口已建立隧道", http.StatusConflict)
 	ErrTunnelSharedDaemon         = New(10238, "请升级节点的 yagp-daemon 以支持共享隧道端点", http.StatusNotImplemented)
 	ErrTunnelSharedIngressPolicy  = New(10239, "同一入口上的隧道需使用相同类型的转发方式，请将固定目标和透明分流配置在不同入口", http.StatusConflict)
+	ErrTunnelMetricRange          = New(10240, "无效的监测时间跨度", http.StatusBadRequest)
 )
 
 func TunnelProbeDaemonUnsupported(nodeRole string) *BizError {

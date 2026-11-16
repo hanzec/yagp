@@ -192,10 +192,15 @@ message TunnelProbeRequest {
   string chain_name = 1;
   string address = 2;
   bytes token = 3;
+  // Also send an ICMP echo to the Relay host read from the saved chain.
+  bool measure_reply_ip_ttl = 4;
 }
 
 message TunnelProbeReply {
   int64 round_trip_ms = 1;
+  // IPv4 TTL or IPv6 Hop Limit of the ICMP echo reply at ingress.
+  // On a failed tunnel exchange, this can be carried in the RPC error details.
+  optional uint32 reply_ip_ttl = 2;
 }
 
 message FirewallStatus {
