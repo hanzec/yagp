@@ -120,8 +120,9 @@ describe('console routing and Authentik gate', () => {
   })
 
   it('loads every navigation route and redirects unknown URLs to the overview', async () => {
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
     for (const [path, title] of [
-      ['/nodes', '节点管理'], ['/rules', '端点管理'], ['/tunnels', '隧道管理'],
+      ['/nodes', '节点管理'], ['/rules', '端点管理'], ['/tunnels', '隧道管理'], ['/tunnels/7', '隧道详情'],
       ['/logs', '操作日志'], ['/system', '系统设置']
     ]) {
       await router.push(path)

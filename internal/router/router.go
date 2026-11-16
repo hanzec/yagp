@@ -119,6 +119,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 		// 隧道管理
 		authRoutes.GET("/tunnels", tunnelHandler.List)
 		authRoutes.GET("/tunnels/:id", tunnelHandler.GetByID)
+		authRoutes.GET("/tunnels/:id/metrics", tunnelHandler.Metrics)
 		authRoutes.POST("/tunnels", tunnelHandler.Create)
 		authRoutes.PUT("/tunnels/:id", tunnelHandler.Update)
 		authRoutes.PUT("/tunnels/:id/allowlist", tunnelHandler.UpdateAllowlist)

@@ -142,6 +142,7 @@ func (f *handlerHTTPFixture) registerForwarding() {
 	f.engine.GET("/tunnels", tunnels.List)
 	f.engine.POST("/tunnels", tunnels.Create)
 	f.engine.GET("/tunnels/:id", tunnels.GetByID)
+	f.engine.GET("/tunnels/:id/metrics", tunnels.Metrics)
 	f.engine.PUT("/tunnels/:id", tunnels.Update)
 	f.engine.PUT("/tunnels/:id/allowlist", tunnels.UpdateAllowlist)
 	f.engine.DELETE("/tunnels/:id", tunnels.Delete)

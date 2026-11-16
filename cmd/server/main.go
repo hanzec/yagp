@@ -120,6 +120,7 @@ func main() {
 	syncService.Start()
 	go service.NewGostRulesetService(db).Run(backgroundCtx)
 	go nodeUpgrade.Run(backgroundCtx)
+	go service.NewTunnelService(db).RunMonitor(backgroundCtx)
 
 	// 启动自动备份服务
 	backupService := service.NewBackupService(db)
@@ -181,6 +182,7 @@ func autoMigrate(db *gorm.DB) error {
 		&model.GostRule{},
 		&model.ExitRelayHistory{},
 		&model.GostTunnel{},
+		&model.TunnelProbeSample{},
 		&model.GostRuleset{},
 		&model.OperationLog{},
 		&model.SystemConfig{},

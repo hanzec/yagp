@@ -1711,12 +1711,14 @@ func (x *TunnelProbeEndpoint) GetToken() []byte {
 }
 
 type TunnelProbeRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ChainName     string                 `protobuf:"bytes,1,opt,name=chain_name,json=chainName,proto3" json:"chain_name,omitempty"`
-	Address       string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
-	Token         []byte                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	ChainName string                 `protobuf:"bytes,1,opt,name=chain_name,json=chainName,proto3" json:"chain_name,omitempty"`
+	Address   string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	Token     []byte                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
+	// Also send an ICMP echo to the Relay host read from the saved chain.
+	MeasureReplyIpTtl bool `protobuf:"varint,4,opt,name=measure_reply_ip_ttl,json=measureReplyIpTtl,proto3" json:"measure_reply_ip_ttl,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *TunnelProbeRequest) Reset() {
@@ -1770,9 +1772,19 @@ func (x *TunnelProbeRequest) GetToken() []byte {
 	return nil
 }
 
+func (x *TunnelProbeRequest) GetMeasureReplyIpTtl() bool {
+	if x != nil {
+		return x.MeasureReplyIpTtl
+	}
+	return false
+}
+
 type TunnelProbeReply struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RoundTripMs   int64                  `protobuf:"varint,1,opt,name=round_trip_ms,json=roundTripMs,proto3" json:"round_trip_ms,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	RoundTripMs int64                  `protobuf:"varint,1,opt,name=round_trip_ms,json=roundTripMs,proto3" json:"round_trip_ms,omitempty"`
+	// IPv4 TTL or IPv6 Hop Limit of the ICMP echo reply at ingress.
+	// On a failed tunnel exchange, this can be carried in the RPC error details.
+	ReplyIpTtl    *uint32 `protobuf:"varint,2,opt,name=reply_ip_ttl,json=replyIpTtl,proto3,oneof" json:"reply_ip_ttl,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1810,6 +1822,13 @@ func (*TunnelProbeReply) Descriptor() ([]byte, []int) {
 func (x *TunnelProbeReply) GetRoundTripMs() int64 {
 	if x != nil {
 		return x.RoundTripMs
+	}
+	return 0
+}
+
+func (x *TunnelProbeReply) GetReplyIpTtl() uint32 {
+	if x != nil && x.ReplyIpTtl != nil {
+		return *x.ReplyIpTtl
 	}
 	return 0
 }
@@ -2040,14 +2059,18 @@ const file_node_proto_rawDesc = "" +
 	"\x15multi_relay_supported\x18\x04 \x01(\bR\x13multiRelaySupported\"E\n" +
 	"\x13TunnelProbeEndpoint\x12\x18\n" +
 	"\aaddress\x18\x01 \x01(\tR\aaddress\x12\x14\n" +
-	"\x05token\x18\x02 \x01(\fR\x05token\"c\n" +
+	"\x05token\x18\x02 \x01(\fR\x05token\"\x94\x01\n" +
 	"\x12TunnelProbeRequest\x12\x1d\n" +
 	"\n" +
 	"chain_name\x18\x01 \x01(\tR\tchainName\x12\x18\n" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x14\n" +
-	"\x05token\x18\x03 \x01(\fR\x05token\"6\n" +
+	"\x05token\x18\x03 \x01(\fR\x05token\x12/\n" +
+	"\x14measure_reply_ip_ttl\x18\x04 \x01(\bR\x11measureReplyIpTtl\"n\n" +
 	"\x10TunnelProbeReply\x12\"\n" +
-	"\rround_trip_ms\x18\x01 \x01(\x03R\vroundTripMs\"\x9b\x02\n" +
+	"\rround_trip_ms\x18\x01 \x01(\x03R\vroundTripMs\x12%\n" +
+	"\freply_ip_ttl\x18\x02 \x01(\rH\x00R\n" +
+	"replyIpTtl\x88\x01\x01B\x0f\n" +
+	"\r_reply_ip_ttl\"\x9b\x02\n" +
 	"\x0eFirewallStatus\x12\x1c\n" +
 	"\tsupported\x18\x01 \x01(\bR\tsupported\x12\x18\n" +
 	"\amanaged\x18\x02 \x01(\bR\amanaged\x12\"\n" +
@@ -2134,6 +2157,7 @@ func file_node_proto_init() {
 	file_node_proto_msgTypes[10].OneofWrappers = []any{}
 	file_node_proto_msgTypes[11].OneofWrappers = []any{}
 	file_node_proto_msgTypes[20].OneofWrappers = []any{}
+	file_node_proto_msgTypes[27].OneofWrappers = []any{}
 	file_node_proto_msgTypes[28].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

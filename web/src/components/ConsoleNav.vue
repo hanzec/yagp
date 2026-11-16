@@ -19,6 +19,7 @@
           :key="item.to"
           :to="item.to"
           class="console-nav__link"
+          :class="{ 'is-active': $route.meta.activeNav === item.to }"
           @click="$emit('navigate')"
         >
           <el-icon aria-hidden="true"><component :is="item.icon" /></el-icon>
@@ -133,7 +134,7 @@ const groups = [
 .console-nav__link .el-icon { font-size: 17px; }
 .console-nav__link:hover { background: var(--ops-raised); color: var(--ops-text); }
 
-.console-nav__link.router-link-exact-active {
+.console-nav__link.router-link-exact-active, .console-nav__link.is-active {
   border-color: var(--ops-accent-line);
   background: var(--ops-accent-bg);
   box-shadow: inset 2px 0 var(--ops-accent);

@@ -124,6 +124,20 @@ func (h *TunnelHandler) GetByID(c *gin.Context) {
 	response.Success(c, tunnel)
 }
 
+func (h *TunnelHandler) Metrics(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || id == 0 {
+		response.BadRequest(c, "无效的隧道 ID")
+		return
+	}
+	metrics, err := h.tunnelService.Metrics(c.Request.Context(), uint(id), c.Query("range"))
+	if err != nil {
+		response.HandleError(c, err)
+		return
+	}
+	response.Success(c, metrics)
+}
+
 // List 获取隧道列表
 func (h *TunnelHandler) List(c *gin.Context) {
 	var req dto.TunnelListReq

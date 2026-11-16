@@ -33,6 +33,12 @@ const routes = [
                 meta: { title: '隧道管理', icon: 'Connection' }
             },
             {
+                path: 'tunnels/:id(\\d+)',
+                name: 'TunnelDetail',
+                component: () => import('@/views/TunnelDetail.vue'),
+                meta: { title: '隧道详情', activeNav: '/tunnels' }
+            },
+            {
                 path: 'logs',
                 name: 'Logs',
                 component: () => import('@/views/Logs.vue'),
@@ -54,7 +60,12 @@ const routes = [
 
 const router = createRouter({
     history: createWebHashHistory(),
-    routes
+    routes,
+    scrollBehavior(to, from, savedPosition) {
+        if (to.name === 'TunnelDetail' || from.name === 'TunnelDetail') {
+            return savedPosition || { top: 0 }
+        }
+    }
 })
 
 export default router

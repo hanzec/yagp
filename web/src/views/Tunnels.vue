@@ -66,10 +66,15 @@
           <tbody role="rowgroup">
             <tr v-for="tunnel in tunnelList" :key="tunnel.id" role="row">
               <td class="inventory-resource" role="cell">
-                <span class="inventory-row-name">
+                <RouterLink
+                  :to="{ name: 'TunnelDetail', params: { id: tunnel.id } }"
+                  class="inventory-row-name tunnel-row-link"
+                  :aria-label="'查看隧道详情：' + tunnel.name"
+                >
                   <el-icon class="inventory-row-icon" aria-hidden="true"><Connection /></el-icon>
                   <strong>{{ tunnel.name }}</strong>
-                </span>
+                  <el-icon class="tunnel-route-arrow" aria-hidden="true"><Right /></el-icon>
+                </RouterLink>
                 <span class="inventory-secondary ops-muted"><span class="ops-mono">#{{ tunnel.id }}</span><span v-if="tunnel.remark"> · {{ tunnel.remark }}</span></span>
               </td>
               <td class="tunnel-route-cell" role="cell">
@@ -698,6 +703,8 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
 </style>
 
 <style scoped>
+.tunnel-row-link { width: fit-content; min-height: 30px; color: var(--ops-text); text-decoration: none; }
+.tunnel-row-link:hover, .tunnel-row-link:focus-visible { color: var(--ops-accent); text-decoration: underline; }
 .tunnel-route { display: flex; align-items: center; gap: 8px; }
 .tunnel-route-label { display: block; color: var(--ops-muted); font-size: var(--ops-text-xs); margin-bottom: 2px; }
 .tunnel-route-arrow { color: var(--ops-accent); flex: none; }
@@ -720,6 +727,7 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
 .tunnel-allowlist-preview dd { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 0; overflow-wrap: anywhere; }
 
 @media (max-width: 700px) {
+  .tunnel-row-link { min-height: 44px; }
   .tunnel-route-cell { grid-column: 1 / -1; }
   .tunnel-route > span { flex: 1; min-width: 0; }
   .tunnel-route { gap: 6px; }
