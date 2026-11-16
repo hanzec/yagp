@@ -123,7 +123,6 @@ func (f *handlerHTTPFixture) registerNodes() *NodeHandler {
 	f.engine.GET("/nodes/:id/gost/logs", h.GostLogs)
 	f.engine.GET("/nodes/:id/nft", h.GetNftConfig)
 	f.engine.GET("/nodes/:id/firewall", h.GetFirewallStatus)
-	f.engine.POST("/nodes/:id/firewall/enable", h.EnableFirewall)
 	f.engine.GET("/nodes/:id/upgrade", h.GetUpgrade)
 	f.engine.PUT("/nodes/:id/upgrade", h.SetUpgradePolicy)
 	f.engine.POST("/nodes/:id/upgrade/:component", h.StartUpgrade)

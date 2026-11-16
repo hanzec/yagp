@@ -23,7 +23,6 @@ func controlDispatcher(control *controlServer) nodegrpc.StreamHandler {
 		nodegrpc.V1_GetNftConfig_FullMethodName,
 		nodegrpc.V1_ApplyNftConfig_FullMethodName,
 		nodegrpc.V1_GetFirewallStatus_FullMethodName,
-		nodegrpc.V1_EnableFirewall_FullMethodName,
 		nodegrpc.V1_SyncTrafficQuota_FullMethodName,
 		nodegrpc.V1_GetUpgradeStatus_FullMethodName,
 		nodegrpc.V1_StartUpgrade_FullMethodName,
@@ -51,9 +50,9 @@ func maintainCredentials(ctx context.Context, credentials *credentialManager) {
 	}
 }
 
-func maintainPanelChannel(ctx context.Context, credentials *credentialManager, configPath string, current *atomic.Pointer[nodegrpc.Session], handler nodegrpc.StreamHandler) {
+func maintainPanelChannel(ctx context.Context, credentials *credentialManager, configPath string, current *atomic.Pointer[nodegrpc.Session], handler nodegrpc.StreamHandler, firewallChanged chan<- struct{}) {
 	for delay := time.Second; ctx.Err() == nil; delay = min(delay*2, 30*time.Second) {
-		connected, err := runPanelSession(ctx, credentials, configPath, current, handler)
+		connected, err := runPanelSession(ctx, credentials, configPath, current, handler, firewallChanged)
 		if ctx.Err() != nil {
 			return
 		}
@@ -70,7 +69,7 @@ func maintainPanelChannel(ctx context.Context, credentials *credentialManager, c
 	}
 }
 
-func runPanelSession(ctx context.Context, credentials *credentialManager, configPath string, current *atomic.Pointer[nodegrpc.Session], handler nodegrpc.StreamHandler) (bool, error) {
+func runPanelSession(ctx context.Context, credentials *credentialManager, configPath string, current *atomic.Pointer[nodegrpc.Session], handler nodegrpc.StreamHandler, firewallChanged chan<- struct{}) (bool, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	accessToken, err := credentials.accessToken(ctx, 0)
@@ -93,6 +92,7 @@ func runPanelSession(ctx context.Context, credentials *credentialManager, config
 	}
 	current.Store(session)
 	defer current.Store(nil)
+	wakeFirewallWorker(firewallChanged)
 	ipTicks := time.NewTicker(5 * time.Minute)
 	defer ipTicks.Stop()
 	go reportIPChanges(ctx, credentials.nodeID, client, detectNodeIPs, ipTicks.C)

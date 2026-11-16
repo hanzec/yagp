@@ -63,6 +63,7 @@ message NftConfig {
 message NodeConfig {
   bytes config_yaml = 1;
   string nft_template = 2;
+  optional bool has_exit_endpoint = 3;
 }
 
 message TrafficQuotaRequest {

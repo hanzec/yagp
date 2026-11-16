@@ -108,7 +108,7 @@ func run(ctx context.Context, cfg Config, dial func(context.Context, string, str
 	}
 	defer control.client.CloseIdleConnections()
 	manager, firewallErr := NewFirewallManager(cfg.NodeID, cfg.Firewall)
-	control.firewall = manager
+	policy := newFirewallPolicy(control, manager)
 	if firewallErr != nil {
 		log.Printf("configure firewall: %v", firewallErr)
 	}
@@ -140,9 +140,9 @@ func run(ctx context.Context, cfg Config, dial func(context.Context, string, str
 		cancelChannel()
 		firewallWorker.Wait()
 	}()
-	firewallWorker.Go(func() { control.maintainFirewall(channelCtx) })
+	firewallWorker.Go(func() { control.maintainFirewall(channelCtx, &current, policy) })
 	go maintainCredentials(channelCtx, credentials)
-	go maintainPanelChannel(channelCtx, credentials, cfg.ConfigFile, &current, controlDispatcher(control))
+	go maintainPanelChannel(channelCtx, credentials, cfg.ConfigFile, &current, controlDispatcher(control), control.firewallChanged)
 
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- observation.Serve(observerListener) }()
@@ -161,11 +161,12 @@ func IsLoopbackAddress(address string) bool {
 
 type controlServer struct {
 	nodegrpc.UnimplementedV1Server
-	config          Config
-	client          *http.Client
-	firewallMu      sync.RWMutex
-	firewall        *FirewallManager
-	firewallChanged chan struct{}
+	config                   Config
+	client                   *http.Client
+	firewall                 atomic.Pointer[FirewallManager]
+	firewallChanged          chan struct{}
+	firewallRestartRequested atomic.Uint64
+	firewallRestartChecked   atomic.Uint64
 }
 
 func (s *controlServer) Execute(ctx context.Context, command *nodegrpc.CommandRequest) (*nodegrpc.CommandReply, error) {
@@ -199,10 +200,7 @@ func (s *controlServer) Execute(ctx context.Context, command *nodegrpc.CommandRe
 		return nil, status.Error(codes.ResourceExhausted, "local Gost response is too large")
 	}
 	if res.StatusCode >= 200 && res.StatusCode < 300 && method != http.MethodGet && strings.HasPrefix(path, "/config/services") {
-		select {
-		case s.firewallChanged <- struct{}{}:
-		default:
-		}
+		wakeFirewallWorker(s.firewallChanged)
 	}
 	return &nodegrpc.CommandReply{StatusCode: int32(res.StatusCode), Body: body}, nil
 }

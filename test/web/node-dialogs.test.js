@@ -15,7 +15,6 @@ vi.mock('@/api/node', () => ({
   restartGostService: vi.fn(),
   getNodeNftConfig: vi.fn(),
   getNodeFirewallStatus: vi.fn(),
-  enableNodeFirewall: vi.fn(),
   getNodeUpgradeStatus: vi.fn(),
   updateNodeUpgradePolicy: vi.fn(),
   upgradeNodeComponent: vi.fn()
@@ -52,7 +51,7 @@ describe('inline node service status', () => {
   }
 
   beforeEach(() => {
-    api.getNodeFirewallStatus.mockResolvedValue(response({ backend: 'nftables', supported: true, managed: false }))
+    api.getNodeFirewallStatus.mockResolvedValue(response({ backend: 'nftables', supported: true, managed: false, disabled_reason: 'no_exit_endpoint' }))
   })
 
   it('loads status in the page and sorts service logs when expanded', async () => {
@@ -131,6 +130,76 @@ describe('inline node service status', () => {
     expect(view.find('[role="alert"]').exists()).toBe(false)
   })
 
+  it('masks the old firewall result during restart and reads the new result automatically', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const restarting = deferred()
+    const ufw = { supported: true, managed: true, backend: 'ufw' }
+    const checked = { supported: true, managed: true, backend: 'nftables', synchronized: true, last_sync: '2026-11-16T04:00:00Z' }
+    api.getGostService.mockResolvedValue(response(active))
+    api.restartGostService.mockReturnValue(restarting.promise)
+    api.getNodeFirewallStatus
+      .mockResolvedValueOnce(response({ ...ufw, synchronized: true, last_sync: '2026-11-16T03:00:00Z' }))
+      .mockResolvedValueOnce(response({ ...ufw, disabled_reason: 'checking_firewall' }))
+      .mockResolvedValue(response(checked))
+    const view = mountService()
+    await flushPromises()
+    const health = view.get('#node-firewall-status')
+    expect(statusFields(health)).toMatchObject({ 自动放行后端: 'UFW', 同步状态: '已同步' })
+
+    await click(view, '重启 Gost')
+    expect(health.text()).toContain('Gost 重启后将重新检查防火墙规则。')
+    expect(health.text()).not.toContain('已同步')
+    expect(health.find('time').exists()).toBe(false)
+    restarting.resolve(response(active))
+    await flushPromises()
+    expect(health.get('.firewall-startup').text()).toBe('正在检查')
+    expect(health.text()).toContain('正在重新检查防火墙后端和规则。')
+    expect(api.getNodeFirewallStatus).toHaveBeenCalledTimes(2)
+
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(statusFields(health)).toMatchObject({ 自动放行后端: 'nftables', 同步状态: '已同步' })
+    expect(health.get('time').attributes('datetime')).toBe(checked.last_sync)
+    await vi.advanceTimersByTimeAsync(25000)
+    expect(api.getNodeFirewallStatus).toHaveBeenCalledTimes(3)
+  })
+
+  it.each([
+    [true, 7],
+    [false, 2]
+  ])('only follows up on a successful restart and stops if the firewall check stays pending (%s)', async (succeeds, reads) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    api.getGostService.mockResolvedValue(response(active))
+    api.getNodeFirewallStatus.mockResolvedValue(response({ backend: 'ufw', disabled_reason: 'checking_firewall' }))
+    if (succeeds) api.restartGostService.mockResolvedValue(response(active))
+    else api.restartGostService.mockRejectedValue(apiError('重启失败'))
+    const view = mountService()
+    await flushPromises()
+    await click(view, '重启 Gost')
+    await vi.advanceTimersByTimeAsync(50000)
+    expect(api.getNodeFirewallStatus).toHaveBeenCalledTimes(reads)
+  })
+
+  it('cancels firewall follow-up reads after leaving the node page', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const pending = { supported: true, managed: true, backend: 'ufw', disabled_reason: 'checking_firewall' }
+    const request = deferred()
+    api.getGostService.mockResolvedValue(response(active))
+    api.restartGostService.mockResolvedValue(response(active))
+    api.getNodeFirewallStatus.mockResolvedValue(response(pending))
+    const view = mountService()
+    await flushPromises()
+    await click(view, '重启 Gost')
+    api.getNodeFirewallStatus.mockReturnValueOnce(request.promise)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(api.getNodeFirewallStatus).toHaveBeenCalledTimes(3)
+    view.unmount()
+    wrapper = undefined
+    request.resolve(response(pending))
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(25000)
+    expect(api.getNodeFirewallStatus).toHaveBeenCalledTimes(3)
+  })
+
   it('avoids auto queries for offline nodes and supports manual refresh and recovery', async () => {
     api.getGostService.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(response({ unit: 'gost.service', active_state: 'custom' }))
     api.getGostLogs.mockRejectedValueOnce(apiError('日志不可用')).mockResolvedValue(response({ entries: [] }))
@@ -172,16 +241,16 @@ describe('inline node service status', () => {
     await click(view, '刷新')
     expect(statusFields(health).同步状态).toBe('已同步')
     expect(health.text()).not.toContain('missing firewall jump')
-    expect(health.find('.firewall-enable').exists()).toBe(false)
   })
 
   it.each([
-    [false, 'explicitly_disabled', '节点配置将 firewall.enabled 设为 false。'],
-    [false, 'not_configured', '节点未配置自动放行，默认关闭。'],
-    [true, 'invalid_configuration', '节点的防火墙配置无效。'],
-    [true, 'unsupported_environment', '当前节点环境不支持自动放行。'],
-    [false, undefined, '节点配置未启用自动放行。']
-  ])('explains disabled automatic rules (%s, %s)', async (managed, disabledReason, message) => {
+    [false, 'waiting_panel', '等待面板', '等待面板下发出口端点状态。'],
+    [false, 'explicitly_disabled', '未启用', '节点配置将 firewall.enabled 设为 false。'],
+    [false, 'not_configured', '未启用', '节点尚未配置自动放行。'],
+    [true, 'invalid_configuration', '未启用', '节点的防火墙配置无效。'],
+    [true, 'unsupported_environment', '未启用', '当前节点环境不支持自动放行。'],
+    [false, undefined, '未启用', '节点未启用自动放行。']
+  ])('explains disabled automatic rules (%s, %s)', async (managed, disabledReason, badge, message) => {
     api.getGostService.mockResolvedValue(response(active))
     api.getNodeFirewallStatus.mockResolvedValue(response({
       backend: 'nftables', supported: false, managed, synchronized: false, disabled_reason: disabledReason
@@ -190,104 +259,69 @@ describe('inline node service status', () => {
     await flushPromises()
     const health = view.get('#node-firewall-status')
     expect(statusFields(health)).toEqual({ 自动放行后端: 'nftables' })
-    expect(health.get('.firewall-startup').text()).toBe('未启用')
+    expect(health.get('.firewall-startup').text()).toBe(badge)
     expect(health.text()).toContain(message)
-    expect(health.find('.firewall-enable').exists()).toBe(disabledReason !== 'unsupported_environment')
+    expect(health.find('button, [role="switch"], [role="button"]').exists()).toBe(false)
     expect(api.getNodeNftConfig).not.toHaveBeenCalled()
   })
 
-  it('enables UFW remotely and displays the separately refreshed synchronization status', async () => {
-    const pending = deferred()
+  it('shows changes to automatic rules after the first exit is added and the last exit is removed', async () => {
     api.getGostService.mockResolvedValue(response(active))
+    const ufw = { backend: 'ufw', supported: true }
+    const noExit = response({ ...ufw, managed: false, disabled_reason: 'no_exit_endpoint' })
     api.getNodeFirewallStatus
-      .mockResolvedValueOnce(response({ backend: 'ufw', supported: true, managed: false, disabled_reason: 'not_configured' }))
-      .mockResolvedValueOnce(response({ backend: 'ufw', supported: true, managed: true, synchronized: true }))
-    api.enableNodeFirewall.mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce(noExit)
+      .mockResolvedValueOnce(response({ ...ufw, managed: true, synchronized: false }))
+      .mockResolvedValueOnce(response({ ...ufw, managed: true, synchronized: true }))
+      .mockResolvedValueOnce(noExit)
     const view = mountService()
     await flushPromises()
     const health = view.get('#node-firewall-status')
     expect(statusFields(health).自动放行后端).toBe('UFW')
     expect(health.get('.firewall-startup').text()).toBe('未启用')
-    expect(health.text()).not.toContain('查看开启步骤')
-    expect(health.find('details').exists()).toBe(false)
-    await click(health, '启用自动放行')
-    expect(api.enableNodeFirewall).toHaveBeenCalledExactlyOnceWith(node.id)
-    expect(health.attributes('aria-busy')).toBe('true')
-    expect(button(health, '启用自动放行').element.disabled).toBe(true)
-    expect(button(view, '刷新').element.disabled).toBe(true)
+    expect(health.text()).toContain('节点暂无出口端点。添加后自动启用。')
+    expect(health.find('button, [role="switch"], [role="button"]').exists()).toBe(false)
 
-    pending.resolve(response({ backend: 'ufw', supported: true, managed: true, synchronized: false }))
-    await flushPromises()
+    await click(view, '刷新')
     expect(statusFields(health).同步状态).toBe('待同步')
     expect(health.get('.firewall-startup').text()).toBe('已启用')
-    expect(messages.success).toHaveBeenCalledWith('自动放行配置已保存')
-    expect(health.find('.firewall-enable').exists()).toBe(false)
+    expect(health.text()).not.toContain('节点暂无出口端点。')
 
     await click(view, '刷新')
     expect(statusFields(health).同步状态).toBe('已同步')
+
+    await click(view, '刷新')
+    expect(statusFields(health)).not.toHaveProperty('同步状态')
+    expect(health.get('.firewall-startup').text()).toBe('未启用')
+    expect(health.text()).toContain('节点暂无出口端点。')
+    expect(health.find('button, [role="switch"], [role="button"]').exists()).toBe(false)
+    expect(api.getNodeFirewallStatus).toHaveBeenCalledTimes(4)
   })
 
-  it('allows remote enable after a previously invalid nftables configuration is repaired', async () => {
+  it('shows invalid nftables configuration and its recovery after refreshing', async () => {
     api.getGostService.mockResolvedValue(response(active))
-    api.getNodeFirewallStatus.mockResolvedValue(response({
-      backend: 'nftables', supported: false, managed: true, disabled_reason: 'invalid_configuration', last_error: 'missing input_chain'
-    }))
-    api.enableNodeFirewall.mockResolvedValue(response({ backend: 'nftables', supported: true, managed: true, synchronized: true }))
+    api.getNodeFirewallStatus
+      .mockResolvedValueOnce(response({
+        backend: 'nftables', supported: false, managed: true, disabled_reason: 'invalid_configuration', last_error: 'missing input_chain'
+      }))
+      .mockResolvedValueOnce(response({ backend: 'nftables', supported: true, managed: true, synchronized: true }))
     const view = mountService()
     await flushPromises()
     const health = view.get('#node-firewall-status')
     expect(health.get('[role="alert"]').text()).toContain('missing input_chain')
-    await click(health, '启用自动放行')
-    expect(api.enableNodeFirewall).toHaveBeenCalledExactlyOnceWith(node.id)
+    await click(view, '刷新')
     expect(health.get('.firewall-startup').text()).toBe('已启用')
     expect(statusFields(health).同步状态).toBe('已同步')
     expect(health.find('[role="alert"]').exists()).toBe(false)
   })
 
-  it('shows a delegated firewalld failure and allows a retry', async () => {
+  it('labels an unrecognized backend', async () => {
     api.getGostService.mockResolvedValue(response(active))
-    api.getNodeFirewallStatus.mockResolvedValue(response({
-      backend: 'firewalld', supported: true, managed: false, disabled_reason: 'explicitly_disabled'
-    }))
-    api.enableNodeFirewall.mockRejectedValueOnce(apiError('请先配置 firewalld 入站 policy'))
-      .mockResolvedValueOnce(response({ backend: 'firewalld', supported: true, managed: true, synchronized: false, last_error: 'policy is not active' }))
-    const view = mountService()
-    await flushPromises()
-    const health = view.get('#node-firewall-status')
-    await click(health, '启用自动放行')
-    expect(health.get('[role="alert"]').text()).toBe('请先配置 firewalld 入站 policy')
-    expect(health.get('.firewall-startup').text()).toBe('未启用')
-    expect(messages.success).not.toHaveBeenCalled()
-    await click(health, '启用自动放行')
-    expect(api.enableNodeFirewall).toHaveBeenCalledTimes(2)
-    expect(health.get('.firewall-startup').text()).toBe('已启用')
-    expect(statusFields(health).同步状态).toBe('同步异常')
-    expect(health.get('[role="alert"]').text()).toBe('policy is not active')
-  })
-
-  it('explains when the daemon can report status but needs an upgrade to enable remotely', async () => {
-    api.getGostService.mockResolvedValue(response(active))
-    api.getNodeFirewallStatus.mockResolvedValue(response({ backend: 'ufw', supported: true, managed: false }))
-    api.enableNodeFirewall.mockRejectedValueOnce({ response: { status: 501 } })
-    const view = mountService()
-    await flushPromises()
-    const health = view.get('#node-firewall-status')
-    await click(health, '启用自动放行')
-    expect(health.get('[role="alert"]').text()).toBe('请升级节点的 yagp-daemon 后再启用自动放行。')
-    expect(health.find('.firewall-enable').exists()).toBe(false)
-    await click(view, '刷新')
-    expect(health.find('[role="alert"]').exists()).toBe(false)
-    expect(button(health, '启用自动放行').element.disabled).toBe(false)
-  })
-
-  it('does not offer remote enable for an unrecognized backend', async () => {
-    api.getGostService.mockResolvedValue(response(active))
-    api.getNodeFirewallStatus.mockResolvedValue(response({ supported: false, managed: false, disabled_reason: 'not_configured' }))
+    api.getNodeFirewallStatus.mockResolvedValue(response({ supported: false, managed: false, disabled_reason: 'no_exit_endpoint' }))
     const view = mountService()
     await flushPromises()
     const health = view.get('#node-firewall-status')
     expect(statusFields(health).自动放行后端).toBe('未识别')
-    expect(health.find('.firewall-enable').exists()).toBe(false)
   })
 
   it('shows older daemon support independently of the running Gost service', async () => {

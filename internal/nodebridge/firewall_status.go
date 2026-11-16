@@ -10,17 +10,18 @@ import (
 )
 
 func (s *controlServer) GetFirewallStatus(context.Context, *emptypb.Empty) (*nodegrpc.FirewallStatus, error) {
-	manager := s.firewallManager()
+	checked := s.firewallRestartChecked.Load()
+	manager := s.firewall.Load()
 	if manager == nil {
 		return &nodegrpc.FirewallStatus{}, nil
 	}
-	return firewallStatusReply(manager.Status()), nil
-}
-
-func (s *controlServer) firewallManager() *FirewallManager {
-	s.firewallMu.RLock()
-	defer s.firewallMu.RUnlock()
-	return s.firewall
+	state := manager.Status()
+	if checked != s.firewallRestartRequested.Load() {
+		state.DisabledReason = "checking_firewall"
+		state.Synchronized = false
+		state.LastError = nil
+	}
+	return firewallStatusReply(state), nil
 }
 
 func firewallStatusReply(state FirewallStatus) *nodegrpc.FirewallStatus {

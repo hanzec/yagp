@@ -143,7 +143,7 @@ systemd 服务启动失败时执行 `journalctl -u yagp-daemon -u yagp-gost`。�
 | 查看节点流量 | **节点清单**和**节点详情**按 GB 显示本期用量和上限。设置上限时显示当前配额周期的计量值。无上限时显示已采集的节点转发和出口 Relay 累计用量，上限显示 `Unlimited`。无用量数据时显示「未统计」。 |
 | 查看实时流量 | **运行总览**。隧道流量按出口 Relay 统计，运行中的旧隧道在下次启动后开始采集。 |
 | 查看或重启 Gost | **节点详情 → 服务状态 → Gost**。需要 systemd 版守护进程，重启会中断活动连接。 |
-| 查看或启用自动防火墙规则 | **节点详情 → 服务状态 → 自动防火墙规则**。显示放行后端、同步状态和关闭原因。未启用时可点击 **启用自动放行**。 |
+| 查看自动防火墙规则 | **节点详情 → 服务状态 → 自动防火墙规则**。显示放行后端、同步状态和未启用原因。 |
 | 预览 nftables 规则 | **节点详情 → 配置 → nft 配置**。旧版守护进程显示上次保存的规则。 |
 | 限制 Relay 来源 IP | 新建隧道自动使用入口节点的来源 IP 生成白名单。Gost `admissions` 仅加入公网来源 IP。入口暂无来源 IP 时，上报后自动生效。 |
 | 订阅 Clash 规则集 | **系统设置 → Clash 规则集**。可为多个 HTTPS 订阅命名，支持 `payload:` YAML 和文本规则集。 |
@@ -151,13 +151,13 @@ systemd 服务启动失败时执行 `journalctl -u yagp-daemon -u yagp-gost`。�
 
 ### 节点防火墙端口放行
 
-`yagp-daemon` 可以自动放行 Gost 转发和 Relay 的运行中监听端口。功能默认关闭。通过节点安装脚本部署时，配置文件位于 `/etc/yagp-daemon/node.yaml`。守护进程启动时根据发行版、节点配置和主机上的 UFW 运行状态选择自动放行后端。
+节点有出口端点时，`yagp-daemon` 自动为运行中的 Gost 转发和 Relay 监听同步放行规则。停止的出口端点和旧隧道的出口也计入节点的出口配置。删除最后一个出口后，守护进程会清理它管理的放行规则。
 
-在节点详情的 **服务状态 → 自动防火墙规则** 点击 **启用自动放行** 后，守护程序会在实际使用的 `node.yaml` 中将 `firewall.enabled` 写为 `true`，随即开始同步规则。nftables 所用的表和入站基链、firewalld 所用的 policy 需已在节点配置中指定。节点使用支持远程启用的 `yagp-daemon` 后即可在面板操作。
+面板和守护程序都支持该功能时，节点根据面板下发的出口配置启用自动放行。连接旧版面板的节点沿用本地配置。通过安装脚本部署时，节点配置文件位于 `/etc/yagp-daemon/node.yaml`。守护进程根据发行版、节点配置和主机上的 UFW 运行状态选择放行后端。nftables 所用的表和入站基链、firewalld 所用的 policy 仍需在节点配置中指定。
 
 #### UFW
 
-Ubuntu 和 Ubuntu 衍生发行版使用 UFW。Debian 等其他非 RHEL 系发行版在 UFW 正在运行、且 `firewall.table` 和 `firewall.input_chain` 均未填写时，也使用 UFW。用 `sudo ufw status` 确认状态为 `active`。自动放行还要求 UFW 已启用，systemd 主机可用 `systemctl is-enabled ufw.service` 检查。确认后可在面板点击 **启用自动放行**。
+Ubuntu 和 Ubuntu 衍生发行版使用 UFW。Debian 等其他非 RHEL 系发行版在 UFW 正在运行、且 `firewall.table` 和 `firewall.input_chain` 均未填写时，也使用 UFW。用 `sudo ufw status` 确认状态为 `active`。自动放行还要求 UFW 已启用，systemd 主机可用 `systemctl is-enabled ufw.service` 检查。
 
 UFW 缺失、停用或未运行时，自动放行不可用，面板会显示错误。UFW 的启停、重载和主机防火墙策略由管理员维护。
 
@@ -167,7 +167,7 @@ UFW 缺失、停用或未运行时，自动放行不可用，面板会显示错�
 
 可用 `iptables -S ufw-user-input` 和 `ip6tables -S ufw6-user-input` 检查内核规则。守护进程添加的规则带有 `yagp daemon firewall <节点 ID>` 注释，`ufw status` 显示 UFW 保存的规则。
 
-停用时，将 `node.yaml` 中 `firewall` 下的 `enabled` 改为 `false` 并重启 `yagp-daemon`。管理员确认 SSH 和管理端口已由主机的持久规则放行后，可在维护窗口执行 `ufw reload`，清除守护进程添加的运行时放行规则。卸载或回退前同样清理这些规则。
+卸载或回退前，管理员确认 SSH 和管理端口已由主机的持久规则放行后，可在维护窗口执行 `ufw reload`，清除守护进程此前添加的运行时放行规则。
 
 #### RHEL 系发行版
 
@@ -189,7 +189,6 @@ firewall-cmd --check-config
 
 ```yaml
 firewall:
-  enabled: true
   policy: yagp-42
 ```
 
@@ -197,7 +196,7 @@ firewall:
 
 守护进程根据 Gost 监听更新该 policy 的运行时放行规则。端口变更时先添加新规则，再移除旧规则，更新失败时尝试恢复原有放行。管理员重载 firewalld 后，下一次同步会重建这些规则。
 
-停用时，将 `firewall` 下的 `enabled` 改为 `false` 并重启 `yagp-daemon`。管理员按启用时的维护流程重载 firewalld，即可清除运行时放行。卸载、回退或更换 policy 前同样清理旧规则。
+卸载、回退或更换 policy 前，管理员可按上述维护流程重载 firewalld，清除守护进程此前添加的运行时放行规则。
 
 #### nftables
 
@@ -205,12 +204,11 @@ firewall:
 
 ```yaml
 firewall:
-  enabled: true
   table: filter
   input_chain: input
 ```
 
-重启 `yagp-daemon` 后，它会创建节点专用的放行链和监听集合。在主机持久化的 nftables 配置中声明该普通链，并在现有 `input` 基链中加入无条件跳转。以节点 `42` 为例，下面两段分别加入现有 `table inet filter` 和现有 `chain input`。跳转放在需要保留的主机访问控制之后、拒绝转发流量的兜底规则之前。
+在主机持久化的 nftables 配置中声明节点专用的普通链，并在现有 `input` 基链中加入无条件跳转。以节点 `42` 为例，下面两段分别加入现有 `table inet filter` 和现有 `chain input`。跳转放在需要保留的主机访问控制之后、拒绝转发流量的兜底规则之前。
 
 ```nft
 chain yagp_42_input {
@@ -222,13 +220,13 @@ chain yagp_42_input {
 jump yagp_42_input
 ```
 
-用 `nft -c -f` 校验主机配置后，按现有的防火墙管理流程加载。守护进程的规则更新也会先校验，再作为一个事务提交。停用、切换主机表或卸载前，从当前规则和主机持久化配置中移除旧的跳转，即可撤销对应放行。
+用 `nft -c -f` 校验主机配置后，按现有的防火墙管理流程加载。重启 `yagp-daemon` 以读取新的表和链配置。有出口的节点会同步监听集合。守护进程的规则更新也会先校验，再作为一个事务提交。切换主机表或卸载前，从当前规则和主机持久化配置中移除旧的跳转，即可撤销对应放行。
 
 #### 同步与状态
 
 主机仍由原有规则处理 SSH、管理入口和其他流量，其他防火墙链和流量配额仍可拒绝连接。Gost 监听绑定到指定 IP 时，放行匹配该 IP 和端口。回环监听与透明转发由原有机制处理。
 
-守护进程在启动、Gost 服务变更和每 15 秒检查时重建或同步自己的规则。节点重启后，Gost 从保存的配置恢复监听，守护进程据此同步放行规则。打开 **节点管理** 中的节点详情，在 **服务状态 → 自动防火墙规则** 查看后端、启动状态、未启用原因和最近的同步结果。回退到不支持防火墙同步的 daemon 前，从 `node.yaml` 移除 `firewall` 配置。
+节点或 `yagp-daemon` 重启时，守护进程重新识别放行后端，读取主机当前规则，并根据 Gost 恢复的监听补齐缺失的放行规则。通过面板重启 Gost 成功后，也会立即安排同样的检查。守护进程在 Gost 服务变更和每 15 秒检查时继续同步，后端尚未就绪时会重试。打开 **节点管理** 中的节点详情，在 **服务状态 → 自动防火墙规则** 查看后端、启动状态、未启用原因和最近的同步结果。回退到不支持防火墙同步的 daemon 前，从 `node.yaml` 移除 `firewall` 配置。
 
 ### 双节点隧道
 

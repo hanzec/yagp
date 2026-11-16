@@ -2,7 +2,7 @@
   <section id="node-gost-service" aria-labelledby="node-gost-title">
     <header class="ops-panel-header">
       <h2 class="ops-section-title" id="node-gost-title" tabindex="-1"><el-icon aria-hidden="true"><Monitor /></el-icon>服务状态</h2>
-      <el-button class="service-refresh" :icon="Refresh" :loading="statusLoading || firewallLoading || logsLoading" :disabled="restarting || firewallEnabling" @click="refresh">刷新</el-button>
+      <el-button class="service-refresh" :icon="Refresh" :loading="statusLoading || firewallLoading || logsLoading" :disabled="restarting" @click="refresh">刷新</el-button>
     </header>
 
     <div class="service-columns">
@@ -29,7 +29,7 @@
             type="warning"
             plain
             :loading="restarting"
-            :disabled="statusLoading || logsLoading || !!statusError || service?.load_state !== 'loaded'"
+            :disabled="statusLoading || firewallLoading || logsLoading || !!statusError || service?.load_state !== 'loaded'"
             @click="restart"
           >重启 Gost</el-button>
           <el-button @click="$emit('upgrade')">升级 Gost</el-button>
@@ -60,12 +60,13 @@
         </div>
       </section>
 
-      <section id="node-firewall-status" class="service-column" aria-labelledby="firewall-status-title" :aria-busy="firewallLoading || firewallEnabling">
+      <section id="node-firewall-status" class="service-column" aria-labelledby="firewall-status-title" :aria-busy="firewallLoading || restarting">
         <div class="service-title">
           <h3 class="ops-subsection-title" id="firewall-status-title">自动防火墙规则</h3>
-          <span v-if="firewall" class="ops-status firewall-startup" :class="automaticRules ? 'is-success' : 'is-warning'" role="status">{{ automaticRules ? '已启用' : '未启用' }}</span>
+          <span v-if="firewall && !restarting" class="ops-status firewall-startup" :class="firewallStartup.tone" role="status">{{ firewallStartup.label }}</span>
         </div>
-        <p v-if="firewallError" class="gost-error" role="alert">{{ firewallError }}</p>
+        <p v-if="restarting" class="ops-muted" role="status">Gost 重启后将重新检查防火墙规则。</p>
+        <p v-else-if="firewallError" class="gost-error" role="alert">{{ firewallError }}</p>
         <template v-else-if="firewall">
           <dl class="service-facts">
             <div><dt>自动放行后端</dt><dd class="ops-mono">{{ firewallBackend }}</dd></div>
@@ -81,15 +82,6 @@
           </p>
           <p v-else-if="firewallHelp && !firewall.synchronized" class="ops-muted">{{ firewallHelp }}</p>
           <p v-if="firewall.last_error" class="gost-error" role="alert">{{ firewall.last_error }}</p>
-          <el-button
-            v-if="canEnableFirewall"
-            class="firewall-enable"
-            type="primary"
-            :loading="firewallEnabling"
-            :disabled="node.status !== 'online'"
-            @click="enableFirewall"
-          >启用自动放行</el-button>
-          <p v-if="firewallEnableError" class="gost-error" role="alert">{{ firewallEnableError }}</p>
         </template>
         <p v-else class="ops-muted" role="status">
           {{ firewallLoading ? '正在读取防火墙状态…' : legacyFirewall ? '守护程序版本较旧，无法查询防火墙状态。' : '节点当前未在线。' }}
@@ -100,12 +92,12 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ArrowDown, Document, InfoFilled, Monitor, Refresh, SwitchButton } from '@element-plus/icons-vue'
 import { formatTime } from '@/utils/node-display'
 import { confirmPanelAction } from '@/utils/panel-dialog'
-import { enableNodeFirewall, getGostLogs, getGostService, getNodeFirewallStatus, restartGostService } from '@/api/node'
+import { getGostLogs, getGostService, getNodeFirewallStatus, restartGostService } from '@/api/node'
 
 const props = defineProps({ node: { type: Object, required: true } })
 defineEmits(['upgrade'])
@@ -116,10 +108,7 @@ const statusLoading = ref(false)
 const firewall = ref(null)
 const firewallLoading = ref(false)
 const firewallError = ref('')
-const firewallEnabling = ref(false)
-const firewallEnableError = ref('')
 const legacyFirewall = ref(false)
-const legacyFirewallEnable = ref(false)
 const logsLoading = ref(false)
 const restarting = ref(false)
 const statusError = ref('')
@@ -141,16 +130,23 @@ const firewallBackend = computed(() => {
   return backend === 'ufw' ? 'UFW' : backend || '未识别'
 })
 const automaticRules = computed(() => firewall.value?.managed && !firewall.value.disabled_reason)
-const canEnableFirewall = computed(() => !automaticRules.value && !legacyFirewallEnable.value &&
-  firewall.value?.disabled_reason !== 'unsupported_environment' &&
-  ['ufw', 'firewalld', 'nftables'].includes(firewall.value?.backend))
+const firewallStartup = computed(() => {
+  if (automaticRules.value) return { label: '已启用', tone: 'is-success' }
+  if (firewall.value?.disabled_reason === 'checking_firewall') return { label: '正在检查', tone: 'is-warning' }
+  if (firewall.value?.disabled_reason === 'waiting_panel') return { label: '等待面板', tone: 'is-muted' }
+  if (firewall.value?.disabled_reason === 'no_exit_endpoint') return { label: '未启用', tone: 'is-muted' }
+  return { label: '未启用', tone: 'is-warning' }
+})
 const firewallDisabledReason = computed(() => {
   switch (firewall.value?.disabled_reason) {
+    case 'checking_firewall': return '正在重新检查防火墙后端和规则。'
+    case 'no_exit_endpoint': return '节点暂无出口端点。添加后自动启用。'
+    case 'waiting_panel': return '等待面板下发出口端点状态。'
     case 'explicitly_disabled': return '节点配置将 firewall.enabled 设为 false。'
-    case 'not_configured': return '节点未配置自动放行，默认关闭。'
+    case 'not_configured': return '节点尚未配置自动放行。'
     case 'invalid_configuration': return '节点的防火墙配置无效。'
     case 'unsupported_environment': return '当前节点环境不支持自动放行。'
-    default: return '节点配置未启用自动放行。'
+    default: return '节点未启用自动放行。'
   }
 })
 const firewallHelp = computed(() => {
@@ -196,45 +192,48 @@ const readStatus = async () => {
   }
 }
 
-const readFirewall = async () => {
-  if (firewallLoading.value || firewallEnabling.value) return
+let firewallRequest
+const readFirewall = (background = false) => {
+  if (firewallRequest) return firewallRequest
   firewallLoading.value = true
-  firewall.value = null
+  if (!background) firewall.value = null
   firewallError.value = ''
-  firewallEnableError.value = ''
   legacyFirewall.value = false
-  legacyFirewallEnable.value = false
-  try {
-    const res = await getNodeFirewallStatus(props.node.id)
+  firewallRequest = getNodeFirewallStatus(props.node.id).then(res => {
     firewall.value = res.data
-  } catch (error) {
+  }).catch(error => {
+    firewall.value = null
     legacyFirewall.value = error.response?.status === 501
     if (!legacyFirewall.value) {
       firewallError.value = error.response?.data?.message || '无法读取防火墙状态，请刷新重试。'
     }
-  } finally {
+  }).finally(() => {
+    firewallRequest = undefined
     firewallLoading.value = false
-  }
-}
-
-const enableFirewall = async () => {
-  if (!canEnableFirewall.value || firewallEnabling.value || props.node.status !== 'online') return
-  firewallEnabling.value = true
-  firewallEnableError.value = ''
-  try {
-    const res = await enableNodeFirewall(props.node.id)
-    firewall.value = res.data
-    ElMessage.success('自动放行配置已保存')
-  } catch (error) {
-    legacyFirewallEnable.value = error.response?.status === 501
-    firewallEnableError.value = legacyFirewallEnable.value ? '请升级节点的 yagp-daemon 后再启用自动放行。' :
-      error.response?.data?.message || '无法启用自动放行，请刷新检查节点状态。'
-  } finally {
-    firewallEnabling.value = false
-  }
+  })
+  return firewallRequest
 }
 
 const refresh = () => Promise.all([readStatus(), readFirewall(), logsOpen.value && readLogs()])
+
+const firewallRecheckInterval = 5000
+const firewallRecheckLimit = 5
+let firewallRecheckTimer
+let firewallRecheckGeneration = 0
+const cancelFirewallRecheck = () => {
+  clearTimeout(firewallRecheckTimer)
+  return ++firewallRecheckGeneration
+}
+const recheckFirewall = (generation, remaining = firewallRecheckLimit) => {
+  const awaitingResult = () => generation === firewallRecheckGeneration && props.node.status === 'online' &&
+    firewall.value?.disabled_reason === 'checking_firewall'
+  if (!remaining || !awaitingResult()) return
+  firewallRecheckTimer = setTimeout(async () => {
+    if (!awaitingResult()) return
+    await readFirewall(true)
+    recheckFirewall(generation, remaining - 1)
+  }, firewallRecheckInterval)
+}
 
 const toggleLogs = () => {
   logsOpen.value = !logsOpen.value
@@ -247,23 +246,30 @@ const restart = async () => {
   }).catch(() => false)
   if (!confirmed) return
 
+  const generation = cancelFirewallRecheck()
   restarting.value = true
   restartError.value = ''
+  let succeeded = false
   try {
     const res = await restartGostService(props.node.id)
     service.value = res.data
+    succeeded = true
     ElMessage.success('Gost 重启操作已完成')
   } catch (error) {
     restartError.value = error.response?.data?.message || '重启请求失败，请核对服务状态和日志。'
   } finally {
+    await firewallRequest
     await refresh()
     restarting.value = false
+    if (succeeded) recheckFirewall(generation)
   }
 }
 
 watch(() => props.node.status, (status) => {
-  if (status === 'online') refresh()
+  if (status === 'online' && !restarting.value) refresh()
 }, { immediate: true })
+
+onUnmounted(cancelFirewallRecheck)
 </script>
 
 <style scoped>
@@ -312,8 +318,7 @@ watch(() => props.node.status, (status) => {
 .service-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .gost-error { color: var(--ops-danger); white-space: pre-wrap; overflow-wrap: anywhere; }
 .firewall-reason { display: flex; align-items: baseline; gap: 8px; color: var(--ops-muted); }
-.firewall-reason .el-icon { flex: none; align-self: flex-start; margin-top: 4px; color: var(--ops-warning); }
-.firewall-enable { justify-self: start; min-height: 44px; }
+.firewall-reason .el-icon { flex: none; align-self: flex-start; margin-top: 4px; }
 
 .gost-log-section { min-width: 0; border-top: 1px solid var(--ops-border); }
 .gost-log-toggle {

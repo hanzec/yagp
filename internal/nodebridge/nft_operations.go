@@ -123,18 +123,26 @@ func storePanelConfig(configPath string, config *nodegrpc.NodeConfig) error {
 
 // ReadNftTemplate uses the snapshot fetched by the daemon's established session.
 func ReadNftTemplate(configPath string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(filepath.Dir(configPath), panelConfigCache))
+	config, err := readPanelConfig(configPath)
 	if err != nil {
-		return "", fmt.Errorf("read node configuration cached by the daemon: %w", err)
-	}
-	config := new(nodegrpc.NodeConfig)
-	if err = proto.Unmarshal(data, config); err != nil {
-		return "", fmt.Errorf("decode cached node configuration: %w", err)
+		return "", err
 	}
 	if config.GetNftTemplate() == "" {
 		return "", errors.New("cached node configuration has no nftables template")
 	}
 	return config.GetNftTemplate(), nil
+}
+
+func readPanelConfig(configPath string) (*nodegrpc.NodeConfig, error) {
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(configPath), panelConfigCache))
+	if err != nil {
+		return nil, fmt.Errorf("read node configuration cached by the daemon: %w", err)
+	}
+	config := new(nodegrpc.NodeConfig)
+	if err = proto.Unmarshal(data, config); err != nil {
+		return nil, fmt.Errorf("decode cached node configuration: %w", err)
+	}
+	return config, nil
 }
 
 func ReadNodeNftTemplate(configPath string, id uint64) (string, error) {

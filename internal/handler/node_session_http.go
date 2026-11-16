@@ -51,6 +51,10 @@ func (h *streamReports) GetNodeConfig(ctx context.Context, _ *emptypb.Empty) (*n
 	if err != nil {
 		return nil, err
 	}
+	hasExitEndpoint, err := h.hasExitEndpoint(ctx, node.ID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "could not load node exit endpoint policy")
+	}
 	config, err := yaml.Marshal(struct {
 		NodeID             uint   `yaml:"node_id"`
 		TrafficLimitBytes  int64  `yaml:"traffic_limit_bytes"`
@@ -64,7 +68,21 @@ func (h *streamReports) GetNodeConfig(ctx context.Context, _ *emptypb.Empty) (*n
 	if err != nil {
 		return nil, status.Error(codes.Internal, "could not encode node configuration")
 	}
-	return &nodegrpc.NodeConfig{ConfigYaml: config, NftTemplate: nftTemplate(nodegrpc.NftTableName(h.id))}, nil
+	return &nodegrpc.NodeConfig{
+		ConfigYaml: config, NftTemplate: nftTemplate(nodegrpc.NftTableName(h.id)), HasExitEndpoint: &hasExitEndpoint,
+	}, nil
+}
+
+func (h *streamReports) hasExitEndpoint(ctx context.Context, nodeID uint) (bool, error) {
+	db := h.db.WithContext(ctx)
+	exit := db.Select("id").Where("node_id = ? AND role = ?", nodeID, model.EndpointRoleExit).
+		Limit(1).Find(&model.GostRule{})
+	if exit.Error != nil || exit.RowsAffected > 0 {
+		return exit.RowsAffected > 0, exit.Error
+	}
+	// Older tunnels can run a Relay on the exit node without a typed exit rule.
+	tunnel := db.Select("id").Where("exit_node_id = ?", nodeID).Limit(1).Find(&model.GostTunnel{})
+	return tunnel.RowsAffected > 0, tunnel.Error
 }
 
 func (h *streamReports) currentNode(ctx context.Context) (*model.GostNode, error) {

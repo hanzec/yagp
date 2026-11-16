@@ -13,7 +13,11 @@ func (s *controlServer) GetGostServiceStatus(ctx context.Context, _ *emptypb.Emp
 }
 
 func (s *controlServer) RestartGostService(ctx context.Context, _ *emptypb.Empty) (*nodegrpc.GostServiceStatus, error) {
-	return restartGostService(ctx, s.config.runtimeUnit("gost"))
+	service, err := restartGostService(ctx, s.config.runtimeUnit("gost"))
+	if err == nil {
+		s.queueFirewallRestartCheck()
+	}
+	return service, err
 }
 
 func (s *controlServer) GetGostLogs(ctx context.Context, req *nodegrpc.GostLogsRequest) (*nodegrpc.GostLogsReply, error) {

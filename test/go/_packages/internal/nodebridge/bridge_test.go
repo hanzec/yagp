@@ -161,9 +161,6 @@ func TestNodeBridgeControlAndReport(t *testing.T) {
 	if _, err = nodegrpc.NewV1Client(observerConn).GetFirewallStatus(timeout, &emptypb.Empty{}); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("local observer exposed firewall status RPC: %v", err)
 	}
-	if _, err = nodegrpc.NewV1Client(observerConn).EnableFirewall(timeout, &emptypb.Empty{}); status.Code(err) != codes.Unimplemented {
-		t.Fatalf("local observer exposed firewall enable RPC: %v", err)
-	}
 	observation := &observer.ObserveRequest{Events: []*observer.Event{{
 		Kind: "service", Service: "rule-5", Type: "stats", Stats: &observer.Stats{InputBytes: 800, OutputBytes: 300},
 	}}}
@@ -188,13 +185,17 @@ func TestNodeBridgeControlAndReport(t *testing.T) {
 		if endpoint, err := panelClient.GetObserverEndpoint(timeout, &emptypb.Empty{}); err != nil || endpoint.GetAddress() != observerAddress {
 			t.Fatalf("observer address: %v, %v", endpoint, err)
 		}
-		firewall, err := panelClient.GetFirewallStatus(timeout, &emptypb.Empty{})
-		if err != nil || firewall == nil || firewall.GetManaged() || firewall.GetSynchronized() ||
-			firewall.GetLastSync() != nil || firewall.LastError != nil || firewall.GetDisabledReason() != "not_configured" {
-			t.Fatalf("unmanaged firewall status on connection %d: %v, %v", attempt, firewall, err)
-		}
-		if _, err := panelClient.EnableFirewall(timeout, &emptypb.Empty{}); status.Code(err) != codes.FailedPrecondition {
-			t.Fatalf("firewall enable without node configuration on connection %d: %v", attempt, err)
+		for {
+			firewall, err := panelClient.GetFirewallStatus(timeout, &emptypb.Empty{})
+			if err == nil && firewall.GetDisabledReason() == "waiting_panel" && timeout.Err() == nil {
+				time.Sleep(time.Millisecond)
+				continue
+			}
+			if err != nil || firewall == nil || firewall.GetManaged() || firewall.GetSynchronized() ||
+				firewall.GetLastSync() != nil || firewall.LastError != nil || firewall.GetDisabledReason() != "not_configured" {
+				t.Fatalf("unmanaged firewall status on connection %d: %v, %v", attempt, firewall, err)
+			}
+			break
 		}
 		if _, err := panelClient.GetNodeConfig(timeout, &emptypb.Empty{}); status.Code(err) != codes.Unimplemented {
 			t.Fatalf("node configuration RPC in reverse direction: %v", err)
@@ -358,14 +359,14 @@ func TestNodeBridgeRetriesConfigurationBeforePublishingSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	var current atomic.Pointer[nodegrpc.Session]
-	connected, err := runPanelSession(ctx, credentials, configPath, &current, nil)
+	connected, err := runPanelSession(ctx, credentials, configPath, &current, nil, nil)
 	if connected || status.Code(errors.Unwrap(err)) != codes.Unavailable || current.Load() != nil {
 		t.Fatalf("failed config unexpectedly published the session: %v, %v", connected, err)
 	}
 	if _, err = ReadNftTemplate(configPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed config left a snapshot: %v", err)
 	}
-	go maintainPanelChannel(ctx, credentials, configPath, &current, nil)
+	go maintainPanelChannel(ctx, credentials, configPath, &current, nil, nil)
 	for current.Load() == nil {
 		select {
 		case <-ctx.Done():
@@ -431,7 +432,7 @@ func TestPanelChannelReconnectsAndOnlyLogsFailedConnectionAttempt(t *testing.T) 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		maintainPanelChannel(ctx, credentials, configPath, &current, controlDispatcher(control))
+		maintainPanelChannel(ctx, credentials, configPath, &current, controlDispatcher(control), nil)
 	}()
 	defer func() {
 		cancel()
