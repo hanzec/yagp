@@ -36,12 +36,13 @@ type FirewallPorts struct {
 }
 
 type FirewallStatus struct {
-	Backend      string     `json:"backend"`
-	Supported    bool       `json:"supported"`
-	Managed      bool       `json:"managed"`
-	Synchronized bool       `json:"synchronized"`
-	LastSync     *time.Time `json:"last_sync"`
-	LastError    *string    `json:"last_error"`
+	Backend        string     `json:"backend"`
+	Supported      bool       `json:"supported"`
+	Managed        bool       `json:"managed"`
+	Synchronized   bool       `json:"synchronized"`
+	LastSync       *time.Time `json:"last_sync"`
+	LastError      *string    `json:"last_error"`
+	DisabledReason string     `json:"disabled_reason,omitempty"`
 }
 
 type FirewallManager struct {
@@ -78,7 +79,12 @@ func newFirewallManager(nodeID uint64, config FirewallConfig, backend string) (*
 	if config.Enabled != nil {
 		manager.status.Managed = *config.Enabled
 	}
-	if manager.status.Managed {
+	if !manager.status.Managed {
+		manager.status.DisabledReason = "not_configured"
+		if config.Enabled != nil {
+			manager.status.DisabledReason = "explicitly_disabled"
+		}
+	} else {
 		switch backend {
 		case firewallNFT:
 			if !firewallIdentifier.MatchString(config.Table) || !firewallIdentifier.MatchString(config.InputChain) || config.InputChain == manager.prefix+"input" {
@@ -89,9 +95,14 @@ func newFirewallManager(nodeID uint64, config FirewallConfig, backend string) (*
 				manager.configErr = errors.New("firewall requires an existing dedicated firewalld policy with a valid name")
 			}
 		}
-		if manager.configErr != nil {
+		switch {
+		case manager.configErr != nil:
+			manager.status.DisabledReason = "invalid_configuration"
 			manager.recordSyncError(manager.configErr)
-		} else if supportErr != nil {
+		case runtime.GOOS != "linux":
+			manager.status.DisabledReason = "unsupported_environment"
+			manager.recordSyncError(supportErr)
+		case supportErr != nil:
 			manager.recordSyncError(supportErr)
 		}
 	}

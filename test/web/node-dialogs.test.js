@@ -41,12 +41,18 @@ function open(component, props = {}) {
   return wrapper
 }
 
-describe('inline Gost service', () => {
+describe('inline node service status', () => {
   const active = { unit: 'gost.service', active_state: 'active', load_state: 'loaded', sub_state: 'running' }
+  const statusFields = view => Object.fromEntries(view.findAll('dl dt')
+    .map(label => [label.text(), label.element.nextElementSibling.textContent.trim()]))
   const mountService = (status = 'online') => {
     wrapper = mountNodeComponent(NodeGostService, { node: { ...node, status } })
     return wrapper
   }
+
+  beforeEach(() => {
+    api.getNodeFirewallStatus.mockResolvedValue(response({ backend: 'nftables', supported: true, managed: false }))
+  })
 
   it('loads status in the page and sorts service logs when expanded', async () => {
     const status = deferred()
@@ -57,15 +63,19 @@ describe('inline Gost service', () => {
       { message: 'unknown', timestamp_unix_micros: 0 }
     ] }))
     const view = mountService()
-    expect(view.get('#node-gost-service h2').text()).toBe('Gost 服务')
+    expect(view.get('#node-gost-service h2').text()).toBe('服务状态')
+    expect(view.findAll('h3').map(heading => heading.text())).toEqual(['Gost', '自动防火墙规则'])
     expect(view.find('[role="dialog"]').exists()).toBe(false)
     expect(view.text()).toContain('正在读取服务状态')
     expect(button(view, '重启 Gost').element.disabled).toBe(true)
     status.resolve(response(active))
     await flushPromises()
     expect(api.getGostService).toHaveBeenCalledWith(node.id)
+    expect(api.getNodeFirewallStatus).toHaveBeenCalledExactlyOnceWith(node.id)
     expect(api.getGostLogs).not.toHaveBeenCalled()
     expect(view.text()).toContain('运行中')
+    const gost = view.get('[aria-labelledby="gost-status-title"]')
+    expect(statusFields(gost).后端类型).toBe('systemd')
     const logToggle = view.get('button[aria-controls="node-gost-logs"]')
     expect(logToggle.attributes('aria-expanded')).toBe('false')
     expect(view.get('#node-gost-logs').isVisible()).toBe(false)
@@ -81,6 +91,7 @@ describe('inline Gost service', () => {
     api.getGostService.mockResolvedValue(response({ ...active, active_state: 'activating', sub_state: '' }))
     api.getGostLogs.mockResolvedValue(response({}))
     await click(view, '刷新')
+    expect(api.getNodeFirewallStatus.mock.calls).toEqual([[node.id], [node.id]])
     expect(view.get('.ops-status').classes()).toContain('is-warning')
     expect(view.text()).toContain('未知')
     expect(view.text()).toContain('暂无日志')
@@ -113,6 +124,7 @@ describe('inline Gost service', () => {
     api.restartGostService.mockResolvedValueOnce(response(active))
     await click(view, '重启 Gost')
     expect(api.restartGostService).toHaveBeenCalledWith(node.id)
+    expect(api.getNodeFirewallStatus).toHaveBeenCalledTimes(5)
     expect(api.getGostLogs).toHaveBeenCalledTimes(5)
     expect(messages.success).toHaveBeenCalledWith('Gost 重启操作已完成')
     expect(view.find('[role="alert"]').exists()).toBe(false)
@@ -124,25 +136,103 @@ describe('inline Gost service', () => {
     const view = mountService('offline')
     expect(view.text()).toContain('节点当前未在线')
     expect(api.getGostService).not.toHaveBeenCalled()
+    expect(api.getNodeFirewallStatus).not.toHaveBeenCalled()
     await click(view, '刷新')
+    expect(api.getNodeFirewallStatus).toHaveBeenCalledExactlyOnceWith(node.id)
     expect(view.text()).toContain('无法读取 Gost 状态')
     await view.get('button[aria-controls="node-gost-logs"]').trigger('click')
     await flushPromises()
     expect(view.text()).toContain('日志不可用')
     await view.setProps({ node: { ...node, status: 'online' } })
     await flushPromises()
+    expect(api.getNodeFirewallStatus).toHaveBeenCalledTimes(2)
     expect(view.get('.ops-status').text()).toBe('custom')
     expect(view.get('.ops-status').classes()).toContain('is-muted')
     expect(button(view, '重启 Gost').element.disabled).toBe(true)
+  })
+
+  it('shows firewall sync failures and the last successful sync while the Gost status read fails', async () => {
+    const lastSync = '2026-11-13T03:30:00Z'
+    const state = { supported: true, managed: true, last_sync: lastSync, backend: 'nftables' }
+    api.getGostService.mockRejectedValue(apiError('无法读取 Gost 状态'))
+    api.getNodeFirewallStatus.mockResolvedValueOnce(response({ ...state, synchronized: false, last_error: 'missing firewall jump' }))
+      .mockResolvedValueOnce(response({ ...state, synchronized: true, last_error: null }))
+    const view = mountService()
+    await flushPromises()
+    const health = view.get('#node-firewall-status')
+    expect(statusFields(health)).toMatchObject({ 后端类型: 'nftables', 启动状态: '已启用', 同步状态: '同步异常' })
+    expect(health.text()).toContain('inet input 链')
+    expect(health.text()).toContain('missing firewall jump')
+    expect(health.text()).toContain('最近成功同步')
+    expect(health.get('time').attributes('datetime')).toBe(lastSync)
+    expect(view.text()).toContain('无法读取 Gost 状态')
+
+    await click(view, '刷新')
+    expect(statusFields(health).同步状态).toBe('已同步')
+    expect(health.text()).not.toContain('missing firewall jump')
+  })
+
+  it.each([
+    [false, 'explicitly_disabled', '节点配置将 firewall.enabled 设为 false。'],
+    [false, 'not_configured', '节点未配置自动放行，默认关闭。'],
+    [true, 'invalid_configuration', '节点的防火墙配置无效。'],
+    [true, 'unsupported_environment', '当前节点环境不支持自动放行。'],
+    [false, undefined, '节点配置未启用自动放行。']
+  ])('explains disabled automatic rules (%s, %s)', async (managed, disabledReason, message) => {
+    api.getGostService.mockResolvedValue(response(active))
+    api.getNodeFirewallStatus.mockResolvedValue(response({
+      backend: 'nftables', supported: false, managed, synchronized: false, disabled_reason: disabledReason
+    }))
+    const view = mountService()
+    await flushPromises()
+    const health = view.get('#node-firewall-status')
+    expect(statusFields(health)).toEqual({ 后端类型: 'nftables', 启动状态: '未启用', 未启用原因: message })
+    expect(api.getNodeNftConfig).not.toHaveBeenCalled()
+  })
+
+  it('shows older daemon support independently of the running Gost service', async () => {
+    api.getGostService.mockResolvedValue(response(active))
+    api.getNodeFirewallStatus.mockRejectedValue({ response: { status: 501 } })
+    const view = mountService()
+    await flushPromises()
+    expect(view.get('#node-firewall-status').text()).toContain('守护程序版本较旧')
+    expect(view.text()).toContain('运行中')
+  })
+
+  it('shows the UFW requirement without nftables delegation guidance', async () => {
+    api.getGostService.mockResolvedValue(response(active))
+    api.getNodeFirewallStatus.mockResolvedValue(response({
+      backend: 'ufw', supported: false, managed: true, synchronized: false, last_error: 'UFW is inactive'
+    }))
+    const view = mountService()
+    await flushPromises()
+    const health = view.get('#node-firewall-status')
+    expect(statusFields(health)).toMatchObject({ 后端类型: 'UFW', 启动状态: '已启用', 同步状态: '后端不可用' })
+    expect(health.text()).toContain('UFW 已启用并运行')
+    expect(health.text()).toContain('UFW is inactive')
+    expect(health.text()).not.toContain('inet input 链')
+  })
+
+  it('shows the firewalld policy requirement and refreshes after delegation is ready', async () => {
+    const state = { backend: 'firewalld', supported: true, managed: true }
+    api.getGostService.mockResolvedValue(response(active))
+    api.getNodeFirewallStatus
+      .mockResolvedValueOnce(response({ ...state, synchronized: false }))
+      .mockResolvedValueOnce(response({ ...state, synchronized: true, last_error: null }))
+    const view = mountService()
+    await flushPromises()
+    const health = view.get('#node-firewall-status')
+    expect(statusFields(health)).toMatchObject({ 后端类型: 'firewalld', 启动状态: '已启用', 同步状态: '待同步' })
+    expect(health.text()).toContain('管理员配置的入站 policy')
+    expect(health.text()).not.toContain('inet input 链')
+
+    await click(view, '刷新')
+    expect(statusFields(health).同步状态).toBe('已同步')
   })
 })
 
 describe('nftables preview', () => {
   const activeRules = '{"nftables":[{"quota":{"table":"yagp_quota","bytes":9223372036854775807}}]}'
-
-  beforeEach(() => {
-    api.getNodeFirewallStatus.mockResolvedValue(response({ supported: true, managed: false }))
-  })
 
   it('retries a read failure and displays active rules without editing controls', async () => {
     api.getNodeNftConfig.mockRejectedValueOnce(apiError('节点离线'))
@@ -156,76 +246,19 @@ describe('nftables preview', () => {
     expect(wrapper.get('pre').text()).toBe(activeRules)
     expect(wrapper.find('textarea').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('应用到节点')
+    expect(api.getNodeFirewallStatus).not.toHaveBeenCalled()
   })
 
   it('labels saved rules from older nodes and shows when no live rules are configured', async () => {
-    api.getNodeFirewallStatus.mockRejectedValue({ response: { status: 501 } })
     api.getNodeNftConfig.mockResolvedValueOnce(response({ config: activeRules, live: false }))
       .mockResolvedValueOnce(response({ config: '{"nftables":[]}', live: true }))
     wrapper = mountNodeComponent(NodeNftPreview, { node })
     await flushPromises()
-    expect(wrapper.get('.nft-firewall').text()).toContain('守护程序版本较旧')
     expect(wrapper.text()).toContain('旧版守护程序仅提供上次保存的规则')
     expect(wrapper.get('pre').text()).toBe(activeRules)
     await click(wrapper, '刷新')
     expect(wrapper.text()).toContain('此节点暂无 yagp 管理的 nftables 规则。')
     expect(wrapper.find('pre').exists()).toBe(false)
-  })
-
-  it('shows firewall failures and the last successful sync even when the rule preview fails', async () => {
-    const lastSync = '2026-11-13T03:30:00Z'
-    const state = { supported: true, managed: true, last_sync: lastSync, backend: 'nftables' }
-    api.getNodeNftConfig.mockRejectedValue(apiError('无法读取节点规则'))
-    api.getNodeFirewallStatus.mockResolvedValueOnce(response({ ...state, synchronized: false, last_error: 'missing firewall jump' }))
-      .mockResolvedValueOnce(response({ ...state, synchronized: true, last_error: null }))
-    wrapper = mountNodeComponent(NodeNftPreview, { node })
-    await flushPromises()
-    const health = wrapper.get('.nft-firewall')
-    expect(health.text()).toContain('同步异常')
-    expect(health.text()).toContain('放行后端 nftables')
-    expect(health.text()).toContain('inet input 链')
-    expect(health.text()).toContain('missing firewall jump')
-    expect(health.get('time').attributes('datetime')).toBe(lastSync)
-    expect(wrapper.get('[role="alert"]').text()).toContain('无法读取节点规则')
-
-    await click(wrapper, '重新加载')
-    expect(api.getNodeFirewallStatus).toHaveBeenCalledWith(node.id)
-    expect(health.text()).toContain('已同步')
-    expect(health.text()).not.toContain('missing firewall jump')
-  })
-
-  it('shows the UFW requirement without nftables delegation guidance', async () => {
-    api.getNodeNftConfig.mockResolvedValue(response({ config: activeRules, live: true }))
-    api.getNodeFirewallStatus.mockResolvedValue(response({
-      backend: 'ufw', supported: false, managed: true, synchronized: false, last_error: 'UFW is inactive'
-    }))
-    wrapper = mountNodeComponent(NodeNftPreview, { node })
-    await flushPromises()
-    const health = wrapper.get('.nft-firewall')
-    expect(health.text()).toContain('放行后端 UFW')
-    expect(health.text()).toContain('后端不可用')
-    expect(health.text()).toContain('UFW 已启用并运行')
-    expect(health.text()).toContain('UFW is inactive')
-    expect(health.text()).not.toContain('inet input 链')
-  })
-
-  it('shows the firewalld policy requirement and refreshes after delegation is ready', async () => {
-    const state = { backend: 'firewalld', supported: true, managed: true }
-    api.getNodeNftConfig.mockResolvedValue(response({ config: activeRules, live: true }))
-    api.getNodeFirewallStatus
-      .mockResolvedValueOnce(response({ ...state, synchronized: false, last_error: 'firewalld policy is not active' }))
-      .mockResolvedValueOnce(response({ ...state, synchronized: true, last_error: null }))
-    wrapper = mountNodeComponent(NodeNftPreview, { node })
-    await flushPromises()
-    const health = wrapper.get('.nft-firewall')
-    expect(health.text()).toContain('放行后端 firewalld')
-    expect(health.text()).toContain('管理员配置的入站 policy')
-    expect(health.text()).toContain('firewalld policy is not active')
-    expect(health.text()).not.toContain('inet input 链')
-
-    await click(wrapper, '刷新')
-    expect(health.text()).toContain('已同步')
-    expect(health.text()).not.toContain('firewalld policy is not active')
   })
 })
 

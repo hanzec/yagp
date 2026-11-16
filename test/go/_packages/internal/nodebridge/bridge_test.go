@@ -186,7 +186,8 @@ func TestNodeBridgeControlAndReport(t *testing.T) {
 			t.Fatalf("observer address: %v, %v", endpoint, err)
 		}
 		firewall, err := panelClient.GetFirewallStatus(timeout, &emptypb.Empty{})
-		if err != nil || firewall == nil || firewall.GetManaged() || firewall.GetSynchronized() || firewall.GetLastSync() != nil || firewall.LastError != nil {
+		if err != nil || firewall == nil || firewall.GetManaged() || firewall.GetSynchronized() ||
+			firewall.GetLastSync() != nil || firewall.LastError != nil || firewall.GetDisabledReason() != "not_configured" {
 			t.Fatalf("unmanaged firewall status on connection %d: %v, %v", attempt, firewall, err)
 		}
 		if _, err := panelClient.GetNodeConfig(timeout, &emptypb.Empty{}); status.Code(err) != codes.Unimplemented {
