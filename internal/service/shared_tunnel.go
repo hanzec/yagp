@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 
 	bizerrors "yagp/internal/errors"
 	"yagp/internal/model"
+	"yagp/internal/repository"
 	"yagp/pkg/gost"
 	"yagp/pkg/nodegrpc"
 
@@ -24,7 +26,32 @@ func (s *TunnelService) runningEndpointTunnels(column string, id, exclude uint) 
 	var tunnels []*model.GostTunnel
 	err := s.tunnelRepo.DB.Where(column+" = ? AND id <> ? AND status = ?", id, exclude, model.TunnelStatusRunning).
 		Order("id").Preload("EntryNode").Preload("ExitNode").Preload("EntryRule").Preload("ExitRule").Find(&tunnels).Error
+	for _, tunnel := range tunnels {
+		tunnel.EntryRule, tunnel.ExitRule = tunnel.EntryRule.WithAppliedEndpoint(), tunnel.ExitRule.WithAppliedEndpoint()
+	}
 	return tunnels, err
+}
+
+func (s *TunnelService) checkEndpointRestart(t *model.GostTunnel) error {
+	var pending []uint
+	for _, endpoint := range []*model.GostRule{t.EntryRule, t.ExitRule} {
+		if endpoint.AppliedEndpoint != nil {
+			pending = append(pending, endpoint.ID)
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	bindings, err := repository.NewRuleRepository(s.tunnelRepo.DB).EntranceBindings(pending)
+	if err != nil {
+		return err
+	}
+	for _, bound := range bindings {
+		if bound.ID != t.ID && bound.Status == model.TunnelStatusRunning {
+			return bizerrors.ErrTunnelEndpointRestart
+		}
+	}
+	return nil
 }
 
 func (s *TunnelService) configureSharedRelay(client *gost.Client, relay *gost.ServiceConfig, tunnels []*model.GostTunnel) error {
@@ -35,7 +62,8 @@ func (s *TunnelService) configureSharedRelay(client *gost.Client, relay *gost.Se
 	if err != nil {
 		return err
 	}
-	if current != nil && current.Handler != nil && current.Handler.Auther == relay.Name && current.Bypass == relay.Bypass {
+	if current != nil && current.Handler != nil && current.Handler.Auther == relay.Name &&
+		current.Bypass == relay.Bypass && slices.Equal(current.Bypasses, relay.Bypasses) {
 		return nil
 	}
 	address, err := client.ObserverAddress()

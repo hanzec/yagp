@@ -50,9 +50,7 @@ func sampleTunnel(ctx context.Context, tunnel *model.GostTunnel) model.TunnelPro
 	if err != nil {
 		return sample
 	}
-	reply, err := utils.GetGostClient(tunnel.EntryNode).ProbeTunnel(ctx, &nodegrpc.TunnelProbeRequest{
-		ChainName: tunnel.ChainID, Address: endpoint.GetAddress(), Token: endpoint.GetToken(), MeasureReplyIpTtl: true,
-	})
+	reply, err := probeTunnelEndpoint(ctx, utils.GetGostClient(tunnel.EntryNode), tunnel.ChainID, endpoint, true)
 	if err != nil {
 		recordTunnelProbeFailure(&sample, err)
 		return sample

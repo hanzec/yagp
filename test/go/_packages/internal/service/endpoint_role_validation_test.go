@@ -97,8 +97,6 @@ func TestEndpointRoleConversionClearsEntryPolicyAndProtectsStoppedExitBinding(t 
 	for _, change := range []func(*dto.UpdateRuleReq){
 		func(r *dto.UpdateRuleReq) { r.NodeID = &node.ID },
 		func(r *dto.UpdateRuleReq) { r.Role = "entry" },
-		func(r *dto.UpdateRuleReq) { r.ListenPort++ },
-		func(r *dto.UpdateRuleReq) { ip := "192.0.2.9"; r.ListenIP = &ip },
 	} {
 		invalid := *request
 		change(&invalid)

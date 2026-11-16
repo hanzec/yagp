@@ -63,8 +63,9 @@ func TestTunnelProbeHTTPUsesSavedChainAndNodeSessions(t *testing.T) {
 	}
 
 	address, token := "127.0.0.1:43210", bytes.Repeat([]byte{0x7f}, 32)
-	startResult, probeResult := make(chan error, 1), make(chan error, 1)
-	starts, probes := make(chan struct{}, 1), make(chan *nodegrpc.TunnelProbeRequest, 1)
+	startResult, probeResult := make(chan error, 1), make(chan error, 2)
+	domainAddress := make(chan string, 1)
+	starts, probes := make(chan struct{}, 1), make(chan *nodegrpc.TunnelProbeRequest, 2)
 	configReads := make(chan *nodegrpc.CommandRequest, 1)
 	type exitRelayConfig struct {
 		state      string
@@ -77,7 +78,7 @@ func TestTunnelProbeHTTPUsesSavedChainAndNodeSessions(t *testing.T) {
 	startTestReportStream(t, t.Context(), panel, exit, nodegrpc.NewDispatcher(tunnelProbeNode{
 		start: func() (*nodegrpc.TunnelProbeEndpoint, error) {
 			starts <- struct{}{}
-			return &nodegrpc.TunnelProbeEndpoint{Address: address, Token: token}, <-startResult
+			return &nodegrpc.TunnelProbeEndpoint{Address: address, Token: token, DomainAddress: <-domainAddress}, <-startResult
 		},
 		execute: func(req *nodegrpc.CommandRequest) (*nodegrpc.CommandReply, error) {
 			configReads <- req
@@ -127,6 +128,7 @@ func TestTunnelProbeHTTPUsesSavedChainAndNodeSessions(t *testing.T) {
 		name               string
 		prepare            error
 		probe              error
+		domainProbe        bool
 		wantHTTP           int
 		wantDetail         string
 		wantStage          string
@@ -141,6 +143,7 @@ func TestTunnelProbeHTTPUsesSavedChainAndNodeSessions(t *testing.T) {
 		wantRecommendation string
 	}{
 		{name: "round trip", wantHTTP: http.StatusOK},
+		{name: "domain round trip after target rejection", probe: targetForbidden, domainProbe: true, wantHTTP: http.StatusOK},
 		{name: "exit unavailable", prepare: status.Error(codes.Unavailable, "could not listen"), wantHTTP: http.StatusBadGateway, wantDetail: "无法在出口节点启动测试，请检查节点的 daemon 连接和运行状态", wantStage: "exit_listener"},
 		{name: "old exit daemon", prepare: status.Error(codes.Unimplemented, "old daemon"), wantHTTP: http.StatusNotImplemented, wantDetail: "请升级出口节点的 yagp-daemon 后再测试隧道", wantStage: "exit_listener"},
 		{name: "old entry daemon", probe: status.Error(codes.Unimplemented, "old daemon"), wantHTTP: http.StatusNotImplemented, wantDetail: "请升级入口节点的 yagp-daemon 后再测试隧道", wantStage: "entry_node"},
@@ -205,8 +208,16 @@ func TestTunnelProbeHTTPUsesSavedChainAndNodeSessions(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			startResult <- tt.prepare
+			if tt.domainProbe {
+				domainAddress <- nodegrpc.TunnelProbeDomain
+			} else {
+				domainAddress <- ""
+			}
 			if tt.prepare == nil {
 				probeResult <- tt.probe
+			}
+			if tt.domainProbe {
+				probeResult <- nil
 			}
 			if tt.checkExit {
 				relayConfig <- exitRelayConfig{state: tt.relayState, bypass: tt.relayBypass, admissions: tt.relayAdmissions}
@@ -292,6 +303,17 @@ func TestTunnelProbeHTTPUsesSavedChainAndNodeSessions(t *testing.T) {
 			default:
 				if tt.prepare == nil {
 					t.Fatal("the entry node did not receive the probe")
+				}
+			}
+			select {
+			case req := <-probes:
+				if !tt.domainProbe || req.GetChainName() != tunnel.ChainID || req.GetAddress() != nodegrpc.TunnelProbeDomain ||
+					!bytes.Equal(req.GetToken(), token) {
+					t.Fatalf("unexpected domain probe: %v", req)
+				}
+			default:
+				if tt.domainProbe {
+					t.Fatal("the entry node did not receive the domain probe")
 				}
 			}
 		})

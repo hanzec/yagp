@@ -79,6 +79,8 @@ type GostRule struct {
 	EnableTLS         bool       `gorm:"default:false" json:"enable_tls"`       // 是否启用 TLS
 	Status            RuleStatus `gorm:"size:20;default:stopped" json:"status"` // 状态
 	ServiceID         string     `gorm:"size:100" json:"service_id"`            // Gost 服务 ID
+	// Retain listener and routing settings until the last tunnel using them stops.
+	AppliedEndpoint *EndpointConfig `gorm:"type:text;serializer:json" json:"-"`
 
 	// 流量监控配置
 	ObserverID string `gorm:"size:100" json:"observer_id"` // 观察器 ID
@@ -111,6 +113,41 @@ type GostRule struct {
 type TunnelBinding struct {
 	ID     uint         `json:"id"`
 	Status TunnelStatus `json:"status"`
+}
+
+type EndpointConfig struct {
+	Protocol          RuleProtocol
+	ListenIP          string
+	ListenPort        int
+	ProtocolOptions   map[string]string
+	Targets           []string
+	UseClashRuleset   bool
+	UseOriginalTarget bool
+	RulesetIDs        []uint
+	ManualDomains     []string
+	Strategy          string
+	EnableTLS         bool
+}
+
+func (r *GostRule) EndpointConfig() EndpointConfig {
+	return EndpointConfig{
+		Protocol: r.Protocol, ListenIP: r.ListenIP, ListenPort: r.ListenPort, ProtocolOptions: r.ProtocolOptions,
+		Targets: r.Targets, UseClashRuleset: r.UseClashRuleset, UseOriginalTarget: r.UseOriginalTarget,
+		RulesetIDs: r.RulesetIDs, ManualDomains: r.ManualDomains, Strategy: r.Strategy, EnableTLS: r.EnableTLS,
+	}
+}
+
+func (r *GostRule) WithAppliedEndpoint() *GostRule {
+	if r == nil || r.AppliedEndpoint == nil {
+		return r
+	}
+	current, config := *r, r.AppliedEndpoint
+	current.Protocol, current.ListenIP, current.ListenPort = config.Protocol, config.ListenIP, config.ListenPort
+	current.ProtocolOptions, current.Targets = config.ProtocolOptions, config.Targets
+	current.UseClashRuleset, current.UseOriginalTarget = config.UseClashRuleset, config.UseOriginalTarget
+	current.RulesetIDs, current.ManualDomains = config.RulesetIDs, config.ManualDomains
+	current.Strategy, current.EnableTLS = config.Strategy, config.EnableTLS
+	return &current
 }
 
 // TableName 指定表名

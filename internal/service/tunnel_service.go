@@ -276,6 +276,9 @@ func (s *TunnelService) GetByID(id uint) (*model.GostTunnel, error) {
 		}
 		return nil, err
 	}
+	if tunnel.Status == model.TunnelStatusRunning {
+		tunnel.EntryRule, tunnel.ExitRule = tunnel.EntryRule.WithAppliedEndpoint(), tunnel.ExitRule.WithAppliedEndpoint()
+	}
 	return tunnel, nil
 }
 
@@ -303,7 +306,13 @@ func (s *TunnelService) List(req *dto.TunnelListReq) ([]model.GostTunnel, int64,
 		}
 	}
 
-	return s.tunnelRepo.List(opt)
+	tunnels, total, err := s.tunnelRepo.List(opt)
+	for i := range tunnels {
+		if tunnels[i].Status == model.TunnelStatusRunning {
+			tunnels[i].EntryRule, tunnels[i].ExitRule = tunnels[i].EntryRule.WithAppliedEndpoint(), tunnels[i].ExitRule.WithAppliedEndpoint()
+		}
+	}
+	return tunnels, total, err
 }
 
 // Start 启动隧道

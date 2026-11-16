@@ -118,7 +118,7 @@ func TestEndpointHTTPReturnsRelayTrafficForExits(t *testing.T) {
 	check(*stored, 1, 2)
 }
 
-func TestEndpointHTTPUpdatesStoppedExitPolicyWithoutRebinding(t *testing.T) {
+func TestEndpointHTTPUpdatesBoundEndpointsWithoutMovingNodes(t *testing.T) {
 	f := newHandlerHTTPFixture(t)
 	f.registerForwarding()
 	node := model.GostNode{Name: "endpoints"}
@@ -148,15 +148,20 @@ func TestEndpointHTTPUpdatesStoppedExitPolicyWithoutRebinding(t *testing.T) {
 			t.Fatalf("list omitted linked tunnel state: %+v", rule)
 		}
 	}
-	f.request(t, "PUT", path, `{"name":"moved exit","protocol":"kcp","listen_port":18002}`, 400)
 	f.request(t, "PUT", path, `{"name":"reversed exit","role":"entry","protocol":"tcp","listen_port":18001}`, 400)
-	f.request(t, "PUT", fmt.Sprintf("/rules/%d", entry.ID), `{"name":"entry","protocol":"tcp","listen_port":18000}`, 400)
 	if err := f.db.Model(&tunnel).Update("status", model.TunnelStatusRunning).Error; err != nil {
 		t.Fatal(err)
 	}
-	f.request(t, "PUT", path, update, 400)
-	stored = handlerData[model.GostRule](t, f.request(t, "GET", path, "", 200))
-	if stored.Role != model.EndpointRoleExit || stored.ListenPort != 18001 || stored.Protocol != "kcp" || stored.Targets[0] != "new.example:443" {
-		t.Fatalf("rejected update changed the exit: %+v", stored)
+	stored = handlerData[model.GostRule](t, f.request(t, "PUT", path,
+		`{"name":"edited running exit","protocol":"tcp","listen_port":18002,"targets":["next.example:443"]}`, 200))
+	if stored.Role != model.EndpointRoleExit || stored.ListenPort != 18002 || stored.Protocol != "tcp" ||
+		stored.LinkedTunnelStatus != model.TunnelStatusRunning || stored.Targets[0] != "next.example:443" {
+		t.Fatalf("running exit update did not save the requested settings: %+v", stored)
+	}
+	updatedEntry := handlerData[model.GostRule](t, f.request(t, "PUT", fmt.Sprintf("/rules/%d", entry.ID),
+		`{"name":"edited running entry","protocol":"tcp","listen_port":18003}`, 200))
+	if updatedEntry.Role != model.EndpointRoleEntry || updatedEntry.ListenPort != 18003 ||
+		updatedEntry.LinkedTunnelStatus != model.TunnelStatusRunning {
+		t.Fatalf("running entry update did not save the requested settings: %+v", updatedEntry)
 	}
 }

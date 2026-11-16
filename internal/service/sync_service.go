@@ -187,7 +187,7 @@ func (s *RuleSyncService) syncTunnels(client *gost.Client, nodeID uint, tunnels 
 	relayHostsByEntry := make(map[uint][]string)
 	for _, t := range tunnels {
 		if t.EntryNodeID == nodeID && t.EntryRuleID != nil && t.Status == model.TunnelStatusRunning {
-			if host := relayHost(t.ExitRule, exitNodes[t.ExitNodeID]); host != "" {
+			if host := relayHost(t.ExitRule.WithAppliedEndpoint(), exitNodes[t.ExitNodeID]); host != "" {
 				relayHostsByEntry[*t.EntryRuleID] = append(relayHostsByEntry[*t.EntryRuleID], host)
 			}
 		}
@@ -211,7 +211,7 @@ func (s *RuleSyncService) syncTunnels(client *gost.Client, nodeID uint, tunnels 
 		if !exists || chainName != managedName {
 			continue
 		}
-		exitHost := relayHost(t.ExitRule, exitNodes[t.ExitNodeID])
+		exitHost := relayHost(t.ExitRule.WithAppliedEndpoint(), exitNodes[t.ExitNodeID])
 		clashChain := clashTunnelChainName(t.ID)
 		for _, name := range []string{chainName, clashChain, sharedTransparentChainName(t.ID)} {
 			addr, ok := chainsByName[name].TunnelRelayAddress()
@@ -251,7 +251,7 @@ func (s *RuleSyncService) syncTransparentRelayHost(client *gost.Client, ruleID u
 	if err != nil {
 		return err
 	}
-	request := transparentRedirectRequest(rule, exitHost)
+	request := transparentRedirectRequest(rule.WithAppliedEndpoint(), exitHost)
 	if len(hosts) > 1 {
 		request.RelayHosts = hosts
 	}

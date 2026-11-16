@@ -167,11 +167,11 @@ func (s *GostRulesetService) prepareSubscription(ctx context.Context, name, sour
 
 func (s *GostRulesetService) requireUnreferenced(ctx context.Context, id uint) error {
 	var rules []model.GostRule
-	if err := s.db.WithContext(ctx).Select("id", "ruleset_ids").Find(&rules).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select("id", "ruleset_ids", "applied_endpoint").Find(&rules).Error; err != nil {
 		return err
 	}
 	for _, rule := range rules {
-		if slices.Contains(rule.RulesetIDs, id) {
+		if slices.Contains(rule.RulesetIDs, id) || slices.Contains(rule.WithAppliedEndpoint().RulesetIDs, id) {
 			return fmt.Errorf("规则集正在被端点 %d 使用，请先移除引用", rule.ID)
 		}
 	}
@@ -399,13 +399,8 @@ func (s *GostRulesetService) syncPolicies(ctx context.Context, cfg *model.GostRu
 		var entryIDs []uint
 		if err := s.db.WithContext(ctx).Table("tunnels").
 			Distinct("tunnels.entry_node_id").
-			Joins("JOIN rules ON (rules.tunnel_id = tunnels.id OR rules.id = tunnels.entry_rule_id)").
-			Joins("LEFT JOIN rules AS exit_rules ON exit_rules.id = tunnels.exit_rule_id AND exit_rules.deleted_at IS NULL").
-			Where(`((exit_rules.role = ? AND exit_rules.use_clash_ruleset = ?) OR
-				(COALESCE(exit_rules.role, '') <> ? AND
-					((tunnels.entry_rule_id IS NOT NULL AND COALESCE(tunnels.strategy, '') <> '' AND tunnels.use_clash_ruleset = ?) OR
-					((tunnels.entry_rule_id IS NULL OR COALESCE(tunnels.strategy, '') = '') AND rules.use_clash_ruleset = ?))))`,
-				model.EndpointRoleExit, true, model.EndpointRoleExit, true, true).
+			Joins("JOIN rules ON rules.tunnel_id = tunnels.id").
+			Where("tunnels.entry_rule_id IS NULL AND rules.use_clash_ruleset = ?", true).
 			Where("rules.status = ? AND rules.deleted_at IS NULL AND tunnels.deleted_at IS NULL", model.RuleStatusRunning).
 			Pluck("tunnels.entry_node_id", &entryIDs).Error; err != nil {
 			logger.Warnf("读取使用 Clash 分流的入口失败: %v", err)
@@ -425,10 +420,14 @@ func (s *GostRulesetService) syncPolicies(ctx context.Context, cfg *model.GostRu
 		if tunnel.EntryRule == nil {
 			continue
 		}
+		tunnel.EntryRule, tunnel.ExitRule = tunnel.EntryRule.WithAppliedEndpoint(), tunnel.ExitRule.WithAppliedEndpoint()
 		policy := endpointTargetRule(tunnel)
 		if !hasSelectedRules(&policy) {
-			if policy.UseClashRuleset && cfg.URL != "" && tunnel.ServiceID != "" {
-				add(tunnel.ExitNodeID, gost.TransparentBypassName, cfg.Matchers)
+			if policy.UseClashRuleset && cfg.URL != "" {
+				add(tunnel.EntryNodeID, gost.TransparentBypassName, cfg.Matchers)
+				if tunnel.ServiceID != "" {
+					add(tunnel.ExitNodeID, gost.TransparentBypassName, cfg.Matchers)
+				}
 			}
 			continue
 		}

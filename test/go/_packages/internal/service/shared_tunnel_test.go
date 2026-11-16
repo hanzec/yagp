@@ -104,12 +104,25 @@ func TestEndpointTunnelsShareAnExitRelay(t *testing.T) {
 		len(exitRemote.policy(right.ServiceID).Users) != 2 {
 		t.Fatal("restarting the original tunnel failed to reuse the existing shared Relay")
 	}
+	_, err = NewRuleService(db).Update(sharedExit.ID, &dto.UpdateRuleReq{
+		Name: sharedExit.Name, Protocol: "tcp", ListenPort: 18444, Targets: []string{"new.test:443"},
+	}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
 	requireServiceError(t, tunnels.Stop(left.ID, testAdmin, testIP, testAgent), nil)
+	requireServiceError(t, tunnels.Start(left.ID, testAdmin, testIP, testAgent), bizerrors.ErrTunnelEndpointRestart)
+	if relay := exitRemote.service(right.ServiceID); relay.Addr != ":18443" {
+		t.Fatalf("applying edited settings while a peer is running changed the shared Relay: %+v", relay)
+	}
 	requireServiceError(t, tunnels.Stop(right.ID, testAdmin, testIP, testAgent), nil)
 	right = loadSharedTunnel(t, tunnels, right.ID)
 	if right.ExitRule.Status != model.RuleStatusStopped || exitRemote.service(left.ServiceID).Name != "" ||
 		len(exitRemote.policy(left.ServiceID).Users) != 0 {
 		t.Fatal("stopping the last tunnel did not remove its shared Relay")
+	}
+	requireServiceError(t, tunnels.Start(left.ID, testAdmin, testIP, testAgent), nil)
+	left = loadSharedTunnel(t, tunnels, left.ID)
+	if relay := exitRemote.service(left.ServiceID); relay.Addr != ":18444" {
+		t.Fatalf("starting after all peers stopped did not apply edited settings: %+v", relay)
 	}
 }
 
@@ -152,14 +165,15 @@ func TestSharedExitRetainsItsDomainBypassUntilLastTunnelStops(t *testing.T) {
 				bypasses = append(bypasses, name)
 			}
 		}
+		slices.Sort(bypasses)
 		if !running {
-			if len(services) != 0 || len(bypasses) != 0 {
+			if len(services) != 0 || !slices.Equal(bypasses, []string{gost.TunnelProbeBypassName}) {
 				t.Fatalf("stopping the last tunnel left services %v and bypasses %v", services, bypasses)
 			}
 			return
 		}
-		if !slices.Equal(services, []string{relay}) || !slices.Equal(bypasses, []string{policy}) {
-			t.Fatalf("expected one shared Relay and bypass, got services %v and bypasses %v", services, bypasses)
+		if !slices.Equal(services, []string{relay}) || !slices.Equal(bypasses, []string{policy, gost.TunnelProbeBypassName}) {
+			t.Fatalf("expected one shared Relay with a business and a probe bypass, got services %v and bypasses %v", services, bypasses)
 		}
 		var service gost.ServiceConfig
 		requireServiceError(t, json.Unmarshal(exitRemote.resources["/config/services/"+relay], &service), nil)
@@ -170,6 +184,16 @@ func TestSharedExitRetainsItsDomainBypassUntilLastTunnelStops(t *testing.T) {
 		requireServiceError(t, json.Unmarshal(exitRemote.resources["/config/bypasses/"+policy], &bypass), nil)
 		if service.Bypass != policy || !bypass.Whitelist || !slices.Equal(bypass.Matchers, []string{".match.test:443"}) {
 			t.Fatalf("shared Relay bypass = %q, policy = %+v", service.Bypass, bypass)
+		}
+		var probeBypass struct {
+			Whitelist bool
+			Network   string
+			Matchers  []string
+		}
+		requireServiceError(t, json.Unmarshal(exitRemote.resources["/config/bypasses/"+gost.TunnelProbeBypassName], &probeBypass), nil)
+		if !slices.Equal(service.Bypasses, []string{gost.TunnelProbeBypassName}) || !probeBypass.Whitelist ||
+			probeBypass.Network != "unix" || !slices.Equal(probeBypass.Matchers, []string{nodegrpc.TunnelProbeDomain}) {
+			t.Fatalf("shared Relay probe bypasses = %v, probe policy = %+v", service.Bypasses, probeBypass)
 		}
 	}
 	assertExitResources(true)
