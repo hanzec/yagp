@@ -152,16 +152,8 @@ jobs:
 
       - name: Package binaries
         run: |
-          # 打包 Linux amd64
           tar -czvf yagp-linux-amd64.tar.gz yagp-linux-amd64 config/config.yaml LICENSE
-          # 打包 Linux arm64
           tar -czvf yagp-linux-arm64.tar.gz yagp-linux-arm64 config/config.yaml LICENSE
-          # 打包 macOS amd64
-          tar -czvf yagp-darwin-amd64.tar.gz yagp-darwin-amd64 config/config.yaml LICENSE
-          # 打包 macOS arm64
-          tar -czvf yagp-darwin-arm64.tar.gz yagp-darwin-arm64 config/config.yaml LICENSE
-          # 打包 Windows
-          zip yagp-windows-amd64.zip yagp-windows-amd64.exe config/config.yaml LICENSE
           tar -czvf yagp-daemon-linux-amd64.tar.gz yagp-daemon-linux-amd64 yagp-daemon-systemd-linux-amd64 LICENSE
           tar -czvf yagp-daemon-linux-arm64.tar.gz yagp-daemon-linux-arm64 yagp-daemon-systemd-linux-arm64 LICENSE
           cp cmd/yagp-update/sigstore/LICENSE SIGSTORE-LICENSE
@@ -198,7 +190,6 @@ jobs:
           target_commitish: ${{ github.sha }}
           files: |
             yagp-*.tar.gz
-            yagp-*.zip
             ${{ steps.depoly-attestation.outputs.bundle-path != '' && 'yagp-depoly-attestations.jsonl' || '' }}
           fail_on_unmatched_files: true
           overwrite_files: false

@@ -254,9 +254,11 @@ jump yagp_42_input
 
 手动规则省略端口时默认匹配 443。填写 `example.com` 会匹配该域名和各级子域名的 443 端口，`example.com:80` 只匹配该域名的 80 端口，`*.example.com:443` 匹配各级子域名的 443 端口，`.example.com:400-500` 则匹配该域名和各级子域名在指定范围内的端口。通配符 `*` 匹配任意长度的字符串，`?` 匹配一个字符。
 
-入口需要支持透明转发的 `yagp-daemon` 和 nftables。面板提示守护程序版本过旧时，在入口节点的 **版本与升级** 中升级 `yagp-daemon`，等节点重新连接面板后再创建或启动隧道。Gost 监听和链就绪并保存后，守护程序才启用 IPv4 TCP 80/443 重定向。检测到 Docker bridge 时，规则也接管这些桥上的流量。同一节点可运行一条接管 80/443 的透明隧道。原先启用默认 Clash 规则集的隧道会保留原有分流行为。
+入口需要支持透明转发的 `yagp-daemon` 和 nftables。面板提示守护程序版本过旧时，在入口节点的 **版本与升级** 中升级 `yagp-daemon`，等节点重新连接面板后再创建或启动隧道。Gost 监听和链就绪并保存后，守护程序才启用 IPv4 TCP 80/443 重定向。守护程序通过 `/var/run/docker.sock` 读取 Docker 网桥名单并监听网络创建和删除事件，通过 Linux Netlink 查询网桥和 IPv4，并以单个事务更新 nftables 的 `docker_ifaces` 集合。Docker 重启后，守护程序会重连并同步当前网桥。同一节点可运行一条接管 80/443 的透明隧道。原先启用默认 Clash 规则集的隧道会保留原有分流行为。
 
 节点会避开现有 nftables 规则占用的 mark，并在启动时检查和加载已保存的规则版本。主机防火墙的启停和开机加载由管理员维护。已有透明隧道在下次启动时接入自动管理。若仍加载手工配置的 `inet gost` 重定向表，先停用该配置再启动隧道。
+
+部分旧内核会丢弃旧版守护程序写入的 nftables 表注释。若升级后守护程序日志提示现有 `yagp_redirect_<节点 ID>` 表与已保存的规则版本不符，且确认是原来的 yagp 表且仍保留隧道的保存状态，可在维护时备份并移除这张表，再重启节点守护程序从保存状态重建规则。
 
 停止或删除被隧道占用的端点时，先操作对应隧道。删除失败时，端点记录会保留，可排除故障后重试。
 
@@ -290,9 +292,9 @@ sudo journalctl --namespace=+yagp-depoly -u yagp-depoly.service -u 'yagp-update-
 
 ## 下载与开发
 
-面板支持 Linux（amd64、arm64）、Windows（amd64）和 macOS（Apple Silicon、Intel）。节点支持 Linux（amd64、arm64）。 [发布包](https://github.com/hanzec/yagp/releases)
+面板和节点守护程序均支持 Linux amd64 和 arm64。 [发布包](https://github.com/hanzec/yagp/releases)
 
-使用 Go 1.27.3 和 Node.js 26.13.0 LTS。运行 `make build` 构建面板和节点守护进程。运行 Go 测试前先构建前端。
+使用 Go 1.27.3 和 Node.js 26.13.0 LTS。运行 `make build` 构建 Linux 面板和节点守护进程。运行 Go 测试前先构建前端。在 Linux 上运行完整的 Go 测试。
 
 ```bash
 npm --prefix web ci

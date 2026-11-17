@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -83,9 +82,6 @@ func TestTrafficQuotaStateFile(t *testing.T) {
 }
 
 func TestTrafficQuotaRejectsInvalidPolicy(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("traffic quotas are supported on Linux")
-	}
 	cfg := Config{NodeID: 42, ConfigFile: filepath.Join(t.TempDir(), "node.yaml")}
 	for _, test := range []struct {
 		name   string
@@ -105,7 +101,7 @@ func TestTrafficQuotaRejectsInvalidPolicy(t *testing.T) {
 }
 
 func TestNativeTrafficQuotaLifecycle(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getenv("YAGP_TEST_NFT") != "1" {
+	if os.Getenv("YAGP_TEST_NFT") != "1" {
 		t.Skip("set YAGP_TEST_NFT=1 in a disposable Linux network namespace with nft installed")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)

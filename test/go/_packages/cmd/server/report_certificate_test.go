@@ -11,7 +11,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +44,7 @@ func TestGeneratedReportCertificatePersistsAndCoversAddress(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+			if info.Mode().Perm() != 0o600 {
 				t.Fatalf("certificate and private key mode = %o, want 0600", info.Mode().Perm())
 			}
 			if err = generateReportCertificate(address.Host()); err != nil {
@@ -158,9 +157,6 @@ func TestReportCertificateGenerationRecoversAfterMissingDataDirectory(t *testing
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, dataPath); err != nil {
-		if runtime.GOOS == "windows" {
-			t.Skipf("symbolic links unavailable: %v", err)
-		}
 		t.Fatal(err)
 	}
 	if err := os.Remove(target); err != nil {

@@ -1,4 +1,4 @@
-//go:build !libsystemd || !linux || (!amd64 && !arm64)
+//go:build linux && (!libsystemd || (!amd64 && !arm64))
 
 package nodebridge
 

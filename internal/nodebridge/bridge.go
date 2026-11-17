@@ -1,3 +1,5 @@
+//go:build linux
+
 package nodebridge
 
 import (
@@ -9,10 +11,13 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"yagp/internal/buildinfo"
@@ -145,12 +150,15 @@ func run(ctx context.Context, cfg Config, dial func(context.Context, string, str
 	healthpb.RegisterHealthServer(observation, ready)
 
 	channelCtx, cancelChannel := context.WithCancel(ctx)
-	var firewallWorker sync.WaitGroup
+	var workers sync.WaitGroup
 	defer func() {
 		cancelChannel()
-		firewallWorker.Wait()
+		workers.Wait()
 	}()
-	firewallWorker.Go(func() { control.maintainFirewall(channelCtx, &current, policy) })
+	workers.Go(func() { control.maintainFirewall(channelCtx, &current, policy) })
+	if cfg.ConfigFile != "" {
+		workers.Go(func() { control.maintainDockerRedirect(channelCtx) })
+	}
 	go maintainCredentials(channelCtx, credentials)
 	go maintainPanelChannel(channelCtx, credentials, cfg.ConfigFile, &current, controlDispatcher(control), control.firewallChanged)
 
@@ -218,6 +226,82 @@ func (s *controlServer) Execute(ctx context.Context, command *nodegrpc.CommandRe
 
 func (s *controlServer) GetObserverEndpoint(context.Context, *emptypb.Empty) (*nodegrpc.ObserverEndpoint, error) {
 	return &nodegrpc.ObserverEndpoint{Address: s.config.ObserverListen}, nil
+}
+
+func (s *controlServer) GetGostServiceStatus(ctx context.Context, _ *emptypb.Empty) (*nodegrpc.GostServiceStatus, error) {
+	return gostServiceStatus(ctx, s.config.runtimeUnit("gost"))
+}
+
+func (s *controlServer) RestartGostService(ctx context.Context, _ *emptypb.Empty) (*nodegrpc.GostServiceStatus, error) {
+	service, err := restartGostService(ctx, s.config.runtimeUnit("gost"))
+	if err == nil {
+		s.queueFirewallRestartCheck()
+	}
+	return service, err
+}
+
+func (s *controlServer) GetGostLogs(ctx context.Context, req *nodegrpc.GostLogsRequest) (*nodegrpc.GostLogsReply, error) {
+	return gostServiceLogs(ctx, s.config.runtimeUnit("gost"), req.GetLines())
+}
+
+func (s *controlServer) CheckListener(ctx context.Context, req *nodegrpc.ListenerCheckRequest) (*nodegrpc.ListenerCheckReply, error) {
+	protocol, ip, port := req.GetProtocol(), req.GetIp(), req.GetPort()
+	if (protocol != "tcp" && protocol != "udp") || port == 0 || port > 65535 {
+		return nil, status.Error(codes.InvalidArgument, "监听检查需要 TCP 或 UDP 协议及有效端口")
+	}
+	if ip != "" {
+		addr, err := netip.ParseAddr(ip)
+		if err != nil || addr.Zone() != "" {
+			return nil, status.Error(codes.InvalidArgument, "监听 IP 必须是有效的 IPv4 或 IPv6 地址")
+		}
+	}
+	address := net.JoinHostPort(ip, strconv.FormatUint(uint64(port), 10))
+	var config net.ListenConfig
+	var socket io.Closer
+	var err error
+	if protocol == "tcp" {
+		socket, err = config.Listen(ctx, protocol, address)
+	} else {
+		socket, err = config.ListenPacket(ctx, protocol, address)
+	}
+	if err != nil {
+		return &nodegrpc.ListenerCheckReply{Reason: listenerBindFailure(err)}, nil
+	}
+	_ = socket.Close()
+	return &nodegrpc.ListenerCheckReply{Available: true}, nil
+}
+
+func listenerBindFailure(err error) string {
+	switch {
+	case errors.Is(err, syscall.EADDRINUSE):
+		return "occupied"
+	case errors.Is(err, syscall.EADDRNOTAVAIL):
+		return "address_unavailable"
+	case errors.Is(err, syscall.EACCES), errors.Is(err, syscall.EPERM):
+		return "permission_denied"
+	default:
+		return "bind_failed"
+	}
+}
+
+func controlDispatcher(control *controlServer) nodegrpc.StreamHandler {
+	return nodegrpc.NewDispatcher(control,
+		nodegrpc.V1_Execute_FullMethodName,
+		nodegrpc.V1_CheckListener_FullMethodName,
+		nodegrpc.V1_GetObserverEndpoint_FullMethodName,
+		nodegrpc.V1_GetGostServiceStatus_FullMethodName,
+		nodegrpc.V1_RestartGostService_FullMethodName,
+		nodegrpc.V1_GetGostLogs_FullMethodName,
+		nodegrpc.V1_GetNftConfig_FullMethodName,
+		nodegrpc.V1_ApplyNftConfig_FullMethodName,
+		nodegrpc.V1_GetFirewallStatus_FullMethodName,
+		nodegrpc.V1_SyncTrafficQuota_FullMethodName,
+		nodegrpc.V1_GetUpgradeStatus_FullMethodName,
+		nodegrpc.V1_StartUpgrade_FullMethodName,
+		nodegrpc.V1_ConfigureTransparentRedirect_FullMethodName,
+		nodegrpc.V1_StartTunnelProbe_FullMethodName,
+		nodegrpc.V1_ProbeTunnel_FullMethodName,
+	)
 }
 
 var resourceName = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9_.-]*$`)

@@ -1,3 +1,5 @@
+//go:build linux
+
 package nodebridge
 
 import (
@@ -8,10 +10,13 @@ import (
 	"net/http"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"yagp/pkg/nodegrpc"
+
+	"golang.org/x/sys/unix"
 )
 
 var sharedNATRange = netip.MustParsePrefix("100.64.0.0/10")
@@ -86,6 +91,50 @@ func detectNodeIPs(ctx context.Context) nodeIPSnapshot {
 		snapshot.local = nil
 	}
 	return snapshot
+}
+
+func localNodeInterfaceAddresses(ctx context.Context) ([]net.Addr, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	dockerBridges := localDockerBridgeNames(ctx, dockerSocketPath)
+	var addresses []net.Addr
+	for _, iface := range interfaces {
+		// Container bridges and a cloud NIC can both use private address ranges.
+		if isDockerInterface(iface.Name, dockerBridges) {
+			continue
+		}
+		local, err := iface.Addrs()
+		if err != nil {
+			return nil, err
+		}
+		addresses = append(addresses, local...)
+	}
+	return addresses, nil
+}
+
+func isDockerInterface(name string, bridges map[string]struct{}) bool {
+	if _, ok := bridges[name]; ok || name == "docker_gwbridge" || conventionalDockerBridge(name) {
+		return true
+	}
+	// Docker generates host-side veth names with a seven-character hexadecimal suffix.
+	id, ok := strings.CutPrefix(name, "veth")
+	if !ok || len(id) != 7 || id != strings.ToLower(id) {
+		return false
+	}
+	_, err := strconv.ParseUint(id, 16, 28)
+	return err == nil
+}
+
+func detectMultipathTCP() bool {
+	// Go's ListenConfig silently falls back to TCP, so probe the kernel protocol directly.
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, unix.IPPROTO_MPTCP)
+	if err != nil {
+		return false
+	}
+	_ = unix.Close(fd)
+	return true
 }
 
 func collectNodeIPs(ipv4, ipv6 string, interfaces []net.Addr) nodeIPSnapshot {

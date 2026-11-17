@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -110,7 +112,7 @@ func systemctl(ctx context.Context, args ...string) error {
 }
 
 func downloadGost(ctx context.Context, path string, showProgress bool) error {
-	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
+	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
 		return errors.New("Gost installation supports Linux amd64 and arm64")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)

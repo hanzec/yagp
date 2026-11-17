@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"testing"
 )
 
@@ -85,10 +84,6 @@ func TestFirewallBackendUsesActiveUFWOutsideUbuntu(t *testing.T) {
 
 func TestFirewallOptInUsesSelectedBackend(t *testing.T) {
 	enabled, disabled := true, false
-	enabledReason := ""
-	if runtime.GOOS != "linux" {
-		enabledReason = "unsupported_environment"
-	}
 	for _, test := range []struct {
 		name, backend  string
 		config         FirewallConfig
@@ -96,13 +91,13 @@ func TestFirewallOptInUsesSelectedBackend(t *testing.T) {
 		disabledReason string
 	}{
 		{"disabled by default", firewallUFW, FirewallConfig{}, false, true, "not_configured"},
-		{"Ubuntu requires no delegation", firewallUFW, FirewallConfig{Enabled: &enabled}, true, true, enabledReason},
-		{"Ubuntu never uses old nft table", firewallUFW, FirewallConfig{Table: "filter", InputChain: "input"}, true, true, enabledReason},
-		{"nft delegation still opts in", firewallNFT, FirewallConfig{Table: "filter", InputChain: "input"}, true, true, enabledReason},
+		{"Ubuntu requires no delegation", firewallUFW, FirewallConfig{Enabled: &enabled}, true, true, ""},
+		{"Ubuntu never uses old nft table", firewallUFW, FirewallConfig{Table: "filter", InputChain: "input"}, true, true, ""},
+		{"nft delegation still opts in", firewallNFT, FirewallConfig{Table: "filter", InputChain: "input"}, true, true, ""},
 		{"explicit opt-out", firewallNFT, FirewallConfig{Enabled: &disabled, Table: "filter", InputChain: "input"}, false, true, "explicitly_disabled"},
 		{"nft requires delegation", firewallNFT, FirewallConfig{Enabled: &enabled}, true, false, "invalid_configuration"},
 		{"RHEL requires a delegated policy", firewallFirewalld, FirewallConfig{Enabled: &enabled}, true, false, "invalid_configuration"},
-		{"RHEL delegated policy", firewallFirewalld, FirewallConfig{Enabled: &enabled, Policy: "yagp-42"}, true, true, enabledReason},
+		{"RHEL delegated policy", firewallFirewalld, FirewallConfig{Enabled: &enabled, Policy: "yagp-42"}, true, true, ""},
 		{"reject invalid policy name", firewallFirewalld, FirewallConfig{Enabled: &enabled, Policy: "public\n"}, true, false, "invalid_configuration"},
 		{"no nft fallback on RHEL", firewallFirewalld, FirewallConfig{Table: "filter", InputChain: "input"}, true, false, "invalid_configuration"},
 	} {

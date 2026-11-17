@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"testing"
 
@@ -172,7 +171,7 @@ func TestRelayAutherCanOnlyTargetTheLocalPlugin(t *testing.T) {
 
 func TestSharedRelayAuthenticationThroughGost(t *testing.T) {
 	binary := os.Getenv("YAGP_TEST_GOST_BINARY")
-	if binary == "" || (runtime.GOOS != "linux" && runtime.GOOS != "darwin") {
+	if binary == "" {
 		t.Skip("set YAGP_TEST_GOST_BINARY to an installed Linux or macOS Gost binary")
 	}
 	binary, err := filepath.Abs(binary)

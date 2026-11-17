@@ -104,6 +104,34 @@ func TestFirewallPlanRestoresDriftWithoutDeletingDelegatedChain(t *testing.T) {
 	}
 }
 
+func TestFirewallReadRulesetWithoutChainComment(t *testing.T) {
+	manager := newFirewallTestManager(t)
+	sets, err := manager.desiredSets(firewallTestPorts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := strings.Replace(firewallLiveHost, `"name":"yagp_42_input","comment":"yagp daemon firewall 42"`, `"name":"yagp_42_input"`, 1)
+	live, err := manager.readRuleset([]byte(legacy), sets)
+	if err != nil || len(manager.batch(live, sets)) != 0 {
+		t.Fatalf("unchanged legacy chain was not recognized: %v", err)
+	}
+
+	drift := strings.Replace(legacy, `{"accept":null}`, `{"drop":null}`, 1)
+	if _, err := manager.readRuleset([]byte(drift), sets); err == nil {
+		t.Fatal("unmarked chain containing a foreign rule was accepted")
+	}
+	marked := strings.Replace(drift, `"chain":"yagp_42_input","expr"`, `"chain":"yagp_42_input","comment":"yagp daemon firewall 42","expr"`, 1)
+	live, err = manager.readRuleset([]byte(marked), sets)
+	if err != nil {
+		t.Fatalf("read chain with a rule comment: %v", err)
+	}
+	batch := string(manager.batch(live, sets))
+	if !strings.HasPrefix(batch, "flush chain inet host-filter yagp_42_input\n") ||
+		strings.Count(batch, `accept comment "yagp daemon firewall 42"`) != len(sets) {
+		t.Fatalf("managed rule comments were not restored:\n%s", batch)
+	}
+}
+
 func TestFirewallRejectsForeignObjectsAndDetectsMissingDelegation(t *testing.T) {
 	manager := newFirewallTestManager(t)
 	sets, err := manager.desiredSets(FirewallPorts{})

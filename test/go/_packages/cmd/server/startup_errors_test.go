@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -114,7 +113,7 @@ func TestReportTokenKeyStorage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		if info.Mode().Perm() != 0o600 {
 			t.Fatalf("token key permissions = %o, want 0600", info.Mode().Perm())
 		}
 	})
@@ -139,9 +138,6 @@ func TestReportTokenKeyStorage(t *testing.T) {
 				}
 			case "data symlink has no target":
 				if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), dir); err != nil {
-					if runtime.GOOS == "windows" {
-						t.Skipf("symbolic links unavailable: %v", err)
-					}
 					t.Fatal(err)
 				}
 			}

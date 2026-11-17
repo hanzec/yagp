@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -114,9 +113,6 @@ func TestTunnelProbeReportsMissingOrInvalidGostSetup(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			if tc.failingProcess {
-				if runtime.GOOS != "linux" {
-					t.Skip("requires a Linux executable")
-				}
 				binary, err := exec.LookPath("false")
 				if err != nil {
 					t.Fatal(err)
@@ -246,7 +242,7 @@ func TestTunnelProbeTCPDiagnosticSkipsDatagramTransports(t *testing.T) {
 
 func TestTunnelProbeThroughGostRelay(t *testing.T) {
 	binary := os.Getenv("YAGP_TEST_GOST_BINARY")
-	if binary == "" || (runtime.GOOS != "linux" && runtime.GOOS != "darwin") {
+	if binary == "" {
 		t.Skip("set YAGP_TEST_GOST_BINARY to an installed Linux or macOS Gost binary")
 	}
 	binary, err := filepath.Abs(binary)
