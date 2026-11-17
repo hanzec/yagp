@@ -21,34 +21,6 @@
     <div class="latency-times ops-mono" aria-hidden="true">
       <span v-for="(label, index) in timeTicks" :key="index">{{ label }}</span>
     </div>
-
-    <div class="ops-table-scroll latency-samples" tabindex="0" role="region" aria-label="探测采样记录">
-      <table aria-label="采样记录">
-        <thead>
-          <tr>
-            <th scope="col">采样时间</th>
-            <th scope="col">平均 RTT（ms）</th>
-            <th scope="col">TTL</th>
-            <th scope="col">成功</th>
-            <th scope="col">失败</th>
-            <th scope="col">不可用</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="point in sampledPoints" :key="point.timestamp" class="ops-mono">
-            <td><time :datetime="point.timestamp">{{ readingFormat.format(new Date(point.timestamp)) }}</time></td>
-            <td>{{ point.avg_latency_ms?.toFixed(1) ?? '—' }}</td>
-            <td>{{ point.ttl ?? '—' }}</td>
-            <td>{{ point.successful }}</td>
-            <td>{{ point.failed }}</td>
-            <td>{{ point.unavailable }}</td>
-          </tr>
-          <tr v-if="!sampledPoints.length">
-            <td colspan="6" class="latency-samples-empty">此时间范围内暂无探测记录</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
   </figure>
 </template>
 
@@ -57,7 +29,6 @@ import { computed } from 'vue'
 
 const props = defineProps({ metrics: { type: Object, required: true } })
 const points = computed(() => props.metrics.points)
-const sampledPoints = computed(() => points.value.filter(point => point.attempts).reverse())
 const bucketSeconds = computed(() => props.metrics.bucket_seconds)
 const bucketLabel = computed(() => bucketSeconds.value >= 3600 ? `${bucketSeconds.value / 3600} 小时` : `${bucketSeconds.value / 60} 分钟`)
 const windowStart = computed(() => Date.parse(props.metrics.from))
@@ -109,7 +80,7 @@ const timeTicks = computed(() => {
 .latency-chart { min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--ops-border); border-radius: var(--ops-radius-inset); background: var(--ops-inset); }
 .latency-heading, .latency-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
 .latency-heading { justify-content: space-between; }
-.latency-granularity, .latency-legend, .latency-samples { font-size: var(--ops-text-sm); color: var(--ops-muted); }
+.latency-granularity, .latency-legend { font-size: var(--ops-text-sm); color: var(--ops-muted); }
 .latency-legend { margin-block: 10px; }
 .latency-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend-line { width: 14px; border-top: 2px solid var(--ops-accent); }
@@ -124,10 +95,4 @@ const timeTicks = computed(() => {
 .latency-ticks, .latency-times { display: flex; justify-content: space-between; color: var(--ops-muted); font-size: var(--ops-text-xs); }
 .latency-ticks { flex-direction: column; align-items: end; margin-block: -8px; }
 .latency-times { padding: 8px 0 0 calc(4ch + 12px); }
-.latency-samples { max-height: 14rem; margin-top: 12px; overflow: auto; }
-.latency-samples table { width: 100%; border-collapse: collapse; text-align: start; }
-.latency-samples :is(th, td) { padding: 6px 8px; border-bottom: 1px solid var(--ops-border); }
-.latency-samples :is(th, td):not(:first-child) { text-align: end; }
-.latency-samples th { position: sticky; top: 0; background: var(--ops-inset); }
-.latency-samples .latency-samples-empty { padding-block: 16px; text-align: center; }
 </style>

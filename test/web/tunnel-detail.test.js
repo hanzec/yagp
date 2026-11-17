@@ -70,14 +70,11 @@ describe('Tunnel detail monitoring', () => {
     expect(wrapper.get('.tunnel-metrics').text()).toContain('0 ms')
     expect(wrapper.get('.tunnel-metrics').text()).toContain('50.00 %')
     expect(wrapper.get('.tunnel-metrics').text()).toContain('51')
-    expect(wrapper.find('.latency-failure-markers').exists()).toBe(true)
-
+    const chart = wrapper.get('.latency-plot svg')
+    expect(chart.get('.latency-line').attributes('d')).toBeTruthy()
+    expect(chart.find('.latency-failure-markers').exists()).toBe(true)
+    expect(wrapper.find('.latency-chart table').exists()).toBe(false)
     expect(wrapper.find('input[type="range"]').exists()).toBe(false)
-    const rows = wrapper.findAll('.latency-chart tbody tr')
-    expect(rows).toHaveLength(3)
-    expect(rows[0].findAll('td').map(cell => cell.text()).slice(1)).toEqual(['—', '—', '0', '0', '1'])
-    expect(rows[1].findAll('td').map(cell => cell.text()).slice(1)).toEqual(['—', '—', '0', '1', '0'])
-    expect(rows[2].findAll('td').map(cell => cell.text()).slice(1)).toEqual(['0.0', '51', '1', '0', '0'])
   })
 
   it.each([
@@ -106,33 +103,36 @@ describe('Tunnel detail monitoring', () => {
     expect(oldSignal.aborted).toBe(true)
     expect(getTunnelMetrics).toHaveBeenLastCalledWith('7', '1h', expect.any(AbortSignal))
     expect(wrapper.get('button[aria-pressed="true"]').text()).toBe('1 小时')
-    const samplingTable = wrapper.get('.latency-chart table')
-    expect(samplingTable.findAll('thead th').map(cell => cell.text())).toEqual(['采样时间', '平均 RTT（ms）', 'TTL', '成功', '失败', '不可用'])
-    expect(samplingTable.get('tbody').text()).toBe('此时间范围内暂无探测记录')
-    expect(wrapper.find('.latency-plot svg').exists()).toBe(true)
+    const chart = wrapper.get('.latency-plot svg')
+    expect(chart.get('.latency-grid').attributes('d')).toBeTruthy()
+    expect(chart.get('.latency-line').attributes('d')).toBe('')
+    expect(chart.find('.latency-failure-markers').exists()).toBe(false)
+    expect(wrapper.find('.latency-chart table').exists()).toBe(false)
     pending.resolve({ data: metrics })
     await flushPromises()
-    expect(samplingTable.get('tbody').text()).toBe('此时间范围内暂无探测记录')
+    expect(chart.get('.latency-line').attributes('d')).toBe('')
   })
 
-  it('keeps the current chart and table while updating the time range', async () => {
+  it('keeps the current chart mounted while updating the time range', async () => {
     const pending = Promise.withResolvers()
     getTunnelMetrics.mockResolvedValueOnce({ data: metrics }).mockReturnValueOnce(pending.promise)
     const wrapper = await mountDetail()
-    const samplingTable = wrapper.get('.latency-chart table').element
+    const chart = wrapper.get('.latency-plot svg')
+    const line = chart.get('.latency-line').attributes('d')
 
     await wrapper.get('button[aria-pressed="false"]').trigger('click')
     expect(getTunnel).toHaveBeenCalledTimes(1)
     expect(getTunnelMetrics).toHaveBeenLastCalledWith('7', '1h', expect.any(AbortSignal))
     expect(wrapper.get('.tunnel-monitor').attributes('aria-busy')).toBe('true')
-    expect(wrapper.get('.latency-chart table').element).toBe(samplingTable)
-    expect(wrapper.findAll('.latency-chart tbody tr')).toHaveLength(3)
+    expect(wrapper.get('.latency-plot svg').element).toBe(chart.element)
+    expect(chart.get('.latency-line').attributes('d')).toBe(line)
 
     pending.resolve({ data: empty })
     await flushPromises()
     expect(wrapper.get('.tunnel-monitor').attributes('aria-busy')).toBe('false')
-    expect(wrapper.get('.latency-chart table').element).toBe(samplingTable)
-    expect(wrapper.get('.latency-chart tbody').text()).toBe('此时间范围内暂无探测记录')
+    expect(wrapper.get('.latency-plot svg').element).toBe(chart.element)
+    expect(chart.get('.latency-grid').attributes('d')).toBeTruthy()
+    expect(chart.get('.latency-line').attributes('d')).toBe('')
   })
 
   it('retries a failed history request', async () => {
