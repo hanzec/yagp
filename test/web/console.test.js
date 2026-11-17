@@ -164,7 +164,10 @@ describe('console routing and Authentik gate', () => {
     adapter.mockImplementation(config => {
       const payloads = {
         '/tunnels/7': { id: 7, name: '港深隧道', status: 'running' },
-        '/tunnels/7/metrics': { summary: { attempts: 0 } },
+        '/tunnels/7/metrics': {
+          from: '2026-11-16T00:00:00Z', to: '2026-11-17T00:00:00Z', interval_seconds: 60,
+          bucket_seconds: 600, summary: { attempts: 0, successful: 0, failed: 0, unavailable: 0 }, points: []
+        },
         '/tunnels': { list: [], total: 0 }
       }
       return config.url in payloads ? Promise.resolve(reply(config, payloads[config.url])) : defaultResponse(config)
