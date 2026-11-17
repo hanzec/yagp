@@ -40,7 +40,7 @@ async function mountDetail() {
     history: createMemoryHistory(),
     routes: [
       { path: '/tunnels', name: 'Tunnels', component: { template: '<div />' } },
-      { path: '/tunnels/:id', name: 'TunnelDetail', component: TunnelDetail }
+      { path: '/tunnels/:id', name: 'TunnelDetail', component: TunnelDetail, meta: { title: '隧道详情' } }
     ]
   })
   await router.push('/tunnels/7')
@@ -59,7 +59,7 @@ describe('Tunnel detail monitoring', () => {
     expect(wrapper.text()).toContain('最近探测')
     expect(wrapper.get('.tunnel-caption').text()).toContain('不可用')
     expect(wrapper.get('.tunnel-metrics').text()).toContain('0 ms')
-    expect(wrapper.get('.tunnel-metrics').text()).toContain('50 %')
+    expect(wrapper.get('.tunnel-metrics').text()).toContain('50.00 %')
     expect(wrapper.get('.tunnel-metrics').text()).toContain('51')
     expect(wrapper.find('.latency-failure-markers').exists()).toBe(true)
 
@@ -69,6 +69,21 @@ describe('Tunnel detail monitoring', () => {
     await selector.setValue('1')
     expect(selector.attributes('aria-valuetext')).toContain('无延迟读数')
     expect(selector.attributes('aria-valuetext')).toContain('1 失败')
+  })
+
+  it.each([
+    { successful: 2, failed: 0, rate: '0.00 %' },
+    { successful: 2, failed: 1, rate: '33.33 %' },
+    { successful: 0, failed: 0, rate: '—' }
+  ])('formats failure rate with $successful successful and $failed failed probes', async ({ successful, failed, rate }) => {
+    getTunnelMetrics.mockResolvedValue({ data: {
+      ...metrics,
+      summary: { ...metrics.summary, attempts: successful + failed + 4, successful, failed, unavailable: 4 }
+    } })
+    const wrapper = await mountDetail()
+    const card = wrapper.findAll('.tunnel-metrics > div').find(card => card.get('dt').text() === '失败率')
+    expect(card.get('dd').text()).toBe(rate)
+    expect(card.get('.tunnel-caption').text()).toBe(`${failed} 次失败 · 4 次不可用`)
   })
 
   it('ignores stale responses when the time range changes', async () => {

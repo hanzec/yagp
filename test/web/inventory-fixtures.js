@@ -35,10 +35,10 @@ afterEach(() => {
 
 export const result = (list = [], total = list.length) => ({ data: { list, total } })
 
-export function mountInventory(view) {
+export function mountInventory(view, plugins = []) {
   return mount(view, {
     attachTo: document.body,
-    global: { plugins: [ElementPlus], stubs: { ElDialog: Dialog, ElPagination: Pagination, RouterLink: RouterLinkStub } }
+    global: { plugins: [ElementPlus, ...plugins], stubs: { ElDialog: Dialog, ElPagination: Pagination, RouterLink: RouterLinkStub } }
   })
 }
 

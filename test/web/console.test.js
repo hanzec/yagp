@@ -158,6 +158,34 @@ describe('console routing and Authentik gate', () => {
     expect(wrapper.get('#node-link-7').text()).toBe('港深IX')
   })
 
+  it('places the tunnel detail breadcrumb in the top bar and returns to the tunnel list', async () => {
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    const defaultResponse = adapter.getMockImplementation()
+    adapter.mockImplementation(config => {
+      const payloads = {
+        '/tunnels/7': { id: 7, name: '港深隧道', status: 'running' },
+        '/tunnels/7/metrics': { summary: { attempts: 0 } },
+        '/tunnels': { list: [], total: 0 }
+      }
+      return config.url in payloads ? Promise.resolve(reply(config, payloads[config.url])) : defaultResponse(config)
+    })
+    await router.push('/tunnels/7')
+    wrapper = mount(App, { attachTo: document.body, global: { plugins: [router, createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    const breadcrumb = wrapper.get('.console-topbar nav[aria-label="隧道详情导航"]')
+    expect(breadcrumb.get('[aria-current="page"]').text()).toBe('港深隧道')
+    const back = breadcrumb.get('a')
+    expect(back.text()).toBe('返回隧道列表')
+    expect(back.attributes('href')).toBe('#/tunnels')
+    expect(wrapper.find('main nav[aria-label="隧道详情导航"]').exists()).toBe(false)
+
+    await back.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.fullPath).toBe('/tunnels')
+    expect(wrapper.get('.console-topbar h1').text()).toBe('隧道管理')
+  })
+
   it('boots the real entry point with the stored title while identity is pending', async () => {
     window.history.replaceState(null, '', '/#/dashboard')
     document.body.innerHTML = '<div id="app"></div>'

@@ -1,12 +1,13 @@
-import { flushPromises, RouterLinkStub } from '@vue/test-utils'
+import { flushPromises } from '@vue/test-utils'
 import { ElDropdownItem, ElForm, ElMessage, ElMessageBox, ElOption, ElSelect } from 'element-plus'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import Tunnels from '@/views/Tunnels.vue'
 import { getRoutingNodes } from '@/api/node'
 import { getGostRulesets } from '@/api/system'
 import { getRuleList } from '@/api/rule'
 import { createTunnel, deleteTunnel, getTunnelList, startTunnel, stopTunnel, testTunnel, updateTunnel } from '@/api/tunnel'
-import { button, changePage, choose, command, field, mountInventory, result, row, select } from './inventory-fixtures'
+import { button, changePage, choose, command, field, mountInventory as mountInventoryView, result, row, select } from './inventory-fixtures'
 
 vi.mock('@/api/node', () => ({ getRoutingNodes: vi.fn() }))
 vi.mock('@/api/system', () => ({ getGostRulesets: vi.fn() }))
@@ -45,23 +46,67 @@ const missingRelay = { id: 14, name: 'Unknown relay', entry_node_id: 31, exit_no
 const tunnels = [relay, udpRelay, { ...missingRelay, id: 15, name: 'Broken relay', status: 'error' }, missingRelay]
 const dialog = wrapper => wrapper.get('[role="dialog"]')
 const selectField = (wrapper, prop) => field(wrapper, prop).getComponent(ElSelect)
+let router
+const mountInventory = (view) => mountInventoryView(view, [router])
 
-beforeEach(() => {
+beforeEach(async () => {
   getGostRulesets.mockResolvedValue({ data: [{ id: 1, name: '旧 Clash 订阅' }, { id: 2, name: '工作域名' }] })
   getRoutingNodes.mockResolvedValue([ingress, egress, legacyNode])
   getRuleList.mockResolvedValue(result(entrances))
   getTunnelList.mockResolvedValue(result(tunnels, 32))
   for (const action of [createTunnel, updateTunnel, deleteTunnel, startTunnel, stopTunnel]) action.mockResolvedValue({})
+  router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/tunnels', name: 'Tunnels', component: Tunnels },
+      { path: '/tunnels/:id', name: 'TunnelDetail', component: { render: () => null } }
+    ]
+  })
+  await router.push('/tunnels')
 })
 
 describe('Relay tunnel inventory', () => {
-  it('links each tunnel name to its own detail page', async () => {
+  it('opens the selected tunnel from a click in a non-title cell', async () => {
     const wrapper = mountInventory(Tunnels)
     await flushPromises()
 
-    const link = row(wrapper, relay.name).getComponent(RouterLinkStub)
-    expect(link.props('to')).toEqual({ name: 'TunnelDetail', params: { id: relay.id } })
-    expect(link.attributes('aria-label')).toBe(`查看隧道详情：${relay.name}`)
+    const tunnelRow = row(wrapper, relay.name)
+    expect(tunnelRow.get('.inventory-row-name').element.tagName).toBe('SPAN')
+    await tunnelRow.get('.tunnel-route-cell').trigger('click')
+    await flushPromises()
+
+    expect(router.currentRoute.value.name).toBe('TunnelDetail')
+    expect(router.currentRoute.value.params.id).toBe(String(relay.id))
+  })
+
+  it('opens a focused tunnel row with Enter', async () => {
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+
+    const tunnelRow = row(wrapper, udpRelay.name)
+    expect(tunnelRow.attributes('tabindex')).toBe('0')
+    expect(tunnelRow.attributes('aria-label')).toBe(`查看隧道详情：${udpRelay.name}`)
+    tunnelRow.element.focus()
+    expect(document.activeElement).toBe(tunnelRow.element)
+    await tunnelRow.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+
+    expect(router.currentRoute.value.params.id).toBe(String(udpRelay.id))
+  })
+
+  it('keeps the list open when using row actions', async () => {
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+
+    const tunnelRow = row(wrapper, relay.name)
+    const more = tunnelRow.get(`[aria-label="隧道 ${relay.name} 的更多操作"]`)
+    await more.trigger('keydown', { key: 'Enter' })
+    await more.trigger('click')
+    await button(tunnelRow, '测试').trigger('click')
+    await flushPromises()
+
+    expect(dialog(wrapper).text()).toContain(relay.name)
+    expect(router.currentRoute.value.name).toBe('Tunnels')
   })
 
   it('shows loading and offline states, retries both requests, and filters paginated results', async () => {
@@ -926,5 +971,6 @@ describe('Relay tunnel configuration', () => {
     await command(row(wrapper, 'Media relay'), 'delete')
     expect(deleteTunnel).toHaveBeenLastCalledWith(13)
     expect(ElMessage.success).toHaveBeenCalledWith('隧道已删除')
+    expect(router.currentRoute.value.name).toBe('Tunnels')
   })
 })
