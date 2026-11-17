@@ -12,11 +12,6 @@
       </nav>
     </Teleport>
 
-    <div v-if="tunnel" class="tunnel-identity">
-      <span class="ops-status" :class="'is-' + tunnelState.tone">{{ tunnelState.label }}</span>
-      <span class="ops-muted ops-mono">#{{ tunnel.id }}</span>
-    </div>
-
     <div v-if="tunnelError" class="ops-panel ops-panel-body tunnel-feedback" role="alert">
       <span>{{ tunnelError }}</span>
       <el-button v-if="!tunnelMissing" @click="loadTunnel">重新加载</el-button>
@@ -25,9 +20,15 @@
 
     <template v-if="tunnel">
       <section class="ops-panel ops-panel-body tunnel-overview" aria-labelledby="tunnel-overview-title">
-        <h2 id="tunnel-overview-title" class="ops-section-title">
-          <el-icon aria-hidden="true"><Connection /></el-icon> 隧道信息
-        </h2>
+        <header class="ops-panel-header">
+          <h2 id="tunnel-overview-title" class="ops-section-title">
+            <el-icon aria-hidden="true"><Connection /></el-icon> 隧道信息
+          </h2>
+          <div class="tunnel-identity">
+            <span class="ops-status" :class="'is-' + tunnelState.tone">{{ tunnelState.label }}</span>
+            <span class="ops-muted ops-mono">#{{ tunnel.id }}</span>
+          </div>
+        </header>
         <div class="tunnel-topology">
           <template v-for="(endpoint, index) in endpoints" :key="endpoint.label">
             <div class="ops-inset tunnel-endpoint" :class="{ 'tunnel-relay': index === 1 }">
@@ -44,7 +45,7 @@
         </dl>
       </section>
 
-      <section class="ops-panel ops-panel-body tunnel-monitor" aria-labelledby="tunnel-monitor-title" :aria-busy="!metrics && metricsLoading">
+      <section class="ops-panel ops-panel-body tunnel-monitor" aria-labelledby="tunnel-monitor-title" :aria-busy="metricsLoading">
         <header class="ops-panel-header">
           <div>
             <h2 id="tunnel-monitor-title" class="ops-section-title">
@@ -66,10 +67,6 @@
         </div>
 
         <div v-if="!metrics && metricsLoading" class="tunnel-placeholder" role="status">正在加载探测记录…</div>
-        <div v-else-if="metrics && !metrics.summary.attempts" class="tunnel-placeholder" role="status">
-          <strong>此时间范围内暂无探测记录</strong>
-          <span>{{ tunnel.status === 'running' ? '请等待下一轮探测，或切换时间范围。' : '隧道运行时会自动采集探测记录。' }}</span>
-        </div>
         <template v-else-if="metrics">
           <dl class="tunnel-metrics">
             <div v-for="item in metricsCards" :key="item.label" class="ops-inset">
@@ -225,10 +222,10 @@ watch(() => route.params.id, () => {
   loadTunnel()
 }, { immediate: true })
 
-watch([() => route.params.id, range], () => {
+watch([() => route.params.id, range], ([id], [previousId]) => {
   metricsRequest?.abort()
   metricsRequest = null
-  metrics.value = null
+  if (id !== previousId) metrics.value = null
   metricsError.value = false
   loadMetrics()
 }, { immediate: true })
@@ -258,8 +255,6 @@ onUnmounted(() => {
 .tunnel-detail-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tunnel-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
 .tunnel-overview, .tunnel-monitor { display: grid; gap: var(--ops-section-gap); }
-.ops-section-title { display: flex; align-items: center; gap: 8px; }
-.ops-section-title .el-icon { color: var(--ops-accent); }
 .tunnel-topology { display: grid; grid-template-columns: minmax(0, 1fr) 30px minmax(112px, .65fr) 30px minmax(0, 1fr); }
 .tunnel-endpoint { display: grid; align-content: start; gap: 4px; overflow-wrap: anywhere; }
 .tunnel-relay { text-align: center; }
@@ -280,7 +275,6 @@ onUnmounted(() => {
 .tunnel-metrics dd.ops-mono { font-size: clamp(1.3rem, 2.2vw, 1.65rem); line-height: 1.35; }
 .tunnel-metrics small { color: var(--ops-muted); font-size: var(--ops-text-sm); }
 .tunnel-placeholder { display: grid; place-content: center; gap: 4px; min-height: 148px; padding: 16px; color: var(--ops-muted); text-align: center; }
-.tunnel-placeholder strong { color: var(--ops-text); }
 .tunnel-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; color: var(--ops-warning); }
 .tunnel-feedback .el-button { min-height: 44px; }
 .tunnel-measurement-note { border-top: 1px solid var(--ops-border); padding-top: 12px; }

@@ -25,7 +25,11 @@ const metrics = {
     { timestamp: '2026-11-16T01:02:00Z', attempts: 1, successful: 0, failed: 0, unavailable: 1, avg_latency_ms: null, ttl: null }
   ]
 }
-const empty = { ...metrics, summary: { attempts: 0 } }
+const empty = {
+  ...metrics,
+  summary: { attempts: 0, successful: 0, failed: 0, unavailable: 0 },
+  points: metrics.points.map(point => ({ timestamp: point.timestamp, attempts: 0 }))
+}
 
 enableAutoUnmount(afterEach)
 
@@ -53,6 +57,11 @@ describe('Tunnel detail monitoring', () => {
   it('shows topology, nullable readings and the result of the latest attempt separately', async () => {
     const wrapper = await mountDetail()
     expect(getTunnelMetrics).toHaveBeenCalledWith('7', '24h', expect.any(AbortSignal))
+    const overviewHeader = wrapper.get('.tunnel-overview > header')
+    expect(overviewHeader.get('h2').text()).toBe('隧道信息')
+    const identity = overviewHeader.get('.tunnel-identity')
+    expect(identity.get('.ops-status').text()).toBe('运行中')
+    expect(identity.get('.ops-mono').text()).toBe('#7')
     expect(wrapper.text()).toContain('香港入口')
     expect(wrapper.text()).toContain('东京出口')
     expect(wrapper.text()).toContain('WSS')
@@ -63,12 +72,12 @@ describe('Tunnel detail monitoring', () => {
     expect(wrapper.get('.tunnel-metrics').text()).toContain('51')
     expect(wrapper.find('.latency-failure-markers').exists()).toBe(true)
 
-    const selector = wrapper.get('input[type="range"]')
-    await selector.setValue('0')
-    expect(selector.attributes('aria-valuetext')).toContain('0.0 毫秒，TTL 51')
-    await selector.setValue('1')
-    expect(selector.attributes('aria-valuetext')).toContain('无延迟读数')
-    expect(selector.attributes('aria-valuetext')).toContain('1 失败')
+    expect(wrapper.find('input[type="range"]').exists()).toBe(false)
+    const rows = wrapper.findAll('.latency-chart tbody tr')
+    expect(rows).toHaveLength(3)
+    expect(rows[0].findAll('td').map(cell => cell.text()).slice(1)).toEqual(['—', '—', '0', '0', '1'])
+    expect(rows[1].findAll('td').map(cell => cell.text()).slice(1)).toEqual(['—', '—', '0', '1', '0'])
+    expect(rows[2].findAll('td').map(cell => cell.text()).slice(1)).toEqual(['0.0', '51', '1', '0', '0'])
   })
 
   it.each([
@@ -97,10 +106,33 @@ describe('Tunnel detail monitoring', () => {
     expect(oldSignal.aborted).toBe(true)
     expect(getTunnelMetrics).toHaveBeenLastCalledWith('7', '1h', expect.any(AbortSignal))
     expect(wrapper.get('button[aria-pressed="true"]').text()).toBe('1 小时')
-    expect(wrapper.text()).toContain('此时间范围内暂无探测记录')
+    const samplingTable = wrapper.get('.latency-chart table')
+    expect(samplingTable.findAll('thead th').map(cell => cell.text())).toEqual(['采样时间', '平均 RTT（ms）', 'TTL', '成功', '失败', '不可用'])
+    expect(samplingTable.get('tbody').text()).toBe('此时间范围内暂无探测记录')
+    expect(wrapper.find('.latency-plot svg').exists()).toBe(true)
     pending.resolve({ data: metrics })
     await flushPromises()
-    expect(wrapper.find('.tunnel-metrics').exists()).toBe(false)
+    expect(samplingTable.get('tbody').text()).toBe('此时间范围内暂无探测记录')
+  })
+
+  it('keeps the current chart and table while updating the time range', async () => {
+    const pending = Promise.withResolvers()
+    getTunnelMetrics.mockResolvedValueOnce({ data: metrics }).mockReturnValueOnce(pending.promise)
+    const wrapper = await mountDetail()
+    const samplingTable = wrapper.get('.latency-chart table').element
+
+    await wrapper.get('button[aria-pressed="false"]').trigger('click')
+    expect(getTunnel).toHaveBeenCalledTimes(1)
+    expect(getTunnelMetrics).toHaveBeenLastCalledWith('7', '1h', expect.any(AbortSignal))
+    expect(wrapper.get('.tunnel-monitor').attributes('aria-busy')).toBe('true')
+    expect(wrapper.get('.latency-chart table').element).toBe(samplingTable)
+    expect(wrapper.findAll('.latency-chart tbody tr')).toHaveLength(3)
+
+    pending.resolve({ data: empty })
+    await flushPromises()
+    expect(wrapper.get('.tunnel-monitor').attributes('aria-busy')).toBe('false')
+    expect(wrapper.get('.latency-chart table').element).toBe(samplingTable)
+    expect(wrapper.get('.latency-chart tbody').text()).toBe('此时间范围内暂无探测记录')
   })
 
   it('retries a failed history request', async () => {
