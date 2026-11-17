@@ -1,3 +1,5 @@
+//go:build linux
+
 package nodebridge
 
 import (
@@ -152,6 +154,16 @@ func nftMarkMembership(expression any, sets map[string][]any) (markPredicate, bo
 			return nil, false
 		}
 	case map[string]any:
+		// Older nft versions emit a high-bit mark mask as a numeric prefix.
+		if prefix, ok := expression["prefix"].(map[string]any); ok {
+			value, validValue := nftMarkNumber(prefix["addr"])
+			length, validLength := nftMarkNumber(prefix["len"])
+			if !validValue || !validLength || length > 32 {
+				return nil, false
+			}
+			mask := uint32(math.MaxUint32) << (32 - length)
+			return func(mark uint32) bool { return mark&mask == value&mask }, true
+		}
 		if bounds, ok := expression["range"].([]any); ok && len(bounds) == 2 {
 			first, start := nftMarkNumber(bounds[0])
 			last, end := nftMarkNumber(bounds[1])

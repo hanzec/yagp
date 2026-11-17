@@ -14,9 +14,9 @@ func TestRedirectNftBatchFollowsIngressTemplate(t *testing.T) {
 	}
 	batch := string(redirectNftBatch("yagp_redirect", 12345, 100, relay, netip.Addr{}, nil, 2, 7))
 	for _, part := range []string{
-		"add table inet yagp_redirect\ndelete table inet yagp_redirect\nadd table inet yagp_redirect { comment \"yagp redirect version 2 revision 7\"; }",
+		"add table inet yagp_redirect\ndelete table inet yagp_redirect\nadd table inet yagp_redirect\n",
 		"100.64.0.0/10", "169.254.0.0/16", "224.0.0.0/4", "203.0.113.4",
-		"hook output priority -101", "tcp dport { 80, 443 } counter jump proxy_output",
+		"hook output priority -101", `tcp dport { 80, 443 } counter jump proxy_output comment "yagp redirect version 2 revision 7"`,
 		"proxy_output meta mark 0x00000064 counter return", "meta nfproto ipv6 counter return",
 		"ip daddr @bypass4 counter return", "fib daddr type local counter return",
 		"proxy_output meta nfproto ipv4 meta l4proto tcp counter redirect to :12345",
@@ -38,20 +38,23 @@ func TestRedirectNftBatchFollowsIngressTemplate(t *testing.T) {
 func TestRedirectNftBatchRoutesDockerToBoundListener(t *testing.T) {
 	address := netip.MustParseAddr("172.17.0.1")
 	bridges := []string{"docker0", "br-4d7902c53a23"}
-	batch := string(redirectNftBatch("yagp_redirect", 12345, 0x59414750, nil, address, bridges, 1, 1))
+	batch := string(redirectNftBatch("yagp_redirect", 12345, 0x59414750, nil, address, bridges, redirectRulesVersion, 1))
 	for _, part := range []string{
-		"hook prerouting priority -101", `iifname { "docker0", "br-4d7902c53a23" } tcp dport { 80, 443 } counter jump proxy_docker`,
+		"add set inet yagp_redirect docker_ifaces { type ifname; }", `add element inet yagp_redirect docker_ifaces { "docker0", "br-4d7902c53a23" }`,
+		"hook prerouting priority -101", `iifname @docker_ifaces tcp dport { 80, 443 } counter jump proxy_docker`,
 		"proxy_docker meta mark 0x59414750 counter return", "proxy_docker ip daddr @bypass4 counter return",
 		"proxy_docker fib daddr type local counter return", "proxy_docker meta nfproto ipv4 meta l4proto tcp counter dnat ip to 172.17.0.1:12345",
-		`docker_input ip daddr 172.17.0.1 tcp dport 12345 iifname { "docker0", "br-4d7902c53a23" } ct status dnat counter return`,
+		`docker_input ip daddr 172.17.0.1 tcp dport 12345 iifname @docker_ifaces ct status dnat counter return`,
 		"docker_input ip daddr 172.17.0.1 tcp dport 12345 counter drop",
 	} {
 		if !strings.Contains(batch, part) {
 			t.Errorf("Docker batch is missing %q:\n%s", part, batch)
 		}
 	}
-	withoutBridge := string(redirectNftBatch("yagp_redirect", 12345, 100, nil, address, nil, 1, 2))
-	if strings.Contains(withoutBridge, "prerouting") || !strings.Contains(withoutBridge, "docker_input ip daddr 172.17.0.1 tcp dport 12345 counter drop") {
+	withoutBridge := string(redirectNftBatch("yagp_redirect", 12345, 100, nil, address, nil, redirectRulesVersion, 2))
+	if !strings.Contains(withoutBridge, "add set inet yagp_redirect docker_ifaces { type ifname; }") ||
+		strings.Contains(withoutBridge, "add element inet yagp_redirect docker_ifaces") ||
+		!strings.Contains(withoutBridge, "docker_input ip daddr 172.17.0.1 tcp dport 12345 counter drop") {
 		t.Fatalf("saved Docker listener must stay guarded when its bridge is absent:\n%s", withoutBridge)
 	}
 }
@@ -69,6 +72,7 @@ func TestRedirectMarkAvoidsForeignMarkRules(t *testing.T) {
 	}{
 		{"literal mark", `{"match":{"op":"==","left":{"meta":{"key":"mark"}},"right":1497450320}}`, func(mark uint32) bool { return mark == preferred }},
 		{"high bits", `{"match":{"op":"==","left":{"&":[{"meta":{"key":"mark"}},4278190080]},"right":1493172224}}`, func(mark uint32) bool { return mark&0xff000000 == preferred&0xff000000 }},
+		{"numeric mark prefix", `{"match":{"op":"==","left":{"meta":{"key":"mark"}},"right":{"prefix":{"addr":1493172224,"len":8}}}}`, func(mark uint32) bool { return mark&0xff000000 == preferred&0xff000000 }},
 		{"nonzero bits", `{"match":{"op":"!=","left":{"&":[{"meta":{"key":"mark"}},65536]},"right":0}}`, func(mark uint32) bool { return mark&0x00010000 != 0 }},
 		{"masked assignment", `{"mangle":{"key":{"ct":{"key":"mark"}},"value":{"|":[{"&":[{"ct":{"key":"mark"}},4294901760]},18256]}}}`, func(mark uint32) bool { return mark&0xffff == preferred&0xffff }},
 		{"anonymous interval", `{"match":{"op":"==","left":{"meta":{"key":"mark"}},"right":{"set":[{"range":[1497450300,1497450340]},2]}}}`, func(mark uint32) bool { return mark >= 1497450300 && mark <= 1497450340 || mark == 2 }},

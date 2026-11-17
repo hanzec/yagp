@@ -1,13 +1,22 @@
+//go:build linux
+
 package nodebridge
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"net/netip"
 	"slices"
 	"strings"
+
+	"github.com/google/nftables"
+	"github.com/google/nftables/userdata"
+	"golang.org/x/sys/unix"
 )
 
 const redirectWebPorts = "{ 80, 443 }"
+const dockerInterfaceSet = "docker_ifaces"
 
 var redirectBypassPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),
@@ -28,16 +37,25 @@ func redirectNftBatch(table string, port uint32, mark uint32, relayIPs []netip.A
 	if port == 0 {
 		return []byte(batch.String())
 	}
-	fmt.Fprintf(&batch, "add table inet %s { comment %q; }\n", table, redirectTableComment(version, revision))
+	comment := redirectTableComment(version, revision)
+	var outputComment string
+	if version < 2 {
+		// A rollback to the old revision must also restore its table comment.
+		fmt.Fprintf(&batch, "add table inet %s { comment %q; }\n", table, comment)
+	} else {
+		// Older kernels preserve rule comments but drop table comments.
+		fmt.Fprintf(&batch, "add table inet %s\n", table)
+		outputComment = fmt.Sprintf(" comment %q", comment)
+	}
 	fmt.Fprintf(&batch, "add set inet %s bypass4 { type ipv4_addr; flags interval; elements = { %s }; }\n",
 		table, redirectBypassElements(relayIPs))
 	fmt.Fprintf(&batch, "add chain inet %s output { type nat hook output priority -101; policy accept; }\n", table)
 	fmt.Fprintf(&batch, "add chain inet %s proxy_output\n", table)
-	fmt.Fprintf(&batch, "add rule inet %s output tcp dport %s counter jump proxy_output\n", table, redirectWebPorts)
+	fmt.Fprintf(&batch, "add rule inet %s output tcp dport %s counter jump proxy_output%s\n", table, redirectWebPorts, outputComment)
 	appendRedirectBypassRules(&batch, table, "proxy_output", mark)
 	fmt.Fprintf(&batch, "add rule inet %s proxy_output meta nfproto ipv4 meta l4proto tcp counter redirect to :%d\n", table, port)
 	if dockerAddress.Is4() {
-		appendDockerRedirectRules(&batch, table, port, mark, dockerAddress, bridges)
+		appendDockerRedirectRules(&batch, table, port, mark, dockerAddress, bridges, version)
 	}
 	return []byte(batch.String())
 }
@@ -74,9 +92,9 @@ func appendRedirectBypassRules(batch *strings.Builder, table, chain string, mark
 	fmt.Fprintf(batch, "add rule inet %s %s fib daddr type local counter return\n", table, chain)
 }
 
-func appendDockerRedirectRules(batch *strings.Builder, table string, port uint32, mark uint32, address netip.Addr, bridges []string) {
+func appendDockerRedirectRules(batch *strings.Builder, table string, port uint32, mark uint32, address netip.Addr, bridges []string, version uint32) {
 	fmt.Fprintf(batch, "add chain inet %s docker_input { type filter hook input priority -101; policy accept; }\n", table)
-	if len(bridges) > 0 {
+	if version >= 3 || len(bridges) > 0 {
 		fmt.Fprintf(batch, "add chain inet %s prerouting { type nat hook prerouting priority -101; policy accept; }\n", table)
 		fmt.Fprintf(batch, "add chain inet %s proxy_docker\n", table)
 		bridgeNames := make([]string, len(bridges))
@@ -84,6 +102,13 @@ func appendDockerRedirectRules(batch *strings.Builder, table string, port uint32
 			bridgeNames[i] = fmt.Sprintf("%q", bridge)
 		}
 		bridgeSet := "{ " + strings.Join(bridgeNames, ", ") + " }"
+		if version >= 3 {
+			fmt.Fprintf(batch, "add set inet %s %s { type ifname; }\n", table, dockerInterfaceSet)
+			if len(bridges) > 0 {
+				fmt.Fprintf(batch, "add element inet %s %s %s\n", table, dockerInterfaceSet, bridgeSet)
+			}
+			bridgeSet = "@" + dockerInterfaceSet
+		}
 		fmt.Fprintf(batch, "add rule inet %s prerouting iifname %s tcp dport %s counter jump proxy_docker\n", table, bridgeSet, redirectWebPorts)
 		appendRedirectBypassRules(batch, table, "proxy_docker", mark)
 		// DNAT sends all selected bridges to the single Gost listener on a Docker bridge address.
@@ -92,4 +117,42 @@ func appendDockerRedirectRules(batch *strings.Builder, table string, port uint32
 			table, address, port, bridgeSet)
 	}
 	fmt.Fprintf(batch, "add rule inet %s docker_input ip daddr %s tcp dport %d counter drop\n", table, address, port)
+}
+
+func writeDockerBridgeState(ctx context.Context, path, tableName string, current, next redirectState) error {
+	conn := &nftables.Conn{}
+	table := &nftables.Table{Family: nftables.TableFamilyINet, Name: tableName}
+	set := &nftables.Set{Table: table, Name: dockerInterfaceSet, KeyType: nftables.TypeIFName}
+	rules, err := conn.GetRules(table, &nftables.Chain{Table: table, Name: "output"})
+	if err != nil {
+		return redirectNftError(ctx, "read transparent redirect version", err)
+	}
+	marker := userdata.AppendString(nil, userdata.TypeComment, redirectTableComment(current.Version, current.Revision))
+	owned := slices.ContainsFunc(rules, func(rule *nftables.Rule) bool {
+		return bytes.Equal(rule.UserData, marker)
+	})
+	if !owned {
+		return fmt.Errorf("existing table inet %s does not match the saved transparent redirect revision", tableName)
+	}
+
+	// Bridge membership is independent of the policy revision on the output rule.
+	next.Revision = current.Revision
+	return persistRedirectState(ctx, path, current, next, func(ctx context.Context, state redirectState) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		conn.FlushSet(set)
+		if len(state.Bridges) > 0 {
+			elements := make([]nftables.SetElement, 0, len(state.Bridges))
+			for _, name := range state.Bridges {
+				key := make([]byte, unix.IFNAMSIZ)
+				copy(key, name)
+				elements = append(elements, nftables.SetElement{Key: key})
+			}
+			if err := conn.SetAddElements(set, elements); err != nil {
+				return redirectNftError(ctx, "prepare Docker bridge set", err)
+			}
+		}
+		return conn.Flush()
+	})
 }

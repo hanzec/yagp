@@ -9,6 +9,9 @@ import (
 	"yagp/internal/model"
 	"yagp/pkg/gost"
 	"yagp/pkg/logger"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func validateTransparentTarget(useOriginal, useClash bool, protocol model.RuleProtocol, listenIP string, targets []string) error {
@@ -87,4 +90,19 @@ func (s *RuleService) prepareTransparentBypass(client *gost.Client, name string,
 		bypass = gost.TransparentBypassName
 	}
 	return bypass, nil
+}
+
+func transparentRedirectError(err error) error {
+	if status.Code(err) == codes.Unimplemented {
+		// Older stream dispatchers and unsupported node environments use the same code.
+		switch status.Convert(err).Message() {
+		case "RPC is unavailable on this side of the stream", "method ConfigureTransparentRedirect not implemented":
+			return errors.ErrTunnelTransparentDaemon
+		case "transparent redirect requires a Linux node with a configuration file":
+			return errors.ErrTunnelTransparentPlatform
+		case "nftables is unavailable: install the nftables package on this node":
+			return errors.ErrTunnelTransparentNft
+		}
+	}
+	return errors.ErrTunnelTransparentRedirect
 }

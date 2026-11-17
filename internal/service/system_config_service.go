@@ -1,6 +1,20 @@
 package service
 
 import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/smtp"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
 	"yagp/internal/buildinfo"
 	"yagp/internal/config"
 	"yagp/internal/dto"
@@ -120,4 +134,167 @@ func (s *SystemConfigService) UpdateConfig(req *dto.UpdateSystemConfigReq) error
 		return errors.ErrOperationFailed
 	}
 	return nil
+}
+
+const maxBarkResponseBytes = 4 << 10
+
+var barkHTTPClient = &http.Client{
+	Timeout: 10 * time.Second,
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		// Do not forward the device key to another endpoint.
+		return http.ErrUseLastResponse
+	},
+}
+
+// SendTestBark sends a test notification using the submitted configuration.
+func (s *SystemConfigService) SendTestBark(ctx context.Context, config dto.BarkConfig) error {
+	server, err := normalizeBarkConfig(&config, false)
+	if err != nil {
+		return err
+	}
+
+	payload, err := json.Marshal(struct {
+		DeviceKey string `json:"device_key"`
+		Title     string `json:"title"`
+		Body      string `json:"body"`
+	}{
+		DeviceKey: config.DeviceKey,
+		Title:     "yagp 测试通知",
+		Body:      "这是一条来自 yagp 的 Bark 测试推送。",
+	})
+	if err != nil {
+		return errors.ErrInternal
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.JoinPath("push").String(), bytes.NewReader(payload))
+	if err != nil {
+		return errors.ErrBarkServerURLInvalid
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := barkHTTPClient.Do(req)
+	if err != nil {
+		return errors.ErrBarkPushFailed
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return errors.ErrBarkPushFailed
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBarkResponseBytes+1))
+	if err != nil || len(body) > maxBarkResponseBytes {
+		return errors.ErrBarkPushFailed
+	}
+	var result struct {
+		Code int `json:"code"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil || result.Code != http.StatusOK {
+		return errors.ErrBarkPushFailed
+	}
+	return nil
+}
+
+func normalizeBarkConfig(config *dto.BarkConfig, allowEmpty bool) (*url.URL, error) {
+	config.ServerURL = strings.TrimSpace(config.ServerURL)
+	config.DeviceKey = strings.TrimSpace(config.DeviceKey)
+	if allowEmpty && config.ServerURL == "" && config.DeviceKey == "" {
+		return nil, nil
+	}
+	if config.ServerURL == "" || config.DeviceKey == "" {
+		return nil, errors.ErrBarkConfigIncomplete
+	}
+	if len(config.DeviceKey) > 255 {
+		return nil, errors.ErrBarkDeviceKeyInvalid
+	}
+
+	server, err := url.Parse(config.ServerURL)
+	if err != nil || len(config.ServerURL) > 2048 || (server.Scheme != "http" && server.Scheme != "https") ||
+		server.Hostname() == "" || server.User != nil || server.RawQuery != "" || server.ForceQuery ||
+		strings.Contains(config.ServerURL, "#") {
+		return nil, errors.ErrBarkServerURLInvalid
+	}
+	if port := server.Port(); port != "" {
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return nil, errors.ErrBarkServerURLInvalid
+		}
+	}
+	return server, nil
+}
+
+// SendTestEmail 发送测试邮件
+func (s *SystemConfigService) SendTestEmail(req *dto.EmailConfigReq) error {
+	// 验证必要参数
+	if req.Host == "" || req.Port == 0 || req.FromEmail == "" {
+		return errors.ErrSMTPConfigIncomplete
+	}
+
+	auth := smtp.PlainAuth("", req.Username, req.Password, req.Host)
+
+	toEmail := req.FromEmail
+	if req.ToEmail != "" {
+		toEmail = req.ToEmail
+	}
+
+	to := []string{toEmail}
+
+	msg := []byte(fmt.Sprintf("To: %s\r\n"+
+		"Subject: yagp 测试邮件\r\n"+
+		"\r\n"+
+		"这是一封来自 yagp 的测试邮件。\r\n"+
+		"如果您收到这封邮件，说明您的 SMTP 配置正确。\r\n", toEmail))
+
+	addr := fmt.Sprintf("%s:%d", req.Host, req.Port)
+
+	// 如果端口是 465，通常使用 SMTPS (隐式 TLS)
+	// 如果端口是 587，通常使用 STARTTLS
+
+	if req.Port == 465 {
+		// 隐式 TLS 在发送 AUTH 前使用系统信任根校验证书链和 SMTP 主机名。
+		tlsConfig := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ServerName: req.Host,
+		}
+
+		conn, err := tls.Dial("tcp", addr, tlsConfig)
+		if err != nil {
+			return errors.ErrSMTPConnectFailed
+		}
+
+		return sendSMTPTestMessage(conn, req, toEmail, msg)
+
+	}
+
+	// 标准 SMTP / STARTTLS
+	return smtp.SendMail(addr, auth, req.FromEmail, to, msg)
+}
+
+// The SMTP transaction owns the connection, including rejected server greetings.
+func sendSMTPTestMessage(conn net.Conn, req *dto.EmailConfigReq, recipient string, msg []byte) error {
+	defer conn.Close()
+	client, err := smtp.NewClient(conn, req.Host)
+	if err != nil {
+		return errors.ErrSMTPClientFailed
+	}
+	if req.Username != "" && req.Password != "" {
+		auth := smtp.PlainAuth("", req.Username, req.Password, req.Host)
+		if err := client.Auth(auth); err != nil {
+			return errors.ErrSMTPAuthFailed
+		}
+	}
+	if err := client.Mail(req.FromEmail); err != nil {
+		return errors.ErrSMTPSenderFailed
+	}
+	if err := client.Rcpt(recipient); err != nil {
+		return errors.ErrSMTPRecipientFailed
+	}
+	w, err := client.Data()
+	if err != nil {
+		return errors.ErrSMTPDataFailed
+	}
+	if _, err := w.Write(msg); err != nil {
+		return errors.ErrSMTPWriteFailed
+	}
+	if err := w.Close(); err != nil {
+		return errors.ErrSMTPCloseFailed
+	}
+	return client.Quit()
 }

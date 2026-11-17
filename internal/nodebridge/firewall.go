@@ -1,3 +1,5 @@
+//go:build linux
+
 package nodebridge
 
 import (
@@ -5,16 +7,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
+	"os"
 	"os/exec"
 	"reflect"
 	"regexp"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"yagp/pkg/nodegrpc"
+
+	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+const (
+	firewallNFT       = "nftables"
+	firewallUFW       = "ufw"
+	firewallFirewalld = "firewalld"
 )
 
 // FirewallConfig enables automatic allowances and identifies the delegated firewall objects.
@@ -99,9 +113,6 @@ func newFirewallManager(nodeID uint64, config FirewallConfig, backend string) (*
 		case manager.configErr != nil:
 			manager.status.DisabledReason = "invalid_configuration"
 			manager.recordSyncError(manager.configErr)
-		case runtime.GOOS != "linux":
-			manager.status.DisabledReason = "unsupported_environment"
-			manager.recordSyncError(supportErr)
 		case supportErr != nil:
 			manager.recordSyncError(supportErr)
 		}
@@ -109,10 +120,64 @@ func newFirewallManager(nodeID uint64, config FirewallConfig, backend string) (*
 	return manager, manager.configErr
 }
 
-func firewallExecutable(backend string) (string, error) {
-	if runtime.GOOS != "linux" {
-		return "", errors.New("automatic firewall allowances require Linux")
+func hostFirewallBackend(config FirewallConfig) string {
+	return selectFirewallBackend(config, os.ReadFile)
+}
+
+func selectFirewallBackend(config FirewallConfig, readFile func(string) ([]byte, error)) string {
+	backend := readFirewallBackend(readFile)
+	// Keep existing nftables delegation on nodes that have already configured it.
+	if backend == firewallNFT && config.Table == "" && config.InputChain == "" && hostUFWActive() {
+		return firewallUFW
 	}
+	return backend
+}
+
+func readFirewallBackend(readFile func(string) ([]byte, error)) string {
+	data, err := readFile("/etc/os-release")
+	if errors.Is(err, fs.ErrNotExist) {
+		data, err = readFile("/usr/lib/os-release")
+	}
+	if err != nil {
+		return ""
+	}
+	var distro, related string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		switch key {
+		case "ID":
+			distro = value
+		case "ID_LIKE":
+			related = value
+		}
+	}
+	families := strings.Fields(related)
+	if distro == "ubuntu" || slices.Contains(families, "ubuntu") {
+		return firewallUFW
+	}
+	if isRHELFamily(distro) || slices.ContainsFunc(families, isRHELFamily) {
+		return firewallFirewalld
+	}
+	if distro == "" {
+		return ""
+	}
+	return firewallNFT
+}
+
+func isRHELFamily(distro string) bool {
+	switch distro {
+	case "rhel", "centos", "rocky", "almalinux", "ol", "opencloudos", "opencloudos-stream":
+		return true
+	default:
+		return false
+	}
+}
+
+func firewallExecutable(backend string) (string, error) {
 	var command string
 	switch backend {
 	case firewallNFT:
@@ -144,6 +209,28 @@ func (m *FirewallManager) Status() FirewallStatus {
 		status.LastError = &value
 	}
 	return status
+}
+
+func (s *controlServer) GetFirewallStatus(context.Context, *emptypb.Empty) (*nodegrpc.FirewallStatus, error) {
+	checked := s.firewallRestartChecked.Load()
+	manager := s.firewall.Load()
+	if manager == nil {
+		return &nodegrpc.FirewallStatus{}, nil
+	}
+	state := manager.Status()
+	if checked != s.firewallRestartRequested.Load() {
+		state.DisabledReason = "checking_firewall"
+		state.Synchronized = false
+		state.LastError = nil
+	}
+	reply := &nodegrpc.FirewallStatus{
+		Supported: state.Supported, Managed: state.Managed, Synchronized: state.Synchronized,
+		LastError: state.LastError, Backend: state.Backend, DisabledReason: state.DisabledReason,
+	}
+	if state.LastSync != nil {
+		reply.LastSync = timestamppb.New(*state.LastSync)
+	}
+	return reply, nil
 }
 
 func (m *FirewallManager) recordSyncError(err error) {
@@ -339,8 +426,9 @@ type firewallObject struct {
 }
 
 type firewallRule struct {
-	Chain string                       `json:"chain"`
-	Expr  []map[string]json.RawMessage `json:"expr"`
+	Chain   string                       `json:"chain"`
+	Comment string                       `json:"comment"`
+	Expr    []map[string]json.RawMessage `json:"expr"`
 }
 
 type firewallRuleset struct {
@@ -365,7 +453,7 @@ func (m *FirewallManager) readRuleset(output []byte, desired []firewallSet) (fir
 		return live, fmt.Errorf("decode nftables firewall rules: %w", err)
 	}
 	chainName := m.prefix + "input"
-	var table, input bool
+	var table, input, unmarkedChain bool
 	var delegationBlocked bool
 	for _, object := range document.Objects {
 		switch {
@@ -377,10 +465,11 @@ func (m *FirewallManager) readRuleset(output []byte, desired []firewallSet) (fir
 		case object.Chain != nil && object.Chain.Name == m.config.InputChain:
 			input = object.Chain.Hook == "input" && string(object.Chain.Type) == `"filter"`
 		case object.Chain != nil && object.Chain.Name == chainName:
-			if object.Chain.Comment != m.owner || object.Chain.Hook != "" {
+			if object.Chain.Hook != "" || (object.Chain.Comment != "" && object.Chain.Comment != m.owner) {
 				return live, fmt.Errorf("firewall chain %s conflicts with an existing nftables chain", chainName)
 			}
 			live.chain = true
+			unmarkedChain = object.Chain.Comment == ""
 		case object.Set != nil && slices.ContainsFunc(desired, func(set firewallSet) bool { return set.name == object.Set.Name }):
 			if object.Set.Comment != m.owner {
 				return live, fmt.Errorf("firewall set %s conflicts with an existing nftables set", object.Set.Name)
@@ -408,7 +497,26 @@ func (m *FirewallManager) readRuleset(output []byte, desired []firewallSet) (fir
 	if !table || !input {
 		return live, fmt.Errorf("firewall requires existing filter input base chain inet %s %s", m.config.Table, m.config.InputChain)
 	}
+	if unmarkedChain && !m.ownsFirewallRules(live, desired) {
+		return live, fmt.Errorf("firewall chain %s conflicts with an existing nftables chain", chainName)
+	}
 	return live, nil
+}
+
+func (m *FirewallManager) ownsFirewallRules(live firewallRuleset, desired []firewallSet) bool {
+	// Older kernels preserve comments on rules and sets but not on chains.
+	if slices.ContainsFunc(live.rules, func(rule firewallRule) bool { return rule.Comment == m.owner }) {
+		return true
+	}
+	for _, rule := range live.rules {
+		if rule.Comment != "" || !slices.ContainsFunc(desired, func(set firewallSet) bool {
+			_, owned := live.sets[set.name]
+			return owned && set.matchesRule(rule)
+		}) {
+			return false
+		}
+	}
+	return len(live.rules) != 0
 }
 
 func (r firewallRule) unconditionalVerdict() (string, json.RawMessage) {
@@ -521,7 +629,7 @@ func (m *FirewallManager) batch(live firewallRuleset, sets []firewallSet) []byte
 	}
 	if rebuildRules {
 		for _, set := range sets {
-			fmt.Fprintf(&batch, "add rule inet %s %s %s @%s accept\n", table, chain, set.match(), set.name)
+			fmt.Fprintf(&batch, "add rule inet %s %s %s @%s accept comment %q\n", table, chain, set.match(), set.name, m.owner)
 		}
 	}
 	return []byte(batch.String())

@@ -17,15 +17,13 @@ help:
 	@echo "Available commands:"
 	@echo "  make build          - Build both web and server"
 	@echo "  make build-web      - Build web frontend only"
-	@echo "  make build-server   - Build server backend only"
-	@echo "  make build-node     - Build the Gost node daemon"
+	@echo "  make build-server   - Build the Linux panel server"
+	@echo "  make build-node     - Build the Linux Gost node daemon"
 	@echo "  make build-node-systemd - Build the Linux glibc daemon with libsystemd support"
 	@echo "  make dev            - Run in development mode"
 	@echo "  make run            - Build web and run server"
 	@echo "  make clean          - Clean build artifacts"
-	@echo "  make release        - Build multi-platform release"
-	@echo ""
-	@echo "💡 Tip for Windows users: Run these commands in Git Bash or WSL for compatibility."
+	@echo "  make release        - Build Linux amd64 and arm64 release binaries"
 
 # 完整构建
 build: build-web build-server build-node
@@ -40,28 +38,25 @@ build-web:
 # 构建后端（包含嵌入的前端）
 build-server:
 	@echo "Building server..."
-	go build -ldflags="$(LDFLAGS)" -o yagp ./cmd/server
+	CGO_ENABLED=0 GOOS=linux go build -ldflags="$(LDFLAGS)" -o yagp ./cmd/server
 	@echo "Server build complete"
 
 build-node:
-	go build -ldflags="$(LDFLAGS)" -o yagp-daemon ./cmd/yagp-daemon
+	CGO_ENABLED=0 GOOS=linux go build -ldflags="$(LDFLAGS)" -o yagp-daemon ./cmd/yagp-daemon
 
 build-node-systemd:
-	CGO_ENABLED=0 go build -tags libsystemd -ldflags="$(LDFLAGS)" -o yagp-daemon ./cmd/yagp-daemon
+	CGO_ENABLED=0 GOOS=linux go build -tags libsystemd -ldflags="$(LDFLAGS)" -o yagp-daemon ./cmd/yagp-daemon
 
 # 运行（构建前端并启动后端）
 run: build-web
 	@echo "Starting server..."
 	go run -ldflags="$(LDFLAGS)" ./cmd/server
 
-# 构建多平台发布版本
+# 构建 Linux 发布版本
 release: build-web
 	@echo "Building release binaries..."
-	GOOS=linux GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o yagp-linux-amd64 ./cmd/server
-	GOOS=linux GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o yagp-linux-arm64 ./cmd/server
-	GOOS=darwin GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o yagp-darwin-amd64 ./cmd/server
-	GOOS=darwin GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o yagp-darwin-arm64 ./cmd/server
-	GOOS=windows GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o yagp-windows-amd64.exe ./cmd/server
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o yagp-linux-amd64 ./cmd/server
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o yagp-linux-arm64 ./cmd/server
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o yagp-daemon-linux-amd64 ./cmd/yagp-daemon
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o yagp-daemon-linux-arm64 ./cmd/yagp-daemon
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags libsystemd -ldflags="$(LDFLAGS)" -o yagp-daemon-systemd-linux-amd64 ./cmd/yagp-daemon

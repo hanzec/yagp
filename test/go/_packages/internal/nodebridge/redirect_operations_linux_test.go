@@ -1,7 +1,6 @@
 package nodebridge
 
 import (
-	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -82,9 +81,7 @@ esac
 	if batch, err := os.ReadFile(applied); err != nil || !strings.Contains(string(batch), redirectTableComment(state.Version, state.Revision)) {
 		t.Fatalf("reapplying lost rules should keep their revision: %s, %v", batch, err)
 	}
-	version := redirectTableComment(state.Version, state.Revision)
-	const liveTable = `{"table":{"family":"inet","name":"yagp_redirect_42","comment":%q}}`
-	if err := os.WriteFile(live, []byte(fmt.Sprintf(`{"nftables":[`+liveTable+`]}`, version)), 0600); err != nil {
+	if err := os.WriteFile(live, []byte(`{"nftables":[`+managedRedirectTestRules(state)+`]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(applied); err != nil {

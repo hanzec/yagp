@@ -8,8 +8,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -17,6 +20,7 @@ import (
 )
 
 const (
+	PanelPort           = "443"
 	RegisterPath        = "/api/node/v2/register"
 	RefreshPath         = "/api/node/v2/refresh"
 	SessionPath         = "/api/node/v2/session"
@@ -26,6 +30,28 @@ const (
 	webSocketHeartbeat = 8 * time.Second
 	webSocketPongWait  = 5 * time.Second
 )
+
+type PanelHost struct{ host string }
+
+var panelDNSLabel = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
+
+func ParsePanelHost(host string) (PanelHost, error) {
+	if address, err := netip.ParseAddr(host); err == nil && address.Zone() == "" {
+		return PanelHost{host: address.String()}, nil
+	}
+	host = strings.TrimSuffix(host, ".")
+	if len(host) > 253 {
+		return PanelHost{}, errors.New("panel host name exceeds 253 bytes")
+	}
+	for _, label := range strings.Split(host, ".") {
+		if !panelDNSLabel.MatchString(label) {
+			return PanelHost{}, errors.New("panel host must be a bare DNS name or IP address")
+		}
+	}
+	return PanelHost{host: strings.ToLower(host)}, nil
+}
+
+func (h PanelHost) Host() string { return h.host }
 
 type HTTPStatusError struct {
 	StatusCode       int

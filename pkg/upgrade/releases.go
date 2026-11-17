@@ -13,17 +13,21 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/netip"
 	"os"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"yagp/pkg/geoip"
 )
 
 const maxArchiveSize = 128 << 20
 
 const YAGPReleaseCache = "https://release.hanzec-overseas.cn/yagp"
+const ghFast = "https://ghfast.top/"
 
 type Client struct {
 	http *http.Client
@@ -207,6 +211,20 @@ func (c *Client) readRelease(ctx context.Context, component, url string) (releas
 }
 
 // Download checks the archive against its release digest before extracting the selected executable.
+// AssetURLs returns the preferred archive URL and, for automatic selection, its direct fallback.
+func (c *Client) AssetURLs(ctx context.Context, url string) []string {
+	if prefix, explicit := os.LookupEnv("GH_PROXY"); explicit {
+		return []string{prefix + url}
+	}
+	switch code := geoip.Country(ctx, c.http, netip.Addr{}); code {
+	case "CN", "HK", "MO":
+		log.Printf("GitHub download region %s: using gh-fast", code)
+		return []string{ghFast + url, url}
+	default:
+		return []string{url}
+	}
+}
+
 func (c *Client) Download(ctx context.Context, component, tag, variant string, dest io.Writer) error {
 	if !ValidateTag(component, tag) || runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
 		return errors.New("unsupported platform or release tag")

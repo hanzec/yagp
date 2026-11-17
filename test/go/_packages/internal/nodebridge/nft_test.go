@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -73,7 +72,7 @@ func TestNftConfigMigratesOwnedLegacyTable(t *testing.T) {
 }
 
 func TestNftConfigApplyAndRestore(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getenv("YAGP_TEST_NFT") != "1" {
+	if os.Getenv("YAGP_TEST_NFT") != "1" {
 		t.Skip("set YAGP_TEST_NFT=1 in a disposable Linux network namespace with nft installed")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)

@@ -19,8 +19,15 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const redirectTestTable = `{"table":{"family":"inet","name":"yagp_redirect_42"}}`
+const redirectTestOutput = `{"rule":{"family":"inet","table":%q,"chain":%q,"comment":%q,"expr":[{"match":{"op":"==","left":{"payload":{"protocol":"tcp","field":"dport"}},"right":{"set":[80,443]}}},{"counter":{"packets":0,"bytes":0}},{"jump":{"target":%q}}]}}`
+
+func managedRedirectTestRules(state redirectState) string {
+	return redirectTestTable + "," + fmt.Sprintf(redirectTestOutput, "yagp_redirect_42", "output", redirectTableComment(state.Version, state.Revision), "proxy_output")
+}
+
 func TestRestoreTransparentRedirectChecksAndUpgradesVersion(t *testing.T) {
-	initial := redirectState{Version: redirectRulesVersion - 1, Revision: 8, Owner: "rule-5", Port: 12345, Mark: 100}
+	initial := redirectState{Version: 1, Revision: 8, Owner: "rule-5", Port: 12345, Mark: 100}
 	var serviceAvailable atomic.Bool
 	serviceAvailable.Store(true)
 	var dockerMark atomic.Uint32
@@ -68,7 +75,7 @@ func TestRestoreTransparentRedirectChecksAndUpgradesVersion(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	install(`{"nftables":[]}`)
+	install(fmt.Sprintf(`{"nftables":[{"table":{"family":"inet","name":"yagp_redirect_42","comment":%q}}]}`, redirectTableComment(initial.Version, initial.Revision)))
 	const nft = `#!/bin/sh
 case "$1" in
   -j) /bin/cat "$YAGP_TEST_NFT_LIVE" ;;
@@ -93,7 +100,7 @@ esac
 		t.Fatalf("applied rules = %s, %v", batch, err)
 	}
 
-	install(fmt.Sprintf(`{"nftables":[{"table":{"family":"inet","name":"yagp_redirect_42","comment":%q}}]}`, redirectTableComment(upgraded.Version, upgraded.Revision)))
+	install(`{"nftables":[` + managedRedirectTestRules(upgraded) + `]}`)
 	if err := os.Remove(filepath.Join(bin, "applied")); err != nil {
 		t.Fatal(err)
 	}
@@ -135,13 +142,12 @@ esac
 		t.Fatal(err)
 	}
 	dockerState, err := readRedirectState(path)
-	if err != nil || len(dockerState.Bridges) != 0 || dockerState.Revision != withDocker.Revision+1 {
-		t.Fatalf("restore after the saved bridge disappeared = %+v, %v", dockerState, err)
+	if err != nil || !dockerState.sameRules(withDocker) || dockerState.Revision != withDocker.Revision {
+		t.Fatalf("restore with Docker unavailable = %+v, %v", dockerState, err)
 	}
 	const foreignMark = `{"rule":{"family":"inet","table":"other","expr":[{"match":{"op":"==","left":{"meta":{"key":"mark"}},"right":100}}]}}`
 	for _, foreign := range []string{foreignMark, `{"rule":{"family":"inet","table":"gost","expr":[{"redirect":{"port":12345}}]}}`} {
-		install(fmt.Sprintf(`{"nftables":[%s,{"table":{"family":"inet","name":"yagp_redirect_42","comment":%q}}]}`,
-			foreign, redirectTableComment(dockerState.Version, dockerState.Revision)))
+		install(`{"nftables":[` + foreign + "," + managedRedirectTestRules(dockerState) + `]}`)
 		if err := control.restoreTransparentRedirect(t.Context()); err == nil {
 			t.Fatal("restore accepted a conflicting live ruleset")
 		}
@@ -309,5 +315,32 @@ func TestInspectRedirectTablePreservesUnmanagedRules(t *testing.T) {
 		if live, err := inspectRedirectTable([]byte(invalid), table, previous, true); live || err == nil {
 			t.Fatalf("invalid nft listing %s = %t, %v", invalid, live, err)
 		}
+	}
+}
+
+func TestInspectRedirectTableChecksRuleMarker(t *testing.T) {
+	const table = "yagp_redirect_42"
+	state := redirectState{Version: 2, Revision: 3, Owner: "rule-5"}
+	marker := redirectTableComment(state.Version, state.Revision)
+	wrongRevision := redirectTableComment(state.Version, state.Revision+1)
+	tests := []struct {
+		name string
+		live string
+		want bool
+	}{
+		{"matching output jump", managedRedirectTestRules(state), true},
+		{"unmarked table", redirectTestTable, false},
+		{"wrong revision", redirectTestTable + "," + fmt.Sprintf(redirectTestOutput, table, "output", wrongRevision, "proxy_output"), false},
+		{"different chain", redirectTestTable + "," + fmt.Sprintf(redirectTestOutput, table, "prerouting", marker, "proxy_output"), false},
+		{"different target", redirectTestTable + "," + fmt.Sprintf(redirectTestOutput, table, "output", marker, "proxy_docker"), false},
+		{"different table", redirectTestTable + "," + fmt.Sprintf(redirectTestOutput, "elsewhere", "output", marker, "proxy_output"), false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ruleset := []byte(`{"nftables":[` + test.live + `]}`)
+			if live, err := inspectRedirectTable(ruleset, table, state, true); live != test.want || (err == nil) != test.want {
+				t.Fatalf("live = %t, error = %v; want ownership %t", live, err, test.want)
+			}
+		})
 	}
 }

@@ -1,3 +1,5 @@
+//go:build linux
+
 package nodebridge
 
 import (
@@ -9,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -57,7 +58,7 @@ func restoreTrafficQuota(ctx context.Context, cfg Config) error {
 }
 
 func syncTrafficQuota(ctx context.Context, cfg Config, next trafficQuotaState) (uint64, error) {
-	if runtime.GOOS != "linux" || cfg.ConfigFile == "" {
+	if cfg.ConfigFile == "" {
 		return 0, status.Error(codes.Unimplemented, "traffic quota requires a Linux node with a configuration file")
 	}
 	clearing := next.LimitBytes == 0 && next.WindowStart == -1

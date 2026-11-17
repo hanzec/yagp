@@ -1,3 +1,5 @@
+//go:build linux
+
 package nodebridge
 
 import (
@@ -5,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -12,7 +15,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"strconv"
 	"time"
@@ -25,7 +27,7 @@ import (
 )
 
 // Bump this when the generated rules change. Revisions also track node-specific changes.
-const redirectRulesVersion uint32 = 1
+const redirectRulesVersion uint32 = 3
 
 var redirectOwnerName = regexp.MustCompile(`^rule-[1-9][0-9]{0,19}$`)
 
@@ -41,7 +43,7 @@ type redirectState struct {
 }
 
 func (s *controlServer) ConfigureTransparentRedirect(ctx context.Context, req *nodegrpc.TransparentRedirectRequest) (*nodegrpc.TransparentRedirectReply, error) {
-	if runtime.GOOS != "linux" || s.config.ConfigFile == "" {
+	if s.config.ConfigFile == "" {
 		return nil, status.Error(codes.Unimplemented, "transparent redirect requires a Linux node with a configuration file")
 	}
 	if !redirectOwnerName.MatchString(req.GetOwner()) {
@@ -114,7 +116,12 @@ func (s *controlServer) ConfigureTransparentRedirect(ctx context.Context, req *n
 		}
 		return current.reply(true), nil
 	}
-	if err := writeRedirectState(ctx, nft, path, table, current, next); err != nil {
+	if live && current.samePolicy(next) {
+		err = writeDockerBridgeState(ctx, path, table, current, next)
+	} else {
+		err = writeRedirectState(ctx, nft, path, table, current, next)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return next.reply(true), nil
@@ -165,17 +172,22 @@ func prepareRedirectState(ctx context.Context, ruleset []byte, table string, req
 		Owner: req.GetOwner(), Port: req.GetPort(), Mark: mark, RelayIPs: relayIPs,
 	}
 	next.DockerAddress = current.DockerAddress
-	if err := next.detectDocker(ctx, !active); err != nil {
+	next.Bridges = current.Bridges
+	if err := next.detectDocker(ctx, !active, dockerSocketPath); err != nil {
 		return redirectState{}, err
 	}
 	return next, nil
 }
 
-func (s *redirectState) detectDocker(ctx context.Context, selectAddress bool) error {
-	if !selectAddress && !s.DockerAddress.IsValid() {
-		return nil
+func (s *redirectState) detectDocker(ctx context.Context, selectAddress bool, socket string) error {
+	if err := ctx.Err(); err != nil || (!selectAddress && !s.DockerAddress.IsValid()) {
+		return err
 	}
-	bridges, err := discoverDockerBridges(ctx)
+	reported := localDockerBridgeNames(ctx, socket)
+	if reported == nil {
+		return ctx.Err()
+	}
+	bridges, err := routeDockerBridges(ctx, reported)
 	if err != nil {
 		return redirectNftError(ctx, "detect Docker bridge networks", err)
 	}
@@ -245,8 +257,12 @@ func readRedirectState(path string) (redirectState, error) {
 }
 
 func (s redirectState) sameRules(other redirectState) bool {
+	return s.samePolicy(other) && slices.Equal(s.Bridges, other.Bridges)
+}
+
+func (s redirectState) samePolicy(other redirectState) bool {
 	return s.Version == other.Version && s.Owner == other.Owner && s.Port == other.Port && s.Mark == other.Mark &&
-		s.DockerAddress == other.DockerAddress && slices.Equal(s.RelayIPs, other.RelayIPs) && slices.Equal(s.Bridges, other.Bridges)
+		s.DockerAddress == other.DockerAddress && slices.Equal(s.RelayIPs, other.RelayIPs)
 }
 
 func (s redirectState) reply(active bool) *nodegrpc.TransparentRedirectReply {
@@ -283,7 +299,8 @@ func inspectRedirectTable(ruleset []byte, table string, current redirectState, c
 	if err := json.Unmarshal(ruleset, &listing); err != nil {
 		return false, err
 	}
-	var currentVersion bool
+	expectedComment := redirectTableComment(current.Version, current.Revision)
+	var foundTable, marked bool
 	var manualRedirect error
 	for _, object := range listing.Objects {
 		if raw := object["table"]; raw != nil {
@@ -296,24 +313,40 @@ func inspectRedirectTable(ruleset []byte, table string, current redirectState, c
 				return false, err
 			}
 			if entry.Family == "inet" && entry.Name == table {
-				if current.Owner == "" || entry.Comment != redirectTableComment(current.Version, current.Revision) {
+				if current.Owner == "" || entry.Comment != "" && entry.Comment != expectedComment {
 					return false, fmt.Errorf("existing table inet %s does not match the saved transparent redirect revision", table)
 				}
-				currentVersion = true
+				foundTable = true
+				marked = marked || entry.Comment == expectedComment
 			}
 		}
-		if !checkManual || object["rule"] == nil {
+		if object["rule"] == nil {
 			continue
 		}
 		var rule struct {
-			Family string      `json:"family"`
-			Table  string      `json:"table"`
-			Expr   []nftObject `json:"expr"`
+			Family  string      `json:"family"`
+			Table   string      `json:"table"`
+			Chain   string      `json:"chain"`
+			Comment string      `json:"comment"`
+			Expr    []nftObject `json:"expr"`
 		}
 		if err := json.Unmarshal(object["rule"], &rule); err != nil {
 			return false, err
 		}
-		if (rule.Family == "inet" || rule.Family == "ip") && rule.Table == "gost" {
+		if rule.Family == "inet" && rule.Table == table && rule.Chain == "output" && rule.Comment == expectedComment {
+			for _, expr := range rule.Expr {
+				if raw := expr["jump"]; raw != nil {
+					var jump struct {
+						Target string `json:"target"`
+					}
+					if err := json.Unmarshal(raw, &jump); err != nil {
+						return false, err
+					}
+					marked = marked || jump.Target == "proxy_output"
+				}
+			}
+		}
+		if checkManual && (rule.Family == "inet" || rule.Family == "ip") && rule.Table == "gost" {
 			for _, expr := range rule.Expr {
 				if expr["redirect"] != nil || expr["dnat"] != nil {
 					manualRedirect = fmt.Errorf("existing table %s gost contains manual redirection; remove the duplicate before starting this tunnel", rule.Family)
@@ -322,10 +355,19 @@ func inspectRedirectTable(ruleset []byte, table string, current redirectState, c
 			}
 		}
 	}
-	return currentVersion, manualRedirect
+	if foundTable && !marked {
+		return false, fmt.Errorf("existing table inet %s does not match the saved transparent redirect revision", table)
+	}
+	return foundTable, manualRedirect
 }
 
 func writeRedirectState(ctx context.Context, nft, path, table string, current, next redirectState) error {
+	return persistRedirectState(ctx, path, current, next, func(ctx context.Context, state redirectState) error {
+		return applyRedirectBatch(ctx, nft, state.batch(table))
+	})
+}
+
+func persistRedirectState(ctx context.Context, path string, current, next redirectState, apply func(context.Context, redirectState) error) error {
 	encoded, err := json.Marshal(next)
 	if err != nil {
 		return status.Errorf(codes.Internal, "encode transparent redirect state: %v", err)
@@ -335,13 +377,13 @@ func writeRedirectState(ctx context.Context, nft, path, table string, current, n
 		return status.Errorf(codes.Internal, "stage transparent redirect state: %v", err)
 	}
 	defer os.Remove(staged)
-	if err := applyRedirectBatch(ctx, nft, next.batch(table)); err != nil {
+	if err := apply(ctx, next); err != nil {
 		return err
 	}
 	if err := os.Rename(staged, path); err != nil {
 		recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		return status.Errorf(codes.Internal, "save transparent redirect state: %v", errors.Join(err, runNft(recovery, nft, current.batch(table), "-f", "-")))
+		return status.Errorf(codes.Internal, "save transparent redirect state: %v", errors.Join(err, apply(recovery, current)))
 	}
 	return nil
 }
@@ -361,6 +403,35 @@ func redirectNftError(ctx context.Context, op string, err error) error {
 		return status.FromContextError(ctx.Err()).Err()
 	}
 	return status.Errorf(codes.FailedPrecondition, "%s: %v", op, err)
+}
+
+func (s *controlServer) maintainDockerRedirect(ctx context.Context) {
+	watchDockerNetworkEvents(ctx, dockerSocketPath, 2*time.Second, func() {
+		refreshCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := s.refreshDockerRedirect(refreshCtx, dockerSocketPath); err != nil && ctx.Err() == nil {
+			log.Printf("refresh Docker transparent redirect: %v", err)
+		}
+	})
+}
+
+func (s *controlServer) refreshDockerRedirect(ctx context.Context, socket string) error {
+	nftApplyMu.Lock()
+	defer nftApplyMu.Unlock()
+	path := redirectStatePath(s.config)
+	current, err := readRedirectState(path)
+	if err != nil || current.Owner == "" || current.Version != redirectRulesVersion || !current.DockerAddress.IsValid() {
+		return err
+	}
+	next := current
+	if err := next.detectDocker(ctx, false, socket); err != nil {
+		return err
+	}
+	if slices.Equal(current.Bridges, next.Bridges) {
+		return nil
+	}
+
+	return writeDockerBridgeState(ctx, path, nodegrpc.TransparentRedirectTableName(s.config.NodeID), current, next)
 }
 
 func (s *controlServer) restoreTransparentRedirect(ctx context.Context) error {
@@ -402,7 +473,7 @@ func (s *controlServer) restoreTransparentRedirect(ctx context.Context) error {
 	}
 	next := current
 	next.Version, next.Revision = redirectRulesVersion, current.Revision+1
-	if err := next.detectDocker(ctx, false); err != nil {
+	if err := next.detectDocker(ctx, false, dockerSocketPath); err != nil {
 		return err
 	}
 	if current.sameRules(next) {
@@ -410,6 +481,9 @@ func (s *controlServer) restoreTransparentRedirect(ctx context.Context) error {
 			return nil
 		}
 		return applyRedirectBatch(ctx, nft, current.batch(table))
+	}
+	if live && current.samePolicy(next) {
+		return writeDockerBridgeState(ctx, path, table, current, next)
 	}
 	return writeRedirectState(ctx, nft, path, table, current, next)
 }
