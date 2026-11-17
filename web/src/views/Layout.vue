@@ -20,7 +20,7 @@
             >
               <el-icon aria-hidden="true"><Menu /></el-icon>
             </button>
-            <div v-if="identity === 'ready' && route.name === 'Nodes'" ref="headingTarget" class="console-topbar__heading"></div>
+            <div v-if="identity === 'ready' && customHeading" ref="headingTarget" class="console-topbar__heading"></div>
             <h1 v-else-if="identity === 'ready'" class="console-topbar__title">{{ route.meta.title }}</h1>
           </div>
 
@@ -38,8 +38,8 @@
       </header>
 
       <main id="console-main" ref="mainContent" class="console-main" tabindex="-1">
-        <RouterView v-if="identity === 'ready'" v-slot="{ Component, route: pageRoute }">
-          <component v-if="pageRoute.name === 'Nodes'" :is="Component" :heading-target="headingTarget" />
+        <RouterView v-if="identity === 'ready'" v-slot="{ Component }">
+          <component v-if="customHeading" :is="Component" :heading-target="headingTarget" />
           <component v-else :is="Component" />
         </RouterView>
         <section v-else-if="identity === 'error'" class="ops-panel console-gate" role="alert">
@@ -77,7 +77,7 @@
 </template>
 
 <script setup>
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Loading, Menu, SwitchButton, User } from '@element-plus/icons-vue'
 import { getUserInfo } from '@/api/auth'
@@ -89,6 +89,7 @@ const route = useRoute()
 const upstream = 'https://github.com/code-gopher/gostPanel'
 const mainContent = ref(null)
 const headingTarget = ref(null)
+const customHeading = computed(() => route.name === 'Nodes' || route.name === 'TunnelDetail')
 const mobileMenu = ref(false)
 const username = ref('')
 const identity = ref('loading')

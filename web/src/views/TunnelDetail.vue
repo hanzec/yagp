@@ -1,15 +1,21 @@
 <template>
   <div class="ops-page tunnel-detail">
-    <header class="tunnel-detail-heading">
-      <RouterLink :to="{ name: 'Tunnels' }" class="tunnel-back">
-        <el-icon aria-hidden="true"><ArrowLeft /></el-icon>返回隧道列表
-      </RouterLink>
-      <div v-if="tunnel" class="tunnel-identity">
-        <h2>{{ tunnel.name }}</h2>
-        <span class="ops-status" :class="'is-' + tunnelState.tone">{{ tunnelState.label }}</span>
-        <span class="ops-muted ops-mono">#{{ tunnel.id }}</span>
-      </div>
-    </header>
+    <Teleport :to="headingTarget" :disabled="!headingTarget">
+      <nav aria-label="隧道详情导航">
+        <h1 class="tunnel-detail-heading">
+          <span class="tunnel-detail-parent">
+            <RouterLink :to="{ name: 'Tunnels' }" class="tunnel-back">返回隧道列表</RouterLink>
+            <span aria-hidden="true">/</span>
+          </span>
+          <span class="tunnel-detail-name" :title="tunnel?.name" aria-current="page">{{ tunnel?.name || route.meta.title }}</span>
+        </h1>
+      </nav>
+    </Teleport>
+
+    <div v-if="tunnel" class="tunnel-identity">
+      <span class="ops-status" :class="'is-' + tunnelState.tone">{{ tunnelState.label }}</span>
+      <span class="ops-muted ops-mono">#{{ tunnel.id }}</span>
+    </div>
 
     <div v-if="tunnelError" class="ops-panel ops-panel-body tunnel-feedback" role="alert">
       <span>{{ tunnelError }}</span>
@@ -85,10 +91,12 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ArrowLeft, Connection, Right, TrendCharts } from '@element-plus/icons-vue'
+import { Connection, Right, TrendCharts } from '@element-plus/icons-vue'
 import { getTunnel, getTunnelMetrics } from '@/api/tunnel'
 import TunnelLatencyChart from '@/components/TunnelLatencyChart.vue'
 import { formatEndpoint, mappedConnectEndpoint } from '@/utils/node-address-mapping'
+
+defineProps({ headingTarget: { type: Object, default: null } })
 
 const route = useRoute()
 const ranges = [
@@ -163,7 +171,7 @@ const metricsCards = computed(() => {
     { label: '最新 RTT', value: shownNumber(summary.latest_latency_ms), unit: 'ms', note: summary.successful ? '最近一次成功探测' : '暂无成功样本' },
     { label: '平均 RTT', value: shownNumber(summary.avg_latency_ms), unit: 'ms', note: summary.successful ? `范围 ${shownNumber(summary.min_latency_ms)}–${shownNumber(summary.max_latency_ms)} ms` : '暂无成功样本' },
     { label: 'P95 RTT', value: shownNumber(summary.p95_latency_ms), unit: 'ms', note: `${summary.successful} 次成功` },
-    { label: '失败率', value: measured ? shownNumber(summary.failed * 100 / measured) : '—', unit: '%', note: `${summary.failed} 次失败 · ${summary.unavailable} 次不可用` },
+    { label: '失败率', value: measured ? (summary.failed * 100 / measured).toFixed(2) : '—', unit: '%', note: `${summary.failed} 次失败 · ${summary.unavailable} 次不可用` },
     { label: '最近出口 TTL', value: shownNumber(summary.latest_ttl), note: summary.latest_ttl == null ? '暂无 ICMP 回包读数' : 'ICMP 回包' }
   ]
 })
@@ -241,11 +249,14 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.tunnel-detail-heading { display: grid; justify-items: start; gap: 4px; }
-.tunnel-back { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; color: var(--ops-muted); text-decoration: none; }
+.tunnel-detail-heading, .tunnel-detail-parent, .tunnel-back { display: flex; align-items: center; }
+.tunnel-detail-heading { flex-wrap: wrap; column-gap: 8px; font-size: var(--ops-text-title); white-space: nowrap; }
+.tunnel-detail-parent { gap: 8px; }
+.tunnel-detail-parent > span { color: var(--ops-muted); }
+.tunnel-back { min-height: 44px; color: var(--ops-text); text-decoration: none; }
 .tunnel-back:hover { color: var(--ops-accent); text-decoration: underline; }
+.tunnel-detail-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tunnel-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
-.tunnel-identity h2 { font-size: var(--ops-text-page); }
 .tunnel-overview, .tunnel-monitor { display: grid; gap: var(--ops-section-gap); }
 .ops-section-title { display: flex; align-items: center; gap: 8px; }
 .ops-section-title .el-icon { color: var(--ops-accent); }
