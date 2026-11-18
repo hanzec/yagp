@@ -35,8 +35,9 @@ func TestRuleStartHandlesNodeObserverAndProvisioningFailures(t *testing.T) {
 	updateServiceFields(t, db, &node, map[string]any{"status": model.NodeStatusOffline})
 	start(bizerrors.ErrNodeOffline)
 	updateServiceFields(t, db, rule, map[string]any{"status": model.RuleStatusRunning})
-	requireServiceError(t, rules.Stop(rule.ID, testAdmin, testIP, testAgent), nil)
+	requireServiceError(t, rules.Stop(rule.ID, testAdmin, testIP, testAgent), bizerrors.ErrNodeOffline)
 	updateServiceFields(t, db, &node, map[string]any{"status": model.NodeStatusOnline})
+	requireServiceError(t, rules.Stop(rule.ID, testAdmin, testIP, testAgent), nil)
 
 	remote.mu.Lock()
 	remote.observerErr = status.Error(codes.Unavailable, "observer endpoint unavailable")

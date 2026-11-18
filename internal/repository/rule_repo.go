@@ -116,9 +116,16 @@ func (r *RuleRepository) onEntryNode(nodeID uint) *gorm.DB {
 			model.RuleTypeForward, nodeID, model.RuleTypeTunnel, tunnels)
 }
 
-func (r *RuleRepository) FindByEntryNodeID(nodeID uint) ([]model.GostRule, error) {
+func (r *RuleRepository) FindByEntryNodeID(nodeID uint, tunnels []model.GostTunnel) ([]model.GostRule, error) {
 	var rules []model.GostRule
-	err := r.onEntryNode(nodeID).Find(&rules).Error
+	query := r.DB.Where("node_id = ?", nodeID)
+	for _, tunnel := range tunnels {
+		if tunnel.EntryNodeID == nodeID {
+			query = r.onEntryNode(nodeID)
+			break
+		}
+	}
+	err := query.Find(&rules).Error
 	return rules, err
 }
 

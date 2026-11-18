@@ -224,7 +224,7 @@ func TestRepositoryForwardingRelationsAndScopedUpdates(t *testing.T) {
 		entryDetail.EntryTunnels[0].ID != tunnel.ID || len(entryDetail.ExitTunnels) != 0 {
 		t.Fatalf("related node details: %+v", entryDetail)
 	}
-	byNode, err := rules.FindByEntryNodeID(entry.ID)
+	byNode, err := rules.FindByEntryNodeID(entry.ID, []model.GostTunnel{tunnel, other})
 	mustPersist(t, err)
 	byTunnel, _, err := rules.List(&QueryOption{Conditions: map[string]any{"tunnel_id = ?": tunnel.ID}})
 	mustPersist(t, err)

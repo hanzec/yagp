@@ -133,8 +133,13 @@ func (s *RuleSyncService) reconcileNode(client *gost.Client, node model.GostNode
 		serviceStates[svc.Name] = state
 	}
 
-	// 1. 同步规则状态
-	rules, err := s.ruleRepo.FindByEntryNodeID(node.ID)
+	// Standalone rules can still be reconciled if tunnel storage is unavailable.
+	tunnels, tunnelErr := s.tunnelRepo.FindByNodeID(node.ID)
+	if tunnelErr != nil {
+		logger.Errorf("[Sync] 获取节点 %d 隧道规则失败: %v", node.ID, tunnelErr)
+		tunnels = nil
+	}
+	rules, err := s.ruleRepo.FindByEntryNodeID(node.ID, tunnels)
 	if err != nil {
 		logger.Errorf("[Sync] 获取节点 %d 规则失败: %v", node.ID, err)
 	} else {
@@ -143,9 +148,7 @@ func (s *RuleSyncService) reconcileNode(client *gost.Client, node model.GostNode
 		}
 	}
 
-	tunnels, err := s.tunnelRepo.FindByNodeID(node.ID)
-	if err != nil {
-		logger.Errorf("[Sync] 获取节点 %d 隧道规则失败: %v", node.ID, err)
+	if tunnelErr != nil {
 		return nil
 	}
 	s.recordRelayTraffic(node.ID, tunnels, gostCfg.Services)
