@@ -28,7 +28,9 @@ func (s *NodeService) CurrentTrafficUsage(ctx context.Context, nodes []model.Gos
 	for i := range nodes {
 		node := &nodes[i]
 		if node.TrafficLimitBytes == 0 {
-			usage[node.ID] = lifetimeTrafficBytes(node.TotalBytes, relays[node.ID])
+			if relayBytes, sampled := relays[node.ID]; sampled || node.TotalBytes > 0 {
+				usage[node.ID] = lifetimeTrafficBytes(node.TotalBytes, relayBytes)
+			}
 			continue
 		}
 		if (node.TrafficQuotaState == model.TrafficQuotaActive || node.TrafficQuotaState == model.TrafficQuotaBlocked) &&
