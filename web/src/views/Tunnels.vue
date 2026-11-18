@@ -311,6 +311,7 @@
 import { computed, nextTick, ref, reactive, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { hasTunnelBindings, needsStop } from '@/utils/rule-state'
 import { useInventoryList } from '@/utils/inventory-list'
 import InventoryToolbar from '@/components/InventoryToolbar.vue'
 import PanelDialog from '@/components/PanelDialog.vue'
@@ -416,11 +417,10 @@ const relayConnectEndpoints = computed(() => Object.fromEntries(tunnelList.value
   tunnel.id, mappedConnectEndpoint(tunnel.exit_node, tunnel.exit_rule?.listen_ip, tunnel.relay_port)
 ])))
 const availableEntrances = computed(() => entryList.value.filter(rule => {
-  const linked = rule.linked_tunnels
-  if (linked?.length || rule.linked_tunnel_id) {
-    return !!rule.role || rule.linked_tunnel_id === editId.value || linked?.some(tunnel => tunnel.id === editId.value)
+  if (hasTunnelBindings(rule)) {
+    return !!rule.role || rule.linked_tunnel_id === editId.value || rule.linked_tunnels?.some(tunnel => tunnel.id === editId.value)
   }
-  return !rule.tunnel_id && rule.status !== 'running'
+  return !rule.tunnel_id && !needsStop(rule)
 }))
 const sourceOptions = computed(() => availableEntrances.value.filter(rule => !rule.role || rule.role === 'entry'))
 const destinationOptions = computed(() => availableEntrances.value.filter(rule =>

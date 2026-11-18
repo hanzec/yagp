@@ -357,14 +357,13 @@ func (s *GostRulesetService) Run(ctx context.Context) {
 
 func (s *GostRulesetService) refresh(ctx context.Context) {
 	var rulesets []model.GostRuleset
-	if err := s.db.WithContext(ctx).Where("url <> ?", "").Find(&rulesets).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select("id", "url").Where("url <> ?", "").Find(&rulesets).Error; err != nil {
 		return
 	}
-	for i := range rulesets {
+	for _, cfg := range rulesets {
 		if ctx.Err() != nil {
 			return
 		}
-		cfg := &rulesets[i]
 		matchers, err := s.download(ctx, cfg.URL)
 		if err != nil {
 			logger.Warnf("刷新 Gost 规则集 %d 失败: %v", cfg.ID, err)
@@ -373,7 +372,7 @@ func (s *GostRulesetService) refresh(ctx context.Context) {
 		// A refresh may finish after the administrator has saved another source.
 		now := time.Now()
 		cfg.Matchers, cfg.UpdatedAt = matchers, &now
-		if err := s.db.WithContext(ctx).Model(cfg).Where("url = ?", cfg.URL).Select("Matchers", "UpdatedAt").Updates(cfg).Error; err != nil {
+		if err := s.db.WithContext(ctx).Model(&cfg).Where("url = ?", cfg.URL).Select("Matchers", "UpdatedAt").Updates(cfg).Error; err != nil {
 			logger.Warnf("无法保存刷新的 Gost 规则集 %d: %v", cfg.ID, err)
 		}
 	}

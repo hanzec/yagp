@@ -282,6 +282,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { hasTunnelBindings, needsStop } from '@/utils/rule-state'
 import { useInventoryList } from '@/utils/inventory-list'
 import InventoryToolbar from '@/components/InventoryToolbar.vue'
 import PanelDialog from '@/components/PanelDialog.vue'
@@ -343,8 +344,6 @@ const restartHint = computed(() => boundTunnelCount.value > 1
   ? '请先停止全部关联隧道，再逐条启动以应用配置。'
   : '请重启关联隧道以应用配置。')
 const endpointRoles = { entry: '入口', exit: '出口' }
-const needsStop = rule => rule.status === 'running' || !!rule.service_id
-const hasTunnelBindings = rule => !!(rule.linked_tunnels?.length || rule.linked_tunnel_id)
 const strategies = { round: '轮询', rand: '随机', fifo: '先进先出', hash: '哈希' }
 const formRef = ref(null)
 let savedProtocolOptions = false

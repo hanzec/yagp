@@ -115,3 +115,46 @@ func TestGostRulesetFollowsSecureRedirectAndKeepsRulesOnTruncation(t *testing.T)
 	}
 	service.sync(t.Context(), map[uint]bool{})
 }
+
+func TestGostRulesetRefreshReadsOnlySources(t *testing.T) {
+	db := newServiceTestDB(t)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/unavailable" {
+			http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprintln(w, "DOMAIN-SUFFIX,new.example")
+	}))
+	defer upstream.Close()
+	matchers := make([]string, 5000)
+	for i := range matchers {
+		matchers[i] = fmt.Sprintf("old-%d.example", i)
+	}
+	subscriptions := []model.GostRuleset{
+		{ID: 1, URL: upstream.URL, Matchers: matchers, NodeIDs: []uint{42}},
+		{ID: 2, URL: upstream.URL + "/unavailable", Matchers: matchers},
+	}
+	requireServiceError(t, db.Create(&subscriptions).Error, nil)
+
+	// Count old rules materialized by the refresh inventory query.
+	var loaded int
+	requireServiceError(t, db.Callback().Query().After("gorm:query").Register("test:refresh_inventory", func(tx *gorm.DB) {
+		if rows, ok := tx.Statement.Dest.(*[]model.GostRuleset); ok {
+			for _, row := range *rows {
+				loaded += len(row.Matchers)
+			}
+		}
+	}), nil)
+	svc := NewGostRulesetService(db)
+	svc.client.Transport = upstream.Client().Transport
+	svc.refresh(t.Context())
+	if loaded != 0 {
+		t.Fatalf("refresh loaded %d previous matchers before downloading replacements", loaded)
+	}
+	var saved []model.GostRuleset
+	requireServiceError(t, db.Order("id").Find(&saved).Error, nil)
+	if len(saved) != 2 || !slices.Equal(saved[0].Matchers, []string{".new.example"}) ||
+		!slices.Equal(saved[0].NodeIDs, subscriptions[0].NodeIDs) || !slices.Equal(saved[1].Matchers, matchers) {
+		t.Fatal("refresh did not preserve the selection or the unavailable subscription's last known rules")
+	}
+}

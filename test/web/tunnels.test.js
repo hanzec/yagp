@@ -399,6 +399,33 @@ describe('Relay tunnel configuration', () => {
     })
   })
 
+  it('clears a selected standalone listener when the refreshed inventory reports pending cleanup', async () => {
+    const exit = { ...destination, role: 'exit', targets: ['app.example:443'] }
+    const blocked = { ...source, status: 'error', service_id: 'rule-21' }
+    getRuleList.mockResolvedValueOnce(result([source, exit])).mockResolvedValueOnce(result([blocked, exit]))
+    createTunnel.mockRejectedValueOnce(new Error('endpoint in use'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+    await button(wrapper, '添加隧道').trigger('click')
+    await flushPromises()
+    const editor = dialog(wrapper)
+    await field(editor, 'name').get('input').setValue('New tunnel')
+    await choose(selectField(editor, 'entry_rule_id'), source.id)
+    await choose(selectField(editor, 'exit_rule_id'), exit.id)
+    await button(editor, '添加并启动').trigger('click')
+    await flushPromises()
+
+    expect(getRuleList).toHaveBeenCalledTimes(2)
+    const entries = selectField(editor, 'entry_rule_id')
+    expect(entries.props('modelValue')).toBe(null)
+    expect(entries.findAllComponents(ElOption).map(option => option.props('value'))).not.toContain(source.id)
+    expect(selectField(editor, 'exit_rule_id').props('modelValue')).toBe(exit.id)
+    await button(editor, '添加并启动').trigger('click')
+    await flushPromises()
+    expect(createTunnel).toHaveBeenCalledTimes(1)
+  })
+
   it('requires a different pair when both selected endpoints already belong to the same tunnel', async () => {
     const binding = { status: 'running', linked_tunnels: [{ id: 12, status: 'running' }] }
     const entry = { ...source, role: 'entry', ...binding }
