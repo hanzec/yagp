@@ -96,6 +96,22 @@ describe('node inventory', () => {
     expect(view.find('[role="alert"]').exists()).toBe(false)
   })
 
+  it('lets a slow background refresh finish before polling again', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const wrapper = open()
+    await flushPromises()
+    const pending = Promise.withResolvers()
+    api.getNodeList.mockReturnValueOnce(pending.promise)
+    await vi.advanceTimersByTimeAsync(11_000)
+    expect(api.getNodeList).toHaveBeenCalledTimes(2)
+
+    pending.resolve(list([{ ...primary, name: 'Updated entry' }]))
+    await flushPromises()
+    expect(wrapper.get('tbody').text()).toContain('Updated entry')
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(api.getNodeList).toHaveBeenCalledTimes(3)
+  })
+
   it('polls with applied filters while keyword and tag edits remain drafts', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const view = open()
@@ -215,6 +231,25 @@ describe('node inventory', () => {
     expect(api.getNodeList).not.toHaveBeenCalled()
     await click(view, '重新加载')
     expect(view.get('[aria-current="page"]').text()).toBe(primary.name)
+  })
+
+  it.each(['success', '404'])('ignores a late %s from the previous visit to the same node', async outcome => {
+    const first = deferred()
+    api.getNode.mockReturnValueOnce(first.promise).mockResolvedValueOnce(response(primary))
+    const view = open()
+    await flushPromises()
+    await openDetail(view)
+    await router.push('/nodes')
+    await flushPromises()
+    await openDetail(view)
+    expect(api.getNode).toHaveBeenCalledTimes(2)
+
+    if (outcome === 'success') first.resolve(response({ ...offlinePrimary, name: 'Old node snapshot' }))
+    else first.reject({ response: { status: 404 } })
+    await flushPromises()
+    expect(view.get('[aria-current="page"]').text()).toBe(primary.name)
+    expect(view.get('.detail-meta .ops-status').text()).toBe('在线')
+    expect(view.find('[role="alert"]').exists()).toBe(false)
   })
 
   it('marks cached detail as stale after a polling failure and recovers on retry', async () => {

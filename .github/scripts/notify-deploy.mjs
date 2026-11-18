@@ -44,7 +44,7 @@ async function main() {
     console.log(`Sending ${path} webhook (attempt ${attempt} of 3).`)
     const response = await sendWebhook(origin)
     if (response.status === 202) {
-      await waitForUpdate(origin, await acceptedJob(response))
+      await waitForUpdate(origin, await acceptedJob(response), mode)
       return
     }
     const retryAfter = response.headers.get('retry-after')
@@ -109,12 +109,13 @@ async function acceptedJob(response) {
   return job
 }
 
-async function waitForUpdate(origin, job) {
+export async function waitForUpdate(origin, job, expectedMode) {
   const signal = AbortSignal.timeout(960_000)
   let previousState = ''
   let previousLogs = ''
+  let logEnd = 0
   const report = (status) => {
-    if (status?.mode !== mode || !['queued', 'running', 'succeeded', 'failed'].includes(status.state)) {
+    if (status?.mode !== expectedMode || !['queued', 'running', 'succeeded', 'failed'].includes(status.state)) {
       throw new Error('Invalid update job status.')
     }
     if (status.state !== previousState) {
@@ -122,7 +123,15 @@ async function waitForUpdate(origin, job) {
       previousState = status.state
     }
     const logs = typeof status.logs === 'string' ? status.logs : ''
-    const newLogs = logs.startsWith(previousLogs) ? logs.slice(previousLogs.length) : logs
+    let newLogs
+    if (Number.isSafeInteger(status.log_offset) && status.log_offset >= 0) {
+      const bytes = Buffer.from(logs)
+      newLogs = bytes.subarray(Math.max(0, logEnd - status.log_offset)).toString()
+      logEnd = Math.max(logEnd, status.log_offset + bytes.length)
+    } else {
+      newLogs = legacyLogDelta(previousLogs, logs)
+      logEnd += Buffer.byteLength(newLogs)
+    }
     for (const line of newLogs.split('\n')) {
       if (line) console.log('server | ' + line.replace(/[\x00-\x1f\x7f]/g, ''))
     }
@@ -140,17 +149,28 @@ async function waitForUpdate(origin, job) {
 
   console.log('Webhook accepted. Waiting for the update job to finish.')
   const url = origin + job.status_url
-  if (job.status_websocket !== true) {
+  if (job.status_websocket === true) {
+    if (await watchStatus(url.replace(/^https:/, 'wss:'), signal, report)) return
+    console.log('WebSocket disconnected. Continuing over HTTPS.')
+  } else {
     console.log('This receiver uses HTTPS job status. A newer receiver will stream updates over WebSocket.')
   }
   while (!signal.aborted) {
-    const done = job.status_websocket === true
-      ? await watchStatus(url.replace(/^https:/, 'wss:'), signal, report)
-      : await pollStatus(url, signal, report)
-    if (done) return
+    if (await pollStatus(url, signal, report)) return
     await delay(4_000, undefined, { signal }).catch(() => {})
   }
   throw new Error('Timed out waiting for the update job.')
+}
+
+// Older receivers send only the tail text. Match its overlap when the 64 KiB window moves.
+function legacyLogDelta(previous, logs) {
+  if (logs.startsWith(previous)) return logs.slice(previous.length)
+  if (!logs) return ''
+  for (let start = previous.indexOf(logs[0]); start !== -1; start = previous.indexOf(logs[0], start + 1)) {
+    const overlap = previous.slice(start)
+    if (logs.startsWith(overlap)) return logs.slice(overlap.length)
+  }
+  return logs
 }
 
 function watchStatus(url, signal, report) {
@@ -209,9 +229,11 @@ function parseJSON(text) {
   }
 }
 
-try {
-  await main()
-} catch (error) {
-  console.error(error.message)
-  process.exitCode = 1
+if (import.meta.main) {
+  try {
+    await main()
+  } catch (error) {
+    console.error(error.message)
+    process.exitCode = 1
+  }
 }

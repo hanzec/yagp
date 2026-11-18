@@ -57,7 +57,7 @@ func (s *TunnelService) checkEndpointRestart(t *model.GostTunnel) error {
 }
 
 func (s *TunnelService) configureSharedRelay(client *gost.Client, relay *gost.ServiceConfig, tunnels []*model.GostTunnel) error {
-	if err := s.allowlist.writeSharedRelayPolicy(client, relay.Name, tunnels); err != nil {
+	if err := s.allowlist.writeSharedRelayPolicy(client, relay.Name, tunnels, nil); err != nil {
 		return err
 	}
 	current, err := client.Service(relay.Name)
@@ -80,16 +80,26 @@ func (s *TunnelService) configureSharedRelay(client *gost.Client, relay *gost.Se
 	return client.ReplaceService(relay)
 }
 
-func (s *GostAllowlistService) writeSharedRelayPolicy(client *gost.Client, name string, tunnels []*model.GostTunnel) error {
-	policy := nodegrpc.RelayAuthConfig{Users: make([]nodegrpc.RelayAuthUser, 0, len(tunnels))}
-	for _, tunnel := range tunnels {
-		addresses, restrict, err := s.relaySources(tunnel)
+func (s *GostAllowlistService) writeSharedRelayPolicy(client *gost.Client, name string, tunnels []*model.GostTunnel, nodes sourceNodes) error {
+	if nodes == nil {
+		var ids []uint
+		for _, tunnel := range tunnels {
+			ids = append(ids, relaySourceIDs(tunnel)...)
+		}
+		slices.Sort(ids)
+		var err error
+		nodes, err = s.sourceNodes(context.Background(), slices.Compact(ids))
 		if err != nil {
 			return err
 		}
+	}
+	policy := nodegrpc.RelayAuthConfig{Users: make([]nodegrpc.RelayAuthUser, 0, len(tunnels))}
+	for _, tunnel := range tunnels {
+		ids := relaySourceIDs(tunnel)
+		addresses := nodes.addresses(ids, tunnel.AutoAllowlist)
 		user := nodegrpc.RelayAuthUser{
 			Username: relayServiceName(tunnel.ID), Password: tunnel.RelaySecret,
-			RestrictSources: restrict, AllowedIPs: addresses,
+			RestrictSources: len(ids) > 0, AllowedIPs: addresses,
 		}
 		policy.Users = append(policy.Users, user)
 	}
@@ -127,7 +137,7 @@ func (s *TunnelService) removeEndpointRelay(client *gost.Client, tunnel *model.G
 		// Rollback can arrive before the shared auth plugin was applied.
 		return nil
 	}
-	return s.allowlist.writeSharedRelayPolicy(client, name, peers)
+	return s.allowlist.writeSharedRelayPolicy(client, name, peers, nil)
 }
 
 func (s *TunnelService) applySharedIngress(client *gost.Client, t *model.GostTunnel, tunnels []*model.GostTunnel, redirect *nodegrpc.TransparentRedirectRequest) error {

@@ -12,8 +12,11 @@ import (
 	"yagp/internal/dto"
 	bizerrors "yagp/internal/errors"
 	"yagp/internal/model"
+	"yagp/internal/utils"
 	"yagp/pkg/gost"
 	"yagp/pkg/nodegrpc"
+
+	"gorm.io/gorm"
 )
 
 func TestEndpointTunnelsShareAnExitRelay(t *testing.T) {
@@ -351,5 +354,53 @@ func assertSharedEntryTargets(t *testing.T, node *lifecycleNode, name string, ta
 	slices.Sort(targets)
 	if !slices.Equal(addresses, targets) {
 		t.Fatalf("local targets %v, want %v", addresses, targets)
+	}
+}
+
+func TestSharedRelayBatchesSourceQueries(t *testing.T) {
+	db := newServiceTestDB(t)
+	remote := &sharedRelayTestNode{lifecycleNode: lifecycleNode{t: t}, policies: make(map[string]nodegrpc.RelayAuthConfig)}
+	exit := startServiceTestNode(t, remote)
+	source := model.GostNode{Name: "source", IPv4: "192.0.2.1", LocalAddresses: []string{"10.0.0.1"}}
+	saveServiceFixtures(t, db, &exit, &source)
+	reads := 0
+	requireServiceError(t, db.Callback().Query().After("gorm:query").Register("count_source_queries", func(tx *gorm.DB) {
+		if tx.Statement.Table == "nodes" {
+			reads++
+		}
+	}), nil)
+	var tunnels []model.GostTunnel
+	const name = "relay-tunnel-1"
+	exitRuleID := uint(1)
+	for i := range 100 {
+		tunnels = append(tunnels, model.GostTunnel{
+			ID: uint(i + 1), EntryNodeID: source.ID, ExitNodeID: exit.ID, ExitRuleID: &exitRuleID,
+			AutoAllowlist: i%2 == 0, AllowlistNodeIDs: []uint{source.ID},
+			ServiceID: name, RelaySecret: "test-secret", Status: model.TunnelStatusRunning,
+		})
+	}
+	svc := NewGostAllowlistService(db)
+	cfg := gost.GostConfig{Services: []gost.ServiceConfig{{Name: name, Handler: &gost.HandlerConfig{Type: "relay", Auther: name}}}}
+	for _, snapshot := range []sourceNodes{nil, {source.ID: &source}} {
+		reads = 0
+		_, err := svc.syncRelays(utils.GetGostClient(&exit), &cfg, exit.ID, tunnels, snapshot)
+		requireServiceError(t, err, nil)
+		wantReads := 0
+		if snapshot == nil {
+			wantReads = 1
+		}
+		users := remote.policy(name).Users
+		if reads != wantReads || len(users) != len(tunnels) {
+			t.Fatalf("source queries = %d, want %d for %d users, got %d users", reads, wantReads, len(tunnels), len(users))
+		}
+		for i, user := range users {
+			want := []string{source.IPv4}
+			if tunnels[i].AutoAllowlist {
+				want = []string{"10.0.0.1", source.IPv4}
+			}
+			if !user.RestrictSources || !slices.Equal(user.AllowedIPs, want) {
+				t.Fatalf("%s sources = %v, restricted = %t", user.Username, user.AllowedIPs, user.RestrictSources)
+			}
+		}
 	}
 }

@@ -311,6 +311,7 @@
 import { computed, nextTick, ref, reactive, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { useInventoryList } from '@/utils/inventory-list'
 import InventoryToolbar from '@/components/InventoryToolbar.vue'
 import PanelDialog from '@/components/PanelDialog.vue'
 import TunnelTestDialog from '@/components/TunnelTestDialog.vue'
@@ -342,16 +343,15 @@ const nodeOptionsError = ref(false)
 const entryList = ref([])
 const entryOptionsLoading = ref(false)
 const entryOptionsError = ref(false)
-const tunnelList = ref([])
-const loading = ref(true)
-const loadError = ref(false)
 const page = ref(1)
 const pageSize = ref(10)
-const total = ref(null)
 const searchKeyword = ref('')
 const searchNodeId = ref('')
 const searchStatus = ref('')
 const appliedFilters = ref({ keyword: '', node_id: '', status: '' })
+const { items: tunnelList, total, loading, loadError, fetchData } = useInventoryList(() =>
+  getTunnelList({ page: page.value, pageSize: pageSize.value, ...appliedFilters.value })
+)
 const filtered = computed(() => Boolean(appliedFilters.value.keyword.trim() || appliedFilters.value.node_id || appliedFilters.value.status))
 const tunnelMetrics = computed(() => [
   { label: '筛选结果', value: total.value, detail: '全部匹配隧道', icon: Connection },
@@ -510,28 +510,6 @@ const fetchNodes = async () => {
     nodeOptionsError.value = true
   } finally {
     nodeOptionsLoading.value = false
-  }
-}
-
-let latestRequest = 0
-const fetchData = async (isSilent = false) => {
-  if (isSilent && (loading.value || loadError.value)) return
-  const request = ++latestRequest
-  if (!isSilent) loading.value = true
-  try {
-    const res = await getTunnelList({
-      page: page.value,
-      pageSize: pageSize.value,
-      ...appliedFilters.value
-    })
-    if (request !== latestRequest) return
-    tunnelList.value = res.data.list || []
-    total.value = res.data.total || 0
-    loadError.value = false
-  } catch {
-    if (request === latestRequest) loadError.value = true
-  } finally {
-    if (request === latestRequest) loading.value = false
   }
 }
 

@@ -29,23 +29,46 @@ func (s *GostAllowlistService) validateNodeIDs(ctx context.Context, nodeIDs []ui
 	nodeIDs = append([]uint{}, nodeIDs...)
 	slices.Sort(nodeIDs)
 	nodeIDs = slices.Compact(nodeIDs)
-	_, err := s.resolveAddresses(ctx, nodeIDs, true, false)
-	return nodeIDs, err
-}
-
-func (s *GostAllowlistService) resolveAddresses(ctx context.Context, nodeIDs []uint, strict, includeLocal bool) ([]string, error) {
-	addresses := []string{}
-	if len(nodeIDs) == 0 {
-		return addresses, nil
-	}
-	var nodes []model.GostNode
-	if err := s.db.WithContext(ctx).Select("id", "name", "ipv4", "ipv6", "addresses", "manual_addresses", "local_addresses").Where("id IN ?", nodeIDs).Find(&nodes).Error; err != nil {
+	nodes, err := s.sourceNodes(ctx, nodeIDs)
+	if err != nil {
 		return nil, err
 	}
-	if strict && len(nodes) != len(nodeIDs) {
-		return nil, bizerrors.New(40000, "白名单包含不存在的节点", http.StatusBadRequest)
+	for _, id := range nodeIDs {
+		node := nodes[id]
+		if node == nil {
+			return nil, bizerrors.New(40000, "白名单包含不存在的节点", http.StatusBadRequest)
+		}
+		if len(node.Addresses) == 0 && len(node.ManualAddresses) == 0 && node.IPv4 == "" && node.IPv6 == "" {
+			return nil, bizerrors.New(40000, fmt.Sprintf("节点 %q 暂无来源 IP，请注册节点或等待节点上报", node.Name), http.StatusBadRequest)
+		}
 	}
-	for _, node := range nodes {
+	return nodeIDs, nil
+}
+
+type sourceNodes map[uint]*model.GostNode
+
+func (s *GostAllowlistService) sourceNodes(ctx context.Context, ids []uint) (sourceNodes, error) {
+	result := make(sourceNodes, len(ids))
+	for batch := range slices.Chunk(ids, 1000) {
+		var nodes []model.GostNode
+		if err := s.db.WithContext(ctx).Select("id", "name", "ipv4", "ipv6", "addresses", "manual_addresses", "local_addresses").
+			Where("id IN ?", batch).Find(&nodes).Error; err != nil {
+			return nil, err
+		}
+		for i := range nodes {
+			result[nodes[i].ID] = &nodes[i]
+		}
+	}
+	return result, nil
+}
+
+func (nodes sourceNodes) addresses(ids []uint, includeLocal bool) []string {
+	addresses := []string{}
+	for _, id := range ids {
+		node := nodes[id]
+		if node == nil {
+			continue
+		}
 		addresses = append(addresses, node.ManualAddresses...)
 		if includeLocal {
 			addresses = append(addresses, node.LocalAddresses...)
@@ -53,9 +76,6 @@ func (s *GostAllowlistService) resolveAddresses(ctx context.Context, nodeIDs []u
 		if len(node.Addresses) != 0 {
 			addresses = append(addresses, node.Addresses...)
 			continue
-		}
-		if strict && node.IPv4 == "" && node.IPv6 == "" && len(node.ManualAddresses) == 0 {
-			return nil, bizerrors.New(40000, fmt.Sprintf("节点 %q 暂无来源 IP，请注册节点或等待节点上报", node.Name), http.StatusBadRequest)
 		}
 		if node.IPv4 != "" {
 			addresses = append(addresses, node.IPv4)
@@ -65,7 +85,7 @@ func (s *GostAllowlistService) resolveAddresses(ctx context.Context, nodeIDs []u
 		}
 	}
 	slices.Sort(addresses)
-	return slices.Compact(addresses), nil
+	return slices.Compact(addresses)
 }
 
 func relayServiceName(id uint) string {
@@ -76,7 +96,7 @@ func (s *GostAllowlistService) prepareRelay(client *gost.Client, relay *gost.Ser
 	if !tunnel.AutoAllowlist && len(tunnel.AllowlistNodeIDs) == 0 {
 		return nil
 	}
-	desired, err := s.relayAdmission(tunnel)
+	desired, err := s.relayAdmission(tunnel, nil)
 	if err != nil {
 		return err
 	}
@@ -95,14 +115,22 @@ func (s *GostAllowlistService) prepareRelay(client *gost.Client, relay *gost.Ser
 	return nil
 }
 
-func (s *GostAllowlistService) relayAdmission(tunnel *model.GostTunnel) (*gost.AdmissionConfig, error) {
-	addresses, restrict, err := s.relaySources(tunnel)
-	if err != nil || (tunnel.AutoAllowlist && len(addresses) == 0) {
-		return nil, err
+func (s *GostAllowlistService) relayAdmission(tunnel *model.GostTunnel, nodes sourceNodes) (*gost.AdmissionConfig, error) {
+	nodeIDs := relaySourceIDs(tunnel)
+	if nodes == nil {
+		var err error
+		nodes, err = s.sourceNodes(context.Background(), nodeIDs)
+		if err != nil {
+			return nil, err
+		}
+	}
+	addresses := nodes.addresses(nodeIDs, tunnel.AutoAllowlist)
+	if tunnel.AutoAllowlist && len(addresses) == 0 {
+		return nil, nil
 	}
 	return &gost.AdmissionConfig{
 		Name:      gost.TunnelRelayAllowlistName(relayServiceName(tunnel.ID)),
-		Whitelist: restrict,
+		Whitelist: len(nodeIDs) > 0,
 		Matchers:  publicRelayMatchers(addresses),
 	}, nil
 }
@@ -120,17 +148,14 @@ func publicRelayMatchers(addresses []string) []string {
 	return slices.Compact(matchers)
 }
 
-func (s *GostAllowlistService) relaySources(tunnel *model.GostTunnel) ([]string, bool, error) {
-	nodeIDs := tunnel.AllowlistNodeIDs
+func relaySourceIDs(tunnel *model.GostTunnel) []uint {
 	if tunnel.AutoAllowlist {
-		nodeIDs = []uint{tunnel.EntryNodeID}
+		return []uint{tunnel.EntryNodeID}
 	}
-	// Resolve current addresses on every sync so address changes are picked up without saving the selection again.
-	addresses, err := s.resolveAddresses(context.Background(), nodeIDs, false, tunnel.AutoAllowlist)
-	return addresses, len(nodeIDs) > 0, err
+	return tunnel.AllowlistNodeIDs
 }
 
-func (s *GostAllowlistService) syncRelays(client *gost.Client, current *gost.GostConfig, nodeID uint, tunnels []model.GostTunnel) (bool, error) {
+func (s *GostAllowlistService) syncRelays(client *gost.Client, current *gost.GostConfig, nodeID uint, tunnels []model.GostTunnel, nodes sourceNodes) (bool, error) {
 	managed := make(map[string]model.GostTunnel)
 	shared := make(map[string][]*model.GostTunnel)
 	for i := range tunnels {
@@ -148,7 +173,7 @@ func (s *GostAllowlistService) syncRelays(client *gost.Client, current *gost.Gos
 	for _, relay := range current.Services {
 		if relay.Handler != nil && relay.Handler.Auther == relay.Name {
 			if users := shared[relay.Name]; len(users) != 0 {
-				syncError = errors.Join(syncError, s.writeSharedRelayPolicy(client, relay.Name, users))
+				syncError = errors.Join(syncError, s.writeSharedRelayPolicy(client, relay.Name, users, nodes))
 			}
 			continue
 		}
@@ -161,7 +186,7 @@ func (s *GostAllowlistService) syncRelays(client *gost.Client, current *gost.Gos
 		// Keep an existing per-tunnel binding when clearing the selection to avoid reloading the relay.
 		enabled := tunnel.AutoAllowlist || len(tunnel.AllowlistNodeIDs) > 0 || hasAdmission
 		if enabled {
-			desired, err := s.relayAdmission(&tunnel)
+			desired, err := s.relayAdmission(&tunnel, nodes)
 			if err != nil {
 				syncError = errors.Join(syncError, fmt.Errorf("%s: %w", relay.Name, err))
 				continue

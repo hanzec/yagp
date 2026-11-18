@@ -44,7 +44,7 @@ func TestBackupUsesWALSnapshotAndUniquePublishedFiles(t *testing.T) {
 
 	synctest.Test(t, func(t *testing.T) {
 		started := time.Now()
-		requireServiceError(t, backup.CreateBackup(), nil)
+		requireServiceError(t, backup.CreateBackup(t.Context()), nil)
 		synctest.Wait()
 		first, err := filepath.Glob("backups/gost_panel_*.db")
 		requireServiceError(t, err, nil)
@@ -54,7 +54,7 @@ func TestBackupUsesWALSnapshotAndUniquePublishedFiles(t *testing.T) {
 		before, err := os.ReadFile(first[0])
 		requireServiceError(t, err, nil)
 		requireServiceError(t, db.Exec("UPDATE snapshot_value SET value = 'second committed WAL value'").Error, nil)
-		requireServiceError(t, backup.CreateBackup(), nil)
+		requireServiceError(t, backup.CreateBackup(t.Context()), nil)
 		synctest.Wait()
 		if !time.Now().Equal(started) {
 			t.Fatal("backups did not run at the same timestamp")
@@ -86,7 +86,7 @@ func TestBackupUsesWALSnapshotAndUniquePublishedFiles(t *testing.T) {
 		// copying it would silently discard the committed WAL values above.
 		tx := db.Begin()
 		requireServiceError(t, tx.Error, nil)
-		requireServiceError(t, NewBackupService(tx).CreateBackup(), bizerrors.ErrBackupFailed)
+		requireServiceError(t, NewBackupService(tx).CreateBackup(t.Context()), bizerrors.ErrBackupFailed)
 		requireServiceError(t, tx.Rollback().Error, nil)
 		after, err := os.ReadFile(first[0])
 		requireServiceError(t, err, nil)
@@ -99,4 +99,30 @@ func TestBackupUsesWALSnapshotAndUniquePublishedFiles(t *testing.T) {
 			t.Fatalf("failed backup published a snapshot or left temporary files: %v", entries)
 		}
 	})
+}
+
+func TestBackupRetentionOrdersLegacyAndFractionalSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	backup := NewBackupService(newServiceTestDB(t))
+	settings, err := backup.sysRepo.Get()
+	requireServiceError(t, err, nil)
+	settings.BackupRetentionCount = 1
+	requireServiceError(t, backup.sysRepo.Update(settings), nil)
+
+	older := filepath.Join(dir, "gost_panel_20250131_120000.db")
+	newer := filepath.Join(dir, "gost_panel_20250131_120000.000000001-17.db")
+	invalidDate := filepath.Join(dir, "gost_panel_20250231_120000.db")
+	for _, name := range []string{older, newer, invalidDate} {
+		requireServiceError(t, os.WriteFile(name, []byte("snapshot"), 0o600), nil)
+	}
+
+	backup.cleanOldBackups(dir)
+	if _, err := os.Stat(older); !os.IsNotExist(err) {
+		t.Fatalf("older legacy snapshot was retained: %v", err)
+	}
+	for _, name := range []string{newer, invalidDate} {
+		if _, err := os.Stat(name); err != nil {
+			t.Fatalf("missing file %s: %v", name, err)
+		}
+	}
 }

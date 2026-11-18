@@ -70,7 +70,7 @@ describe('panel API contracts', () => {
     ['update settings', () => system.updateSystemConfig(body), 'put', '/system/config', { data: body }],
     ['test email', () => system.sendTestEmail(body), 'post', '/system/email/test', { data: body }],
     ['test Bark', () => system.sendTestBark(body), 'post', '/system/bark/test', { ...silent, data: body }],
-    ['backup', system.backupSystem, 'post', '/system/backup'],
+    ['backup', system.backupSystem, 'post', '/system/backup', { timeout: 0 }],
     ['ruleset', system.getGostRuleset, 'get', '/system/gost-ruleset'],
     ['update ruleset', () => system.updateGostRuleset('https://example.test/rules.yaml', [42]), 'put', '/system/gost-ruleset',
       { ...timeout, data: { url: 'https://example.test/rules.yaml', node_ids: [42] } }]

@@ -646,7 +646,32 @@ func (s *RuleService) Stop(id uint, username, ip, userAgent string) error {
 		return nil
 	}
 
-	if err := s.stopSelectedEntrance(rule); err != nil {
+	node, err := s.nodeRepo.FindByID(ruleEntryNodeID(rule))
+	if stderrors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.ErrNodeNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if node.Status != model.NodeStatusOnline {
+		return errors.ErrNodeOffline
+	}
+	serviceID := rule.ServiceID
+	if serviceID == "" {
+		serviceID = entranceServiceName(rule.ID)
+		// Keep a retry handle if deletion succeeds but saving the node configuration fails.
+		if err := s.ruleRepo.UpdateRuntime(rule.ID, serviceID, rule.Status); err != nil {
+			return err
+		}
+	}
+	client := utils.GetGostClient(node)
+	if err := client.DeleteService(serviceID); err != nil {
+		return err
+	}
+	if err := client.SaveConfig(); err != nil {
+		return err
+	}
+	if err := s.ruleRepo.UpdateRuntime(rule.ID, "", model.RuleStatusStopped); err != nil {
 		return err
 	}
 
@@ -660,37 +685,6 @@ func (s *RuleService) Stop(id uint, username, ip, userAgent string) error {
 		userAgent)
 
 	logger.Infof("停止规则成功: %s", rule.Name)
-	return nil
-}
-
-// stopSelectedEntrance is used by the owning tunnel to stop its ingress service.
-func (s *RuleService) stopSelectedEntrance(rule *model.GostRule) error {
-	if rule.ServiceID != "" {
-		node, err := s.nodeRepo.FindByID(ruleEntryNodeID(rule))
-		if stderrors.Is(err, gorm.ErrRecordNotFound) {
-			return errors.ErrNodeNotFound
-		}
-		if err != nil {
-			return err
-		}
-		if node.Status != model.NodeStatusOnline {
-			return errors.ErrNodeOffline
-		}
-		client := utils.GetGostClient(node)
-		if err := client.DeleteService(rule.ServiceID); err != nil {
-			return err
-		}
-		if err := client.SaveConfig(); err != nil {
-			return err
-		}
-	}
-	// Retain the service ID until the node config and local state are both saved;
-	// a database write failure must leave enough information to retry the stop.
-	if err := s.ruleRepo.UpdateRuntime(rule.ID, "", model.RuleStatusStopped); err != nil {
-		return err
-	}
-	rule.ServiceID = ""
-	rule.Status = model.RuleStatusStopped
 	return nil
 }
 

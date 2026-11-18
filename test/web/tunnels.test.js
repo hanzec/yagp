@@ -86,6 +86,22 @@ describe('Relay tunnel inventory', () => {
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
   })
 
+  it('lets a slow background refresh finish before polling again', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+    const pending = Promise.withResolvers()
+    getTunnelList.mockReturnValueOnce(pending.promise)
+    await vi.advanceTimersByTimeAsync(11_000)
+    expect(getTunnelList).toHaveBeenCalledTimes(2)
+
+    pending.resolve(result([{ ...relay, name: 'Updated entry' }]))
+    await flushPromises()
+    expect(wrapper.get('tbody').text()).toContain('Updated entry')
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(getTunnelList).toHaveBeenCalledTimes(3)
+  })
+
   it('polls with the applied keyword while input edits remain drafts', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const wrapper = mountInventory(Tunnels)

@@ -224,13 +224,14 @@ func TestRepositoryForwardingRelationsAndScopedUpdates(t *testing.T) {
 		entryDetail.EntryTunnels[0].ID != tunnel.ID || len(entryDetail.ExitTunnels) != 0 {
 		t.Fatalf("related node details: %+v", entryDetail)
 	}
-	byNode, err := rules.FindByNodeID(entry.ID)
+	byNode, err := rules.FindByEntryNodeID(entry.ID)
 	mustPersist(t, err)
 	byTunnel, _, err := rules.List(&QueryOption{Conditions: map[string]any{"tunnel_id = ?": tunnel.ID}})
 	mustPersist(t, err)
 	byExit, err := tunnels.FindByNodeID(exit.ID)
 	mustPersist(t, err)
-	if len(byNode) != 1 || byNode[0].ID != direct.ID || len(byTunnel) != 1 || byTunnel[0].ID != proxied.ID || len(byExit) != 2 {
+	if len(byNode) != 2 || !slices.ContainsFunc(byNode, func(r model.GostRule) bool { return r.ID == direct.ID }) ||
+		!slices.ContainsFunc(byNode, func(r model.GostRule) bool { return r.ID == proxied.ID }) || len(byTunnel) != 1 || byTunnel[0].ID != proxied.ID || len(byExit) != 2 {
 		t.Fatalf("filters: by node %+v, by tunnel %+v, by exit %+v", byNode, byTunnel, byExit)
 	}
 	for _, tc := range []struct {

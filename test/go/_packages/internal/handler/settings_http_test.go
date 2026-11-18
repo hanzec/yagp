@@ -2,8 +2,11 @@ package handler
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/textproto"
 	"os"
 	"path/filepath"
@@ -170,6 +173,57 @@ func TestSystemHTTPBackup(t *testing.T) {
 	mysqlFixture := &handlerHTTPFixture{engine: gin.New()}
 	mysqlFixture.engine.POST("/system/backup", NewSystemConfigHandler(nil, service.NewBackupService(mysqlDB)).Backup)
 	mysqlFixture.request(t, "POST", "/system/backup", "", 501)
+}
+
+func TestSystemHTTPBackupCancellation(t *testing.T) {
+	t.Chdir(t.TempDir())
+	f := newHandlerHTTPFixture(t)
+	f.registerSettings()
+	raw, err := f.db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw.SetMaxOpenConns(1)
+	held, err := raw.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/system/backup", nil)
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	initialWaits := raw.Stats().WaitCount
+	go func() {
+		defer close(done)
+		f.engine.ServeHTTP(response, req)
+	}()
+	defer func() {
+		cancel()
+		_ = held.Close()
+		<-done
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for raw.Stats().WaitCount == initialWaits {
+		if time.Now().After(deadline) {
+			t.Fatal("backup did not reach the occupied database connection")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled backup kept waiting for the database")
+	}
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("cancelled backup returned HTTP %d: %s", response.Code, response.Body)
+	}
+	entries, err := os.ReadDir("backups")
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("cancelled backup left files: %v, %v", entries, err)
+	}
 }
 
 func TestSystemHTTPEmail(t *testing.T) {

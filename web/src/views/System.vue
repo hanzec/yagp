@@ -151,9 +151,9 @@
                 <p>添加订阅后，可在透明转发中组合多个规则集。</p>
               </header>
               <GostRulesetCatalog />
-              <details class="legacy-ruleset">
+              <details class="legacy-ruleset" @toggle="legacyRulesetOpened ||= $event.currentTarget.open">
                 <summary>默认规则集与旧节点同步</summary>
-                <GostRulesetSettings />
+                <GostRulesetSettings v-if="legacyRulesetOpened" />
               </details>
             </el-tab-pane>
           </el-tabs>
@@ -214,6 +214,7 @@ import { useSystemStore } from '@/store/system'
 
 const systemStore = useSystemStore()
 const activeTab = ref('config')
+const legacyRulesetOpened = ref(false)
 const loading = ref(true)
 const saving = ref(false)
 const loadError = ref(false)

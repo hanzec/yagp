@@ -64,6 +64,9 @@ jobs:
           bash test/scripts/go_runner_test.sh
           bash test/scripts/compose_backup_test.sh
 
+      - name: Test deployment notifications
+        run: node --test test/scripts/notify_deploy_test.mjs
+
       - name: Install frontend dependencies
         run: npm --prefix web ci
 

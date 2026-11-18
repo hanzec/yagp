@@ -282,6 +282,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { useInventoryList } from '@/utils/inventory-list'
 import InventoryToolbar from '@/components/InventoryToolbar.vue'
 import PanelDialog from '@/components/PanelDialog.vue'
 import GostTransportOptions from '@/components/GostTransportOptions.vue'
@@ -298,20 +299,20 @@ import { checkRuleListener, createRule, deleteRule, getRuleList, startRule, stop
 const nodeList = ref([])
 const nodeOptionsLoading = ref(false)
 const nodeOptionsError = ref(false)
-const ruleList = ref([])
-const connectEndpoints = computed(() => Object.fromEntries(ruleList.value.map(rule => [
-  rule.id, mappedConnectEndpoint(rule.node, rule.listen_ip, rule.listen_port)
-])))
-const loading = ref(false)
-const listError = ref(false)
 const page = ref(1)
 const pageSize = ref(10)
-const total = ref(0)
 
 const emptyFilters = { keyword: '', node_id: '', status: '' }
 const filters = reactive({ ...emptyFilters })
 const activeFilters = ref({ ...emptyFilters })
+const { items: ruleList, total, loading, loadError: listError, fetchData } = useInventoryList(() =>
+  getRuleList({ page: page.value, pageSize: pageSize.value, ...activeFilters.value })
+)
 const hasFilters = computed(() => Object.values(activeFilters.value).some(Boolean))
+
+const connectEndpoints = computed(() => Object.fromEntries(ruleList.value.map(rule => [
+  rule.id, mappedConnectEndpoint(rule.node, rule.listen_ip, rule.listen_port)
+])))
 
 const statusClass = { running: 'is-success', stopped: 'is-muted', error: 'is-danger' }
 const statusText = { running: '运行中', stopped: '已停止', error: '异常' }
@@ -436,27 +437,6 @@ const fetchNodes = async () => {
     nodeOptionsError.value = true
   } finally {
     nodeOptionsLoading.value = false
-  }
-}
-
-let latestRequest = 0
-const fetchData = async (silent = false) => {
-  const request = ++latestRequest
-  if (!silent) loading.value = true
-  try {
-    const { data } = await getRuleList({
-      page: page.value,
-      pageSize: pageSize.value,
-      ...activeFilters.value
-    })
-    if (request !== latestRequest) return
-    ruleList.value = data.list || []
-    total.value = data.total || 0
-    listError.value = false
-  } catch {
-    if (request === latestRequest) listError.value = true
-  } finally {
-    if (request === latestRequest) loading.value = false
   }
 }
 
@@ -618,7 +598,7 @@ onMounted(() => {
   fetchNodes()
   fetchData()
   refreshTimer = setInterval(() => {
-    if (!document.hidden && !loading.value && !listError.value) fetchData(true)
+    if (!document.hidden) fetchData(true)
   }, 5000)
 })
 onBeforeUnmount(() => clearInterval(refreshTimer))

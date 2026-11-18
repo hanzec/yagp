@@ -79,8 +79,8 @@ func TestRuleReconciliationRepairsStatusAndExitAllowlist(t *testing.T) {
 	})
 	requireServiceError(t, db.First(&known, known.ID).Error, nil)
 	requireServiceError(t, db.First(&legacy, legacy.ID).Error, nil)
-	if known.Status != model.RuleStatusError || legacy.Status != model.RuleStatusRunning {
-		t.Fatalf("reconciled statuses = %q, %q", known.Status, legacy.Status)
+	if known.Status != model.RuleStatusError || legacy.Status != model.RuleStatusRunning || legacy.ServiceID != entranceServiceName(legacy.ID) {
+		t.Fatalf("reconciled rules: tracked status %q, restored status %q, restored service %q", known.Status, legacy.Status, legacy.ServiceID)
 	}
 	assertAdmission := func(name string, whitelist bool, matchers []string) {
 		t.Helper()
@@ -204,4 +204,74 @@ func TestRulesetSyncRetriesSaveWithoutRecreatingBypass(t *testing.T) {
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	service.Run(canceled)
+}
+
+func TestRestoredRunningRuleRemovesRemoteService(t *testing.T) {
+	for _, poll := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sync_before_delete_%t", poll), func(t *testing.T) {
+			db := newServiceTestDB(t)
+			remote := &lifecycleNode{t: t}
+			entry := startServiceTestNode(t, remote)
+			saveServiceFixtures(t, db, &entry)
+			rule := model.GostRule{Name: "restored", NodeID: &entry.ID, ListenPort: 8087, Status: model.RuleStatusRunning}
+			saveServiceFixtures(t, db, &rule)
+			name := entranceServiceName(rule.ID)
+			service := fmt.Appendf(nil, `{"name":%q,"status":{"state":"running"}}`, name)
+			remote.resources = map[string]json.RawMessage{"/config/services/" + name: service}
+			remote.gostConfig = `{"services":[` + string(service) + `]}`
+			rules := NewRuleService(db)
+			if poll {
+				NewRuleSyncService(db).syncNodeRules(entry, nil)
+				stored, err := rules.GetByID(rule.ID)
+				requireServiceError(t, err, nil)
+				if stored.ServiceID != name {
+					t.Fatalf("restored service ID = %q, want %q", stored.ServiceID, name)
+				}
+			}
+			remote.rejectCommand("POST /config?format=yaml", http.StatusServiceUnavailable)
+			if err := rules.Delete(rule.ID, testAdmin, testIP, testAgent); err == nil {
+				t.Fatal("delete succeeded despite a failed node config save")
+			}
+			remote.gostConfig = "{}"
+			NewRuleSyncService(db).syncNodeRules(entry, nil)
+			stored, err := rules.GetByID(rule.ID)
+			requireServiceError(t, err, nil)
+			if stored.ServiceID != name || stored.Status != model.RuleStatusStopped {
+				t.Fatalf("lost pending cleanup after failed save: %+v", stored)
+			}
+			remote.rejectCommand("POST /config?format=yaml", 0)
+			requireServiceError(t, rules.Delete(rule.ID, testAdmin, testIP, testAgent), nil)
+			if remote.service(name).Name != "" {
+				t.Fatalf("service %q still exists on the node", name)
+			}
+		})
+	}
+}
+
+func TestLegacyTunnelRuleRecoversOnEntryReconnect(t *testing.T) {
+	db := newServiceTestDB(t)
+	remote := &lifecycleNode{t: t}
+	entry := startServiceTestNode(t, remote)
+	exit := model.GostNode{Name: "exit"}
+	saveServiceFixtures(t, db, &entry, &exit)
+	tunnel := model.GostTunnel{Name: "legacy", EntryNodeID: entry.ID, ExitNodeID: exit.ID}
+	saveServiceFixtures(t, db, &tunnel)
+	rule := model.GostRule{Name: "legacy listener", Type: model.RuleTypeTunnel, TunnelID: &tunnel.ID, ServiceID: "legacy-service", Status: model.RuleStatusRunning}
+	saveServiceFixtures(t, db, &rule)
+	syncService := NewRuleSyncService(db)
+	assertStatus := func(want model.RuleStatus) {
+		t.Helper()
+		stored, err := syncService.ruleRepo.FindByID(rule.ID)
+		requireServiceError(t, err, nil)
+		if stored.Status != want {
+			t.Fatalf("rule status = %q, want %q", stored.Status, want)
+		}
+	}
+	remote.rejectCommand("GET /config", http.StatusServiceUnavailable)
+	syncService.syncNodeRules(entry, nil)
+	assertStatus(model.RuleStatusStopped)
+	remote.rejectCommand("GET /config", 0)
+	remote.gostConfig = `{"services":[{"name":"legacy-service","status":{"state":"running"}}]}`
+	syncService.syncNodeRules(entry, nil)
+	assertStatus(model.RuleStatusRunning)
 }

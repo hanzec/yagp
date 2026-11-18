@@ -88,18 +88,18 @@ func (s *RuleSyncService) syncAll() {
 		return
 	}
 
-	exitNodes := make(map[uint]*model.GostNode, len(nodes))
+	nodesByID := make(map[uint]*model.GostNode, len(nodes))
 	for i := range nodes {
-		exitNodes[nodes[i].ID] = &nodes[i]
+		nodesByID[nodes[i].ID] = &nodes[i]
 	}
 	for _, node := range nodes {
 		// 并发同步每个节点
-		s.wg.Go(func() { s.syncNodeRules(node, exitNodes) })
+		s.wg.Go(func() { s.syncNodeRules(node, nodesByID) })
 	}
 }
 
 // syncNodeRules 同步单个节点的规则
-func (s *RuleSyncService) syncNodeRules(node model.GostNode, exitNodes map[uint]*model.GostNode) {
+func (s *RuleSyncService) syncNodeRules(node model.GostNode, nodesByID map[uint]*model.GostNode) {
 	// A slow Gost update can outlast a sync interval. Finish it before reconciling this node again.
 	if _, busy := s.syncing.LoadOrStore(node.ID, struct{}{}); busy {
 		return
@@ -107,14 +107,14 @@ func (s *RuleSyncService) syncNodeRules(node model.GostNode, exitNodes map[uint]
 	defer s.syncing.Delete(node.ID)
 
 	client := utils.GetGostClient(&node)
-	configErr := s.reconcileNode(client, node, exitNodes)
+	configErr := s.reconcileNode(client, node, nodesByID)
 	if configErr != nil {
 		logger.Debugf("[Sync] 获取节点 %d (%s) 配置失败: %v", node.ID, node.Name, configErr)
 	}
 	s.updateNodeHealth(node, configErr)
 }
 
-func (s *RuleSyncService) reconcileNode(client *gost.Client, node model.GostNode, exitNodes map[uint]*model.GostNode) error {
+func (s *RuleSyncService) reconcileNode(client *gost.Client, node model.GostNode, nodesByID map[uint]*model.GostNode) error {
 	endpointTunnelRuntime.RLock()
 	defer endpointTunnelRuntime.RUnlock()
 
@@ -134,7 +134,7 @@ func (s *RuleSyncService) reconcileNode(client *gost.Client, node model.GostNode
 	}
 
 	// 1. 同步规则状态
-	rules, err := s.ruleRepo.FindByNodeID(node.ID)
+	rules, err := s.ruleRepo.FindByEntryNodeID(node.ID)
 	if err != nil {
 		logger.Errorf("[Sync] 获取节点 %d 规则失败: %v", node.ID, err)
 	} else {
@@ -149,14 +149,14 @@ func (s *RuleSyncService) reconcileNode(client *gost.Client, node model.GostNode
 		return nil
 	}
 	s.recordRelayTraffic(node.ID, tunnels, gostCfg.Services)
-	changed, err := s.allowlist.syncRelays(client, gostCfg, node.ID, tunnels)
+	changed, err := s.allowlist.syncRelays(client, gostCfg, node.ID, tunnels, nodesByID)
 	if err != nil {
 		logger.Errorf("[Sync] 下发隧道 IP 白名单到节点 %d 失败: %v", node.ID, err)
 	}
 	if changed {
 		s.unsavedTunnelConfig.Store(node.ID, struct{}{})
 	}
-	s.syncTunnels(client, node.ID, tunnels, gostCfg.Chains, exitNodes)
+	s.syncTunnels(client, node.ID, tunnels, gostCfg.Chains, nodesByID)
 	return nil
 }
 
@@ -183,7 +183,7 @@ func (s *RuleSyncService) getNodeConfig(client *gost.Client, node model.GostNode
 	return current, nil
 }
 
-func (s *RuleSyncService) syncTunnels(client *gost.Client, nodeID uint, tunnels []model.GostTunnel, chains []gost.ChainConfig, exitNodes map[uint]*model.GostNode) {
+func (s *RuleSyncService) syncTunnels(client *gost.Client, nodeID uint, tunnels []model.GostTunnel, chains []gost.ChainConfig, nodesByID map[uint]*model.GostNode) {
 	chainsByName := make(map[string]gost.ChainConfig, len(chains))
 	for _, chain := range chains {
 		chainsByName[chain.Name] = chain
@@ -192,7 +192,7 @@ func (s *RuleSyncService) syncTunnels(client *gost.Client, nodeID uint, tunnels 
 	relayHostsByEntry := make(map[uint][]string)
 	for _, t := range tunnels {
 		if t.EntryNodeID == nodeID && t.EntryRuleID != nil && t.Status == model.TunnelStatusRunning {
-			if host := relayHost(t.ExitRule.WithAppliedEndpoint(), exitNodes[t.ExitNodeID]); host != "" {
+			if host := relayHost(t.ExitRule.WithAppliedEndpoint(), nodesByID[t.ExitNodeID]); host != "" {
 				relayHostsByEntry[*t.EntryRuleID] = append(relayHostsByEntry[*t.EntryRuleID], host)
 			}
 		}
@@ -217,7 +217,7 @@ func (s *RuleSyncService) syncTunnels(client *gost.Client, nodeID uint, tunnels 
 		if !exists || chainName != managedName {
 			continue
 		}
-		exitHost := relayHost(t.ExitRule.WithAppliedEndpoint(), exitNodes[t.ExitNodeID])
+		exitHost := relayHost(t.ExitRule.WithAppliedEndpoint(), nodesByID[t.ExitNodeID])
 		clashChain := clashTunnelChainName(t.ID)
 		for _, name := range []string{chainName, clashChain, sharedTransparentChainName(t.ID)} {
 			addr, ok := chainsByName[name].TunnelRelayAddress()
@@ -280,13 +280,18 @@ func (s *RuleSyncService) syncTransparentRelayHost(client *gost.Client, ruleID u
 func (s *RuleSyncService) syncRuleStatus(r model.GostRule, serviceStates map[string]string) {
 	serviceID := r.ServiceID
 	if serviceID == "" {
-		serviceID = fmt.Sprintf("rule-%d", r.ID)
+		serviceID = entranceServiceName(r.ID)
 	}
 
-	state := serviceStates[serviceID]
+	state, exists := serviceStates[serviceID]
 	newStatus := utils.GostStateToRuleStatus(state)
 
-	// 如果状态不一致
+	if exists && r.ServiceID == "" {
+		if err := s.ruleRepo.UpdateRuntime(r.ID, serviceID, newStatus); err != nil {
+			logger.Errorf("[Sync] 恢复规则 %d 服务标识失败: %v", r.ID, err)
+		}
+		return
+	}
 	if r.Status != newStatus {
 		logger.Infof("[Sync] 规则 %d (%s) 状态变更: %s -> %s (Gost State: %s)", r.ID, r.Name, r.Status, newStatus, state)
 		_ = s.ruleRepo.UpdateStatus(r.ID, newStatus)

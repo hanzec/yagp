@@ -98,7 +98,7 @@ func (h *SystemConfigHandler) TestBark(c *gin.Context) {
 
 // Backup 立即备份
 func (h *SystemConfigHandler) Backup(c *gin.Context) {
-	if err := h.backupService.CreateBackup(); err != nil {
+	if err := h.backupService.CreateBackup(c.Request.Context()); err != nil {
 		if err == errors.ErrBackupUnsupported {
 			response.HandleError(c, err)
 			return

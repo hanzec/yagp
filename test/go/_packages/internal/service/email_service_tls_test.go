@@ -231,7 +231,8 @@ func TestSMTPSMessageAndConnectionLifecycle(t *testing.T) {
 		{name: "rejected recipient", failure: "RCPT", want: bizerrors.ErrSMTPRecipientFailed},
 		{name: "rejected data", failure: "DATA", want: bizerrors.ErrSMTPDataFailed},
 		{name: "rejected content", failure: "body", want: bizerrors.ErrSMTPCloseFailed},
-		{name: "rejected quit", failure: "QUIT"},
+		{name: "accepted message survives rejected quit", failure: "QUIT"},
+		{name: "server disconnects after accepting content", failure: "disconnect"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			listener, err := tls.Listen("tcp4", "127.0.0.1:0", certificate.TLS)
@@ -254,13 +255,7 @@ func TestSMTPSMessageAndConnectionLifecycle(t *testing.T) {
 			}
 			err = sendSMTPTestMessage(conn, req, "recipient@example.test", []byte("Subject: test\r\n\r\nmessage\r\n"))
 			_ = conn.Close()
-			if test.failure == "QUIT" {
-				if err == nil || !strings.Contains(err.Error(), "550") {
-					t.Fatalf("rejected QUIT returned %v", err)
-				}
-			} else {
-				requireServiceError(t, err, test.want)
-			}
+			requireServiceError(t, err, test.want)
 			if err := <-result; err != nil {
 				t.Fatal(err)
 			}
@@ -347,7 +342,7 @@ func receiveSMTPSTestMessage(listener net.Listener, failure string, noAuth bool,
 	if failure == "body" {
 		return reject()
 	}
-	if _, err := io.WriteString(conn, "250 delivered\r\n"); err != nil {
+	if _, err := io.WriteString(conn, "250 delivered\r\n"); err != nil || failure == "disconnect" {
 		return err
 	}
 	line, err := reader.ReadString('\n')

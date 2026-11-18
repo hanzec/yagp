@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"yagp/internal/dto"
 	"yagp/internal/model"
+	"yagp/pkg/gost"
 	"yagp/pkg/logger"
 	"yagp/pkg/nodegrpc"
 
@@ -112,7 +114,7 @@ func TestAutomaticNodeUpgradeRecordsFailuresAndPendingConfirmation(t *testing.T)
 		wantCount  int64
 		wait       bool
 	}{
-		{"start rejected", nil, status.Error(codes.Unavailable, "node offline"), "自动升级启动失败", 1, false},
+		{"start rejected", nil, status.Error(codes.FailedPrecondition, "worker rejected"), "自动升级启动失败", 1, false},
 		{"worker failed", &nodegrpc.NodeUpgradeStatus{State: "failed", Error: "checksum mismatch"}, nil, "自动升级失败：checksum mismatch", 2, false},
 		{"confirmation unavailable", &nodegrpc.NodeUpgradeStatus{State: "queued", Component: "daemon", TargetVersion: "0.1.73-abcdef0"}, nil, "自动升级结果待确认", 2, true},
 	} {
@@ -148,6 +150,60 @@ func TestAutomaticNodeUpgradeRecordsFailuresAndPendingConfirmation(t *testing.T)
 				if strings.Contains(entry.Details, "自动升级成功") {
 					t.Fatalf("unconfirmed or failed upgrade reported success: %+v", entry)
 				}
+			}
+		})
+	}
+}
+
+type lostUpgradeReplyNode struct {
+	nodeUpgradeFixture
+	id            uint
+	startedWorker atomic.Bool
+}
+
+func (n *lostUpgradeReplyNode) StartUpgrade(_ context.Context, req *nodegrpc.NodeUpgradeRequest) (*nodegrpc.NodeUpgradeStatus, error) {
+	n.startedWorker.Store(true)
+	gost.DisconnectNode(n.id)
+	return &nodegrpc.NodeUpgradeStatus{State: "queued", Component: req.GetComponent(), TargetVersion: req.GetVersion()}, nil
+}
+
+func TestAutomaticNodeUpgradeStopsOnUnconfirmedResult(t *testing.T) {
+	const old, target = "0.1.72-abc1234", "0.1.73-def1234"
+	for _, tc := range []string{"reply lost", "worker reports success on old daemon", "request timed out", "request canceled"} {
+		t.Run(tc, func(t *testing.T) {
+			db := newServiceTestDB(t)
+			lost := &lostUpgradeReplyNode{nodeUpgradeFixture: nodeUpgradeFixture{daemon: old}}
+			var remote nodegrpc.V1Server = lost
+			switch tc {
+			case "worker reports success on old daemon":
+				remote = &automaticUpgradeAuditNode{nodeUpgradeFixture: nodeUpgradeFixture{daemon: old},
+					start: &nodegrpc.NodeUpgradeStatus{State: "succeeded", DaemonVersion: old, Component: "daemon", TargetVersion: target}}
+			case "request timed out", "request canceled":
+				code := codes.DeadlineExceeded
+				if tc == "request canceled" {
+					code = codes.Canceled
+				}
+				remote = &automaticUpgradeAuditNode{nodeUpgradeFixture: nodeUpgradeFixture{daemon: old}, startError: status.Error(code, tc)}
+			}
+			first := startServiceTestNode(t, remote)
+			lost.id = first.ID
+			next := &nodeUpgradeFixture{daemon: old, started: make(chan string, 1)}
+			second := startServiceTestNode(t, next)
+			second.Name = "next"
+			first.UpgradePolicy.AutoUpgradeDaemon, second.UpgradePolicy.AutoUpgradeDaemon = true, true
+			saveServiceFixtures(t, db, &first, &second)
+			s := NewNodeUpgradeService(db)
+			s.panelVersion = target
+			s.runAutomatic(t.Context())
+			if tc == "reply lost" && !lost.startedWorker.Load() {
+				t.Fatal("first node did not receive the upgrade request")
+			}
+			if len(next.started) != 0 {
+				t.Fatal("next node started before the first upgrade was confirmed")
+			}
+			logs, _, err := NewLogService(db).List(&dto.LogListReq{Action: model.ActionAutoUpgrade})
+			if err != nil || len(logs) == 0 || logs[0].ResourceID != first.ID || !strings.Contains(logs[0].Details, "结果待确认") {
+				t.Fatalf("unconfirmed upgrade audit = %+v, err = %v", logs, err)
 			}
 		})
 	}

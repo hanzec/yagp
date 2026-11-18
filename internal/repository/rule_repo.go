@@ -109,10 +109,16 @@ func (r *RuleRepository) List(opt *QueryOption) ([]model.GostRule, int64, error)
 	return rules, total, nil
 }
 
-// FindByNodeID 根据节点 ID 查询规则
-func (r *RuleRepository) FindByNodeID(nodeID uint) ([]model.GostRule, error) {
+func (r *RuleRepository) onEntryNode(nodeID uint) *gorm.DB {
+	tunnels := r.DB.Model(&model.GostTunnel{}).Select("id").Where("entry_node_id = ?", nodeID)
+	return r.DB.Model(&model.GostRule{}).
+		Where("((type = ? AND node_id = ?) OR (type = ? AND tunnel_id IN (?)))",
+			model.RuleTypeForward, nodeID, model.RuleTypeTunnel, tunnels)
+}
+
+func (r *RuleRepository) FindByEntryNodeID(nodeID uint) ([]model.GostRule, error) {
 	var rules []model.GostRule
-	err := r.DB.Where("node_id = ?", nodeID).Find(&rules).Error
+	err := r.onEntryNode(nodeID).Find(&rules).Error
 	return rules, err
 }
 
@@ -126,11 +132,7 @@ func (r *RuleRepository) EntranceBindings(ruleIDs []uint) ([]model.GostTunnel, e
 
 // ListenerConflicts checks whether a rule on the same ingress overlaps this bind.
 func (r *RuleRepository) ListenerConflicts(nodeID uint, protocol model.RuleProtocol, ip string, port int, excludeID ...uint) (bool, error) {
-	tunnels := r.DB.Model(&model.GostTunnel{}).Select("id").Where("entry_node_id = ?", nodeID)
-	db := r.DB.Model(&model.GostRule{}).
-		Where("(listen_port = ? OR applied_endpoint IS NOT NULL)", port).
-		Where("((type = ? AND node_id = ?) OR (type = ? AND tunnel_id IN (?)))",
-			model.RuleTypeForward, nodeID, model.RuleTypeTunnel, tunnels)
+	db := r.onEntryNode(nodeID).Where("(listen_port = ? OR applied_endpoint IS NOT NULL)", port)
 	if len(excludeID) > 0 {
 		db = db.Where("id != ?", excludeID[0])
 	}

@@ -307,5 +307,7 @@ func sendSMTPTestMessage(conn net.Conn, req *dto.EmailConfigReq, recipient strin
 	if err := w.Close(); err != nil {
 		return errors.ErrSMTPCloseFailed
 	}
-	return client.Quit()
+	// w.Close received the final DATA acknowledgement. QUIT only ends the session.
+	_ = client.Quit()
+	return nil
 }

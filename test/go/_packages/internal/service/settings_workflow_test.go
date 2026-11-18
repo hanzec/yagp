@@ -126,15 +126,26 @@ func TestBackupCreatesReadableSnapshotAndAppliesRetention(t *testing.T) {
 	requireServiceError(t, repo.Update(settings), nil)
 	requireServiceError(t, os.Mkdir("backups", 0o700), nil)
 	old := filepath.Join("backups", "gost_panel_19990101_000000.db")
-	other := filepath.Join("backups", "manual.db")
+	other := filepath.Join("backups", "gost_panel_manual.db")
 	for _, path := range []string{old, other} {
 		requireServiceError(t, os.WriteFile(path, []byte("old file"), 0o600), nil)
 	}
 	synctest.Test(t, func(t *testing.T) {
-		// A process exit during VACUUM may leave an unfinished snapshot. It must
-		// neither suppress today's backup nor count toward published retention.
-		unfinished := filepath.Join("backups", ".gost_panel_"+time.Now().Format("20060102")+"_235959-123.tmp")
-		requireServiceError(t, os.WriteFile(unfinished, []byte("unfinished snapshot"), 0o600), nil)
+		today := "gost_panel_" + time.Now().Format("20060102")
+		excluded := []string{
+			filepath.Join("backups", "."+today+"_235959-123.tmp"),
+			filepath.Join("backups", today+"_notes.db"),
+			filepath.Join("backups", today+"_250000.db"),
+			filepath.Join("backups", today+"_111111.000000001.db"),
+			filepath.Join("backups", today+"_111111.000000001-note.db"),
+		}
+		for _, path := range excluded {
+			requireServiceError(t, os.WriteFile(path, []byte("other file"), 0o600), nil)
+		}
+		link := filepath.Join("backups", today+"_111111.db")
+		requireServiceError(t, os.Symlink(filepath.Base(other), link), nil)
+		dir := filepath.Join("backups", today+"_222222.db")
+		requireServiceError(t, os.Mkdir(dir, 0o700), nil)
 		backup := NewBackupService(db)
 		if !backup.Supported() {
 			t.Fatal("SQLite backups should be supported")
@@ -145,7 +156,8 @@ func TestBackupCreatesReadableSnapshotAndAppliesRetention(t *testing.T) {
 		if _, err := os.Stat(old); !os.IsNotExist(err) {
 			t.Fatalf("retention left an older backup: %v", err)
 		}
-		files, err := filepath.Glob(filepath.Join("backups", "gost_panel_*.db"))
+		pattern := filepath.Join("backups", today+"_??????.?????????-[0-9]*.db")
+		files, err := filepath.Glob(pattern)
 		requireServiceError(t, err, nil)
 		if len(files) != 1 {
 			t.Fatalf("backup files after retention = %v", files)
@@ -160,13 +172,13 @@ func TestBackupCreatesReadableSnapshotAndAppliesRetention(t *testing.T) {
 		if saved.Name != "saved node" {
 			t.Fatalf("snapshot node name = %q", saved.Name)
 		}
-		for _, excluded := range []string{other, unfinished} {
-			if _, err := os.Stat(excluded); err != nil {
-				t.Fatalf("retention touched excluded file %s: %v", excluded, err)
+		for _, path := range append(excluded, other, link, dir) {
+			if _, err := os.Lstat(path); err != nil {
+				t.Fatalf("retention touched excluded file %s: %v", path, err)
 			}
 		}
 		backup.processAutoBackup()
-		sameFiles, err := filepath.Glob(filepath.Join("backups", "gost_panel_*.db"))
+		sameFiles, err := filepath.Glob(pattern)
 		requireServiceError(t, err, nil)
 		if !reflect.DeepEqual(files, sameFiles) {
 			t.Fatalf("same-day auto backup created extra files: %v", sameFiles)
@@ -179,7 +191,7 @@ func TestBackupDirectoryFailure(t *testing.T) {
 	cfg := loadServiceConfig(t, "database:\n  path: live.db\n")
 	service := NewBackupService(newServiceTestDB(t))
 	cfg.Database.Path = ""
-	requireServiceError(t, service.CreateBackup(), bizerrors.ErrDBPathNotConfigured)
+	requireServiceError(t, service.CreateBackup(t.Context()), bizerrors.ErrDBPathNotConfigured)
 	cfg.Database.Path = "live.db"
 	service.processAutoBackup()
 	if _, err := os.Stat("backups"); !os.IsNotExist(err) {
@@ -194,7 +206,7 @@ func TestBackupDirectoryFailure(t *testing.T) {
 	requireServiceError(t, service.sysRepo.Update(settings), nil)
 	service.cleanOldBackups("not-created")
 	requireServiceError(t, os.WriteFile("backups", []byte("not a directory"), 0o600), nil)
-	requireServiceError(t, service.CreateBackup(), bizerrors.ErrBackupDirCreateFailed)
+	requireServiceError(t, service.CreateBackup(t.Context()), bizerrors.ErrBackupDirCreateFailed)
 	service.processAutoBackup()
 }
 
@@ -206,7 +218,7 @@ func TestBackupFailsWhenDatabaseCannotBeSnapshotted(t *testing.T) {
 	requireServiceError(t, db.Exec("BEGIN").Error, nil)
 	defer db.Exec("ROLLBACK")
 	service := NewBackupService(db)
-	requireServiceError(t, service.CreateBackup(), bizerrors.ErrBackupFailed)
+	requireServiceError(t, service.CreateBackup(t.Context()), bizerrors.ErrBackupFailed)
 	files, err := os.ReadDir("backups")
 	requireServiceError(t, err, nil)
 	if len(files) != 0 {

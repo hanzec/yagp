@@ -346,12 +346,35 @@ describe('System settings', () => {
     expect(wrapper.findAll('[role="tab"]').map(tab => tab.text())).not.toContain('Gost IP 白名单')
     await selectTab(wrapper, 'Clash 规则集')
     expect(wrapper.get('aside').text()).toContain('bypass: yagp-transparent-proxy')
-    expect(api.getGostRuleset).toHaveBeenCalledTimes(1)
+    expect(api.getGostRulesets).toHaveBeenCalledTimes(1)
     expect(wrapper.findAll('button').some((item) => item.text() === '保存设置')).toBe(false)
   })
 })
 
 describe('Gost routing settings', () => {
+  it('loads legacy settings only on expansion and retains edits when collapsed', async () => {
+    const wrapper = mountPage(System)
+    await flushPromises()
+    await selectTab(wrapper, 'Clash 规则集')
+    const details = wrapper.get('details.legacy-ruleset')
+    expect(details.element.open).toBe(false)
+    expect(api.getGostRuleset).not.toHaveBeenCalled()
+    expect(getRoutingNodes).not.toHaveBeenCalled()
+
+    details.element.open = true
+    await details.trigger('toggle')
+    await flushPromises()
+    await details.get('#gost-ruleset-url').setValue('https://example.test/draft.yaml')
+    details.element.open = false
+    await details.trigger('toggle')
+    details.element.open = true
+    await details.trigger('toggle')
+    await flushPromises()
+    expect(api.getGostRuleset).toHaveBeenCalledTimes(1)
+    expect(getRoutingNodes).toHaveBeenCalledTimes(1)
+    expect(details.get('#gost-ruleset-url').element.value).toBe('https://example.test/draft.yaml')
+  })
+
   it('manages multiple named subscriptions separately from the default ruleset', async () => {
     const legacy = { id: 1, name: '默认规则集', url: 'https://example.test/default.txt', matcher_count: 1 }
     const existing = { id: 2, name: '开发', url: 'https://example.test/dev.txt', matcher_count: 2 }

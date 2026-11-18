@@ -229,6 +229,22 @@ describe('forwarding rule inventory', () => {
     expect(wrapper.get('.rule-placeholder').text()).toContain('还没有端点')
   })
 
+  it('lets a slow background refresh finish before polling again', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const wrapper = mountInventory(Rules)
+    await flushPromises()
+    const pending = Promise.withResolvers()
+    getRuleList.mockReturnValueOnce(pending.promise)
+    await vi.advanceTimersByTimeAsync(11_000)
+    expect(getRuleList).toHaveBeenCalledTimes(2)
+
+    pending.resolve(result([{ ...direct, name: 'Updated entry' }]))
+    await flushPromises()
+    expect(wrapper.get('tbody').text()).toContain('Updated entry')
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(getRuleList).toHaveBeenCalledTimes(3)
+  })
+
   it('pauses automatic polling for background tabs or failures and resumes after a manual retry', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
@@ -249,6 +265,29 @@ describe('forwarding rule inventory', () => {
     await vi.advanceTimersByTimeAsync(5000)
     expect(getRuleList).toHaveBeenCalledTimes(3)
     expect(row(wrapper, 'HTTPS').exists()).toBe(true)
+  })
+
+  it('applies a manual filter immediately while a poll is pending', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const wrapper = mountInventory(Rules)
+    await flushPromises()
+    const poll = Promise.withResolvers()
+    const search = Promise.withResolvers()
+    getRuleList.mockReturnValueOnce(poll.promise).mockReturnValueOnce(search.promise)
+    await vi.advanceTimersByTimeAsync(5000)
+    await wrapper.get('#rule-keyword').setValue(relayRule.name)
+    await wrapper.get('form[aria-label="端点筛选"]').trigger('submit')
+    expect(getRuleList).toHaveBeenLastCalledWith(expect.objectContaining({ keyword: relayRule.name }))
+
+    poll.reject(new Error('outdated poll'))
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(getRuleList).toHaveBeenCalledTimes(3)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    search.resolve(result([relayRule]))
+    await flushPromises()
+    expect(wrapper.get('tbody').text()).toContain(relayRule.name)
+    expect(wrapper.get('tbody').text()).not.toContain(direct.name)
   })
 
   it('ignores a slow response after the user changes pages again', async () => {
