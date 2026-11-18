@@ -106,3 +106,39 @@ func TestTunnelMonitorRecordsRelayOutcomeAndIndependentTTL(t *testing.T) {
 		}
 	}
 }
+
+func TestTunnelMonitorKeepsRelayTTLWhenDomainRetrySucceeds(t *testing.T) {
+	endpoint := &nodegrpc.TunnelProbeEndpoint{
+		Address: "127.0.0.1:4001", DomainAddress: nodegrpc.TunnelProbeDomain, Token: bytes.Repeat([]byte{0x71}, 32),
+	}
+	ttl := uint32(58)
+	restricted, err := status.New(codes.Unavailable, "destination rejected").WithDetails(
+		&errdetails.ErrorInfo{Domain: "yagp.tunnel_probe", Reason: "relay_read", Metadata: map[string]string{"gost_error": "relay_target_forbidden"}},
+		&nodegrpc.TunnelProbeReply{ReplyIpTtl: &ttl},
+	)
+	requireServiceError(t, err, nil)
+	entry := startServiceTestNode(t, monitorTestNode{probe: func(req *nodegrpc.TunnelProbeRequest) (*nodegrpc.TunnelProbeReply, error) {
+		switch req.GetAddress() {
+		case endpoint.GetAddress():
+			if !req.GetMeasureReplyIpTtl() {
+				t.Error("first probe did not request a TTL measurement")
+			}
+			return nil, restricted.Err()
+		case endpoint.GetDomainAddress():
+			if req.GetMeasureReplyIpTtl() {
+				t.Error("domain retry requested another TTL measurement")
+			}
+			return &nodegrpc.TunnelProbeReply{RoundTripMs: 23}, nil
+		default:
+			return nil, status.Error(codes.InvalidArgument, "unexpected probe target")
+		}
+	}})
+	exit := startServiceTestNode(t, monitorTestNode{endpoint: endpoint})
+	sample := sampleTunnel(t.Context(), &model.GostTunnel{ChainID: "tunnel-1-chain", EntryNode: &entry, ExitNode: &exit})
+	if sample.Status != model.TunnelProbeSuccessful || sample.LatencyMS == nil || *sample.LatencyMS != 23 {
+		t.Fatalf("sample = %+v, want successful domain probe with 23 ms RTT", sample)
+	}
+	if sample.TTL == nil || *sample.TTL != ttl {
+		t.Fatalf("sample TTL = %v, want %d from the first probe", sample.TTL, ttl)
+	}
+}
