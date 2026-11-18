@@ -62,6 +62,7 @@ const router = createRouter({
     history: createWebHashHistory(),
     routes,
     scrollBehavior(to, from, savedPosition) {
+        if (to.name === 'TunnelDetail' && from.name === 'TunnelDetail') return savedPosition || false
         if (to.name === 'TunnelDetail' || from.name === 'TunnelDetail') {
             return savedPosition || { top: 0 }
         }

@@ -33,30 +33,6 @@ func (s *TunnelService) runningEndpointTunnels(column string, id, exclude uint) 
 	return tunnels, err
 }
 
-func (s *TunnelService) configureSharedRelay(client *gost.Client, relay *gost.ServiceConfig, tunnels []*model.GostTunnel) error {
-	if err := s.allowlist.writeSharedRelayPolicy(client, relay.Name, tunnels, nil); err != nil {
-		return err
-	}
-	current, err := client.Service(relay.Name)
-	if err != nil {
-		return err
-	}
-	if current != nil && current.Handler != nil && current.Handler.Auther == relay.Name &&
-		current.Bypass == relay.Bypass && slices.Equal(current.Bypasses, relay.Bypasses) {
-		return nil
-	}
-	address, err := client.ObserverAddress()
-	if err != nil {
-		return err
-	}
-	if err := client.EnsureRelayAuther(relay.Name, address, client.ObserverToken()); err != nil {
-		return err
-	}
-	relay.Handler.Auth = nil
-	relay.Handler.Auther = relay.Name
-	return client.ReplaceService(relay)
-}
-
 func (s *GostAllowlistService) writeSharedRelayPolicy(client *gost.Client, name string, tunnels []*model.GostTunnel, nodes sourceNodes) error {
 	if nodes == nil {
 		var ids []uint
@@ -110,11 +86,16 @@ func (s *TunnelService) removeEndpointRelay(client *gost.Client, tunnel *model.G
 	if err != nil {
 		return err
 	}
-	if current == nil || current.Handler == nil || current.Handler.Auther != name {
-		// Rollback can arrive before the shared auth plugin was applied.
+	if current == nil || current.Handler == nil {
 		return nil
 	}
-	return s.allowlist.writeSharedRelayPolicy(client, name, peers, nil)
+	if current.Handler.Auther == name {
+		return s.allowlist.writeSharedRelayPolicy(client, name, peers, nil)
+	}
+	if !current.HasAdmission(gost.TunnelRelayAllowlistName(name)) {
+		return nil
+	}
+	return s.allowlist.writeRelaySources(client, current, peers)
 }
 
 func (s *TunnelService) applySharedIngress(client *gost.Client, t *model.GostTunnel, tunnels []*model.GostTunnel, redirect *nodegrpc.TransparentRedirectRequest) error {

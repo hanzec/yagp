@@ -108,8 +108,9 @@ async function loadIdentity() {
 
 onMounted(loadIdentity)
 
-// Query-only navigation keeps the page's own detail/return focus handling.
-watch(() => route.path, async () => {
+// Switching the monitored link keeps keyboard focus inside the topology.
+watch(() => [route.path, route.name], async ([path, name], [oldPath, oldName]) => {
+  if (path === oldPath || (name === 'TunnelDetail' && oldName === name)) return
   await nextTick()
   mainContent.value?.focus()
 })

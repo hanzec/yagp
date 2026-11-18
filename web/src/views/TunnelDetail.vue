@@ -21,28 +21,48 @@
     <template v-if="tunnel">
       <section class="ops-panel ops-panel-body tunnel-overview" aria-labelledby="tunnel-overview-title">
         <header class="ops-panel-header">
-          <h2 id="tunnel-overview-title" class="ops-section-title">
-            <el-icon aria-hidden="true"><Connection /></el-icon> 隧道信息
-          </h2>
+          <div class="tunnel-section-heading">
+            <h2 id="tunnel-overview-title" class="ops-section-title">
+              <el-icon aria-hidden="true"><Connection /></el-icon> 隧道拓扑
+            </h2>
+            <span v-if="network" class="tunnel-network-count ops-muted">
+              隧道 #{{ network.id }} · {{ network.nodeIds.length }} 个节点 · {{ network.tunnels.length }} 条链路
+            </span>
+          </div>
+          <label v-if="network && network.tunnels.length > 1" class="tunnel-link-picker">
+            查看链路
+            <select aria-label="查看链路" :value="tunnel.id" @change="selectLink($event.target.value)">
+              <option v-for="link in network.tunnels" :key="link.id" :value="link.id">{{ link.name }} · #{{ link.id }}</option>
+            </select>
+          </label>
+        </header>
+        <div v-if="topologyError" class="tunnel-feedback" role="alert">
+          <span>{{ network ? '拓扑更新失败，当前显示上次获取的链路清单。' : '无法加载隧道拓扑。' }}</span>
+          <el-button :loading="topologyLoading" @click="loadInventory()">重试</el-button>
+        </div>
+        <TunnelTopology v-if="network" :tunnels="network.tunnels" :selected-id="tunnel.id" @select="selectLink" />
+        <div v-else-if="topologyLoading" class="tunnel-placeholder" role="status">正在加载隧道拓扑…</div>
+      </section>
+
+      <section class="ops-panel ops-panel-body tunnel-link-details" aria-labelledby="tunnel-link-title">
+        <header class="ops-panel-header">
           <div class="tunnel-identity">
+            <h2 id="tunnel-link-title" class="ops-section-title">当前链路详情</h2>
             <span class="ops-status" :class="'is-' + tunnelState.tone">{{ tunnelState.label }}</span>
             <span class="ops-muted ops-mono">#{{ tunnel.id }}</span>
           </div>
         </header>
-        <div class="tunnel-topology">
-          <template v-for="(endpoint, index) in endpoints" :key="endpoint.label">
-            <div class="ops-inset tunnel-endpoint" :class="{ 'tunnel-relay': index === 1 }">
-              <span class="ops-muted">{{ endpoint.label }}</span>
-              <strong>{{ endpoint.name }}</strong>
-              <small v-if="endpoint.detail" class="ops-mono">{{ endpoint.detail }}</small>
-            </div>
-            <div v-if="index < endpoints.length - 1" class="tunnel-topology-link" aria-hidden="true"><el-icon><Right /></el-icon></div>
-          </template>
-        </div>
-        <dl v-if="connectEndpoint || tunnel.remark" class="ops-panel-details tunnel-metadata">
+        <dl class="ops-panel-details tunnel-metadata">
+          <div><dt>入口节点</dt><dd>{{ tunnel.entry_node?.name || '节点 #' + tunnel.entry_node_id }}</dd>
+            <dd v-if="entryDetail" class="ops-muted">{{ entryDetail }}</dd>
+          </div>
+          <div><dt>出口节点</dt><dd>{{ tunnel.exit_node?.name || '节点 #' + tunnel.exit_node_id }}</dd>
+            <dd v-if="tunnel.exit_rule?.name || tunnel.exit_node?.address" class="ops-muted">{{ tunnel.exit_rule?.name || tunnel.exit_node.address }}</dd>
+          </div>
+          <div><dt>Relay 监听</dt><dd class="ops-mono">{{ relayProtocol || '—' }} <template v-if="relayPort">· {{ formatEndpoint(relayListenIP, relayPort) }}</template></dd></div>
           <div v-if="connectEndpoint"><dt>入口连接的 Relay 地址</dt><dd class="ops-mono">{{ connectEndpoint }}</dd></div>
-          <div v-if="tunnel.remark"><dt>备注</dt><dd>{{ tunnel.remark }}</dd></div>
         </dl>
+        <p v-if="tunnel.remark" class="tunnel-remark"><span class="ops-muted">备注</span> {{ tunnel.remark }}</p>
       </section>
 
       <section class="ops-panel ops-panel-body tunnel-monitor" aria-labelledby="tunnel-monitor-title" :aria-busy="metricsLoading">
@@ -51,6 +71,7 @@
             <h2 id="tunnel-monitor-title" class="ops-section-title">
               <el-icon aria-hidden="true"><TrendCharts /></el-icon> 链路质量
             </h2>
+            <span class="tunnel-monitor-link ops-muted">{{ tunnel.name }} · #{{ tunnel.id }}</span>
             <p v-if="metrics" class="tunnel-caption">
               运行时每 {{ metrics.interval_seconds }} 秒探测一次
               <template v-if="latestProbe"> · 最近探测 {{ latestProbe }}</template>
@@ -87,15 +108,19 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
-import { Connection, Right, TrendCharts } from '@element-plus/icons-vue'
+import { useRoute, useRouter } from 'vue-router'
+import { Connection, TrendCharts } from '@element-plus/icons-vue'
 import { getTunnel, getTunnelMetrics } from '@/api/tunnel'
 import TunnelLatencyChart from '@/components/TunnelLatencyChart.vue'
+import TunnelTopology from '@/components/TunnelTopology.vue'
 import { formatEndpoint, mappedConnectEndpoint } from '@/utils/node-address-mapping'
+import { tunnelExitConfig } from '@/utils/rule-state'
+import { groupTunnels, useTunnelInventory } from '@/utils/tunnel-groups'
 
 defineProps({ headingTarget: { type: Object, default: null } })
 
 const route = useRoute()
+const router = useRouter()
 const ranges = [
   { value: '1h', label: '1 小时' },
   { value: '6h', label: '6 小时' },
@@ -105,6 +130,16 @@ const ranges = [
 ]
 const range = ref('24h')
 const tunnel = ref(null)
+const { items: inventory, total: inventoryTotal, loading: topologyLoading, loadError: topologyError, fetchData: loadInventory } = useTunnelInventory()
+const network = computed(() => {
+  if (inventoryTotal.value === null || !tunnel.value) return null
+  const current = tunnel.value
+  const rows = inventory.value.slice()
+  const index = rows.findIndex(row => row.id === current.id)
+  if (index === -1) rows.push(current)
+  else rows[index] = current
+  return groupTunnels(rows).find(group => group.tunnels.some(row => row.id === current.id))
+})
 const metrics = ref(null)
 const tunnelError = ref('')
 const tunnelMissing = ref(false)
@@ -120,9 +155,10 @@ const states = {
   error: { label: '异常', tone: 'danger' }
 }
 const tunnelState = computed(() => states[tunnel.value?.status] || { label: '未知', tone: 'muted' })
-const relayProtocol = computed(() => (tunnel.value.exit_rule?.role === 'exit' ? tunnel.value.exit_rule.protocol : tunnel.value.protocol)?.toUpperCase())
-const relayPort = computed(() => tunnel.value.exit_rule?.listen_port || tunnel.value.relay_port)
-const relayListenIP = computed(() => tunnel.value.exit_rule?.listen_ip)
+const exitConfig = computed(() => tunnelExitConfig(tunnel.value))
+const relayProtocol = computed(() => (exitConfig.value?.role === 'exit' ? exitConfig.value.protocol : tunnel.value.protocol)?.toUpperCase())
+const relayPort = computed(() => exitConfig.value?.listen_port || tunnel.value.relay_port)
+const relayListenIP = computed(() => exitConfig.value?.listen_ip)
 const connectEndpoint = computed(() => {
   const node = tunnel.value.exit_node
   const host = relayListenIP.value || node?.address
@@ -130,27 +166,14 @@ const connectEndpoint = computed(() => {
   return mappedConnectEndpoint(node, relayListenIP.value, port) || (host && port ? formatEndpoint(host, port) : '')
 })
 
-const endpoints = computed(() => {
-  const row = tunnel.value
-  const entryRule = row.entry_rule
-  return [
-    {
-      label: '入口节点',
-      name: row.entry_node?.name || '节点 #' + row.entry_node_id,
-      detail: entryRule ? `${entryRule.name} · ${formatEndpoint(entryRule.listen_ip, entryRule.listen_port)}` : row.entry_node?.address
-    },
-    {
-      label: 'Relay',
-      name: relayProtocol.value || '—',
-      detail: relayPort.value ? formatEndpoint(relayListenIP.value, relayPort.value) : ''
-    },
-    {
-      label: '出口节点',
-      name: row.exit_node?.name || '节点 #' + row.exit_node_id,
-      detail: row.exit_rule?.name || row.exit_node?.address
-    }
-  ]
+const entryDetail = computed(() => {
+  const rule = tunnel.value.entry_rule
+  return rule ? `${rule.name} · ${formatEndpoint(rule.listen_ip, rule.listen_port)}` : tunnel.value.entry_node?.address
 })
+
+function selectLink(id) {
+  if (String(id) !== route.params.id) router.push({ name: 'TunnelDetail', params: { id } })
+}
 
 const numberFormat = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 })
 const clockFormat = new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -216,7 +239,7 @@ async function loadMetrics() {
 watch(() => route.params.id, () => {
   tunnelRequest?.abort()
   tunnelRequest = null
-  tunnel.value = null
+  tunnel.value = inventory.value.find(row => String(row.id) === route.params.id) || null
   tunnelError.value = ''
   tunnelMissing.value = false
   loadTunnel()
@@ -231,8 +254,10 @@ watch([() => route.params.id, range], ([id], [previousId]) => {
 }, { immediate: true })
 
 onMounted(() => {
+  loadInventory()
   refreshTimer = setInterval(() => {
     if (document.hidden || tunnelMissing.value) return
+    loadInventory(true)
     loadTunnel()
     loadMetrics()
   }, 60000)
@@ -253,16 +278,17 @@ onUnmounted(() => {
 .tunnel-back { min-height: 44px; color: var(--ops-text); text-decoration: none; }
 .tunnel-back:hover { color: var(--ops-accent); text-decoration: underline; }
 .tunnel-detail-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.tunnel-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
-.tunnel-overview, .tunnel-monitor { display: grid; gap: var(--ops-section-gap); }
-.tunnel-topology { display: grid; grid-template-columns: minmax(0, 1fr) 30px minmax(112px, .65fr) 30px minmax(0, 1fr); }
-.tunnel-endpoint { display: grid; align-content: start; gap: 4px; overflow-wrap: anywhere; }
-.tunnel-relay { text-align: center; }
-.tunnel-endpoint span, .tunnel-endpoint small { color: var(--ops-muted); font-size: var(--ops-text-sm); }
-.tunnel-endpoint strong { font-size: var(--ops-text-base); }
-.tunnel-topology-link { display: flex; align-items: center; color: var(--ops-accent); }
-.tunnel-topology-link::before { flex: 1; border-top: 1px dashed var(--ops-accent-line); content: ''; }
-.tunnel-metadata { grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); }
+.tunnel-section-heading, .tunnel-identity, .tunnel-link-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.tunnel-overview, .tunnel-link-details, .tunnel-monitor { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ops-section-gap); }
+.tunnel-network-count { padding: 3px 10px; border: 1px solid var(--ops-border); border-radius: var(--ops-radius-inset); background: var(--ops-inset); }
+.tunnel-link-picker, .tunnel-monitor-link, .tunnel-network-count { min-width: 0; font-size: var(--ops-text-sm); }
+.tunnel-monitor-link { display: block; margin-top: 4px; overflow-wrap: anywhere; }
+.tunnel-link-picker select { min-height: 44px; min-width: 0; max-width: 100%; padding: 0 10px; border: 1px solid var(--ops-accent-line); border-radius: var(--ops-radius-inset); background: var(--ops-inset); color: var(--ops-accent); font: inherit; }
+.tunnel-metadata { grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
+.tunnel-metadata > div { padding: 12px; border: 1px solid var(--ops-border); border-radius: var(--ops-radius-inset); background: var(--ops-inset); }
+.tunnel-metadata dd.ops-muted { font-size: var(--ops-text-sm); }
+.tunnel-remark { overflow-wrap: anywhere; }
+.tunnel-remark span { margin-inline-end: 8px; }
 .tunnel-caption { color: var(--ops-muted); font-size: var(--ops-text-sm); }
 .tunnel-ranges { display: flex; min-width: 0; flex-wrap: wrap; gap: 4px; }
 .tunnel-ranges button { min-width: 44px; min-height: 44px; padding: 0 10px; border: 1px solid var(--ops-border); border-radius: var(--ops-radius-inset); background: var(--ops-inset); color: var(--ops-muted); }
@@ -278,11 +304,6 @@ onUnmounted(() => {
 .tunnel-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; color: var(--ops-warning); }
 .tunnel-feedback .el-button { min-height: 44px; }
 .tunnel-measurement-note { border-top: 1px solid var(--ops-border); padding-top: 12px; }
-@media (max-width: 640px) {
-  .tunnel-topology { grid-template-columns: 1fr; gap: 8px; }
-  .tunnel-relay { text-align: start; }
-  .tunnel-topology-link { display: none; }
-}
 @media (max-width: 400px) {
   .tunnel-ranges button { padding-inline: 7px; }
   .tunnel-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }

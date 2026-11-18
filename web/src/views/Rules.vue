@@ -340,7 +340,9 @@ const dialogVisible = ref(false)
 const editor = ref({ id: null, submitting: false })
 const isEdit = computed(() => editor.value.id != null)
 const boundTunnelCount = ref(0)
-const restartHint = '新建或启动使用此端点的隧道时，面板会自动重启受影响的运行中隧道以应用变更。重启期间连接可能短暂中断。'
+const restartHint = computed(() => form.role === 'exit'
+  ? '共用出口继续使用已生效配置，关联链路全部停止后，下次启动时应用变更。新增连接仅更新来源 IP 白名单。'
+  : '新建或启动使用此入口的隧道时，面板会自动重启受影响的运行中隧道以应用变更。重启期间连接可能短暂中断。')
 const endpointRoles = { entry: '入口', exit: '出口' }
 const strategies = { round: '轮询', rand: '随机', fifo: '先进先出', hash: '哈希' }
 const formRef = ref(null)
@@ -511,7 +513,7 @@ const handleSubmit = async () => {
         savedRelayConfig?.nodeId === form.node_id && savedRelayConfig?.protocol === form.protocol ? savedRelayConfig.mptcp : undefined)
     }
     if (current.id != null) {
-      const message = boundTunnelCount.value ? `端点已保存。${restartHint}` : '端点已保存'
+      const message = boundTunnelCount.value ? `端点已保存。${restartHint.value}` : '端点已保存'
       await updateRule(current.id, payload)
       listenerChecks.delete(current.id)
       ElMessage.success(message)

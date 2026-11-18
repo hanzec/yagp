@@ -56,7 +56,11 @@ func TestAutomaticTunnelAllowlistDefaultsAndLegacySelections(t *testing.T) {
 				relay := exitRemote.service(stored.ServiceID)
 				admission := exitRemote.admission(gost.TunnelRelayAllowlistName(stored.ServiceID))
 				if len(want) == 0 {
-					if relay.Admission != "" || admission.Name != "" {
+					if endpointBased {
+						if !relay.HasAdmission(admission.Name) || admission.Whitelist || len(admission.Matchers) != 0 {
+							t.Fatalf("unrestricted exit did not retain a hot-updatable admission: %+v, %+v", relay, admission)
+						}
+					} else if relay.Admission != "" || admission.Name != "" {
 						t.Fatalf("explicit empty legacy selection acquired an admission: %+v, %+v", relay, admission)
 					}
 				} else if !relay.HasAdmission(admission.Name) || !admission.Whitelist || !slices.Equal(admission.Matchers, want) {
@@ -101,7 +105,7 @@ func TestAutomaticAllowlistWaitsForAddressesAndRetainsRunningSnapshot(t *testing
 			requireServiceError(t, err, nil)
 			assertAutomaticRelayAuth(t, entryRemote, exitRemote, tunnel)
 			admissionName := gost.TunnelRelayAllowlistName(tunnel.ServiceID)
-			if exitRemote.service(tunnel.ServiceID).HasAdmission(admissionName) || exitRemote.admission(admissionName).Name != "" {
+			if admission := exitRemote.admission(admissionName); admission.Whitelist || len(admission.Matchers) != 0 {
 				t.Fatal("entry without source addresses acquired a blocking admission")
 			}
 			sync := NewRuleSyncService(db)
@@ -110,8 +114,8 @@ func TestAutomaticAllowlistWaitsForAddressesAndRetainsRunningSnapshot(t *testing
 				sync.syncNodeRules(exit, nil)
 			}
 			synchronize()
-			if exitRemote.admission(admissionName).Name != "" {
-				t.Fatal("sync created an empty automatic allowlist before the first address report")
+			if exitRemote.admission(admissionName).Whitelist {
+				t.Fatal("sync created a blocking automatic allowlist before the first address report")
 			}
 			requireServiceError(t, NewNodeService(db, "").UpdateIPs(t.Context(), &entry, "192.0.2.9", "", []string{"192.0.2.9"}, []string{"10.0.0.9"}, false), nil)
 			synchronize()
@@ -169,7 +173,7 @@ func TestAutomaticAllowlistFollowsChangedEntranceAndWaitsForItsReport(t *testing
 	}
 	refreshAutomaticAllowlistConfig(t, exitRemote, tunnel.ServiceID)
 	requireServiceError(t, tunnels.Start(tunnel.ID, testAdmin, testIP, testAgent), nil)
-	if exitRemote.service(tunnel.ServiceID).HasAdmission(admissionName) {
+	if admission := exitRemote.admission(admissionName); admission.Whitelist || len(admission.Matchers) != 0 {
 		t.Fatal("new entrance without an address inherited the previous entrance's admission")
 	}
 	assertAutomaticRelayAuth(t, replacementRemote, exitRemote, tunnel)

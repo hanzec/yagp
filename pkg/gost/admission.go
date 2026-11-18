@@ -24,6 +24,22 @@ func (s ServiceConfig) HasAdmission(name string) bool {
 	return s.Admission == name || slices.Contains(s.Admissions, name)
 }
 
+func (c *Client) SetAdmission(desired AdmissionConfig) (bool, error) {
+	raw, err := c.resource("/config/admissions/" + desired.Name)
+	if err != nil {
+		return false, err
+	}
+	var current []AdmissionConfig
+	if len(raw) != 0 {
+		var admission AdmissionConfig
+		if err := json.Unmarshal(raw, &admission); err != nil {
+			return false, err
+		}
+		current = append(current, admission)
+	}
+	return c.EnsureAdmission(desired, current)
+}
+
 func (c *Client) EnsureAdmission(desired AdmissionConfig, current []AdmissionConfig) (bool, error) {
 	method, path := http.MethodPost, "/config/admissions"
 	for _, admission := range current {
