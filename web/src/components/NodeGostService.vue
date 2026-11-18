@@ -9,7 +9,9 @@
       <section class="service-column" aria-labelledby="gost-status-title" :aria-busy="statusLoading || restarting">
         <div class="service-title">
           <h3 class="ops-subsection-title" id="gost-status-title">Gost</h3>
-          <span v-if="service && !statusError" class="ops-status" :class="'is-' + statusTone" role="status">{{ statusLabel }}</span>
+          <span v-if="service && !statusError" class="ops-status" :class="online ? 'is-' + statusTone : 'is-muted'" role="status">
+            {{ online ? statusLabel : `节点离线，上次读取为${statusLabel}` }}
+          </span>
         </div>
         <p v-if="statusError" class="gost-error" role="alert">{{ statusError }}</p>
         <dl v-else-if="service" class="service-facts">
@@ -29,7 +31,7 @@
             type="warning"
             plain
             :loading="restarting"
-            :disabled="statusLoading || firewallLoading || logsLoading || !!statusError || service?.load_state !== 'loaded'"
+            :disabled="!online || statusLoading || firewallLoading || logsLoading || !!statusError || service?.load_state !== 'loaded'"
             @click="restart"
           >重启 Gost</el-button>
           <el-button @click="$emit('upgrade')">升级 Gost</el-button>
@@ -102,6 +104,7 @@ import { getGostLogs, getGostService, getNodeFirewallStatus, restartGostService 
 const props = defineProps({ node: { type: Object, required: true } })
 defineEmits(['upgrade'])
 const service = ref(null)
+const online = computed(() => props.node.status === 'online')
 const logs = ref([])
 const logsOpen = ref(false)
 const statusLoading = ref(false)
@@ -225,7 +228,7 @@ const cancelFirewallRecheck = () => {
   return ++firewallRecheckGeneration
 }
 const recheckFirewall = (generation, remaining = firewallRecheckLimit) => {
-  const awaitingResult = () => generation === firewallRecheckGeneration && props.node.status === 'online' &&
+  const awaitingResult = () => generation === firewallRecheckGeneration && online.value &&
     firewall.value?.disabled_reason === 'checking_firewall'
   if (!remaining || !awaitingResult()) return
   firewallRecheckTimer = setTimeout(async () => {
@@ -244,7 +247,7 @@ const restart = async () => {
   const confirmed = await confirmPanelAction('重启 Gost 会短暂中断该节点正在处理的连接。', '重启 Gost', {
     confirmButtonText: '重启 Gost', cancelButtonText: '取消', type: 'warning'
   }).catch(() => false)
-  if (!confirmed) return
+  if (!confirmed || !online.value) return
 
   const generation = cancelFirewallRecheck()
   restarting.value = true
@@ -265,8 +268,8 @@ const restart = async () => {
   }
 }
 
-watch(() => props.node.status, (status) => {
-  if (status === 'online' && !restarting.value) refresh()
+watch(online, (connected) => {
+  if (connected && !restarting.value) refresh()
 }, { immediate: true })
 
 onUnmounted(cancelFirewallRecheck)

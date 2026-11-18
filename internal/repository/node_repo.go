@@ -256,16 +256,6 @@ func (r *NodeRepository) RoutingOptions(ctx context.Context, before uint) ([]mod
 	return options, 0, nil
 }
 
-// FindByName 根据名称查询节点
-func (r *NodeRepository) FindByName(name string) (*model.GostNode, error) {
-	var node model.GostNode
-	err := r.DB.Where("name = ?", name).First(&node).Error
-	if err != nil {
-		return nil, err
-	}
-	return &node, nil
-}
-
 // ExistsByName 检查名称是否存在
 func (r *NodeRepository) ExistsByName(name string, excludeID ...uint) (bool, error) {
 	var count int64
@@ -296,13 +286,6 @@ func (r *NodeRepository) UpdateGostVersion(id uint, version string, checkedAt ti
 		fields["gost_version"] = version
 	}
 	return r.DB.Model(&model.GostNode{}).Where("id = ?", id).UpdateColumns(fields).Error
-}
-
-// GetAllOnline 获取所有在线节点
-func (r *NodeRepository) GetAllOnline() ([]model.GostNode, error) {
-	var nodes []model.GostNode
-	err := r.DB.Where("status = ?", model.NodeStatusOnline).Find(&nodes).Error
-	return nodes, err
 }
 
 // UpdateStats 累加节点流量

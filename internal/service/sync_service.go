@@ -82,8 +82,8 @@ func (s *RuleSyncService) Stop() {
 
 // syncAll 同步所有节点的规则状态
 func (s *RuleSyncService) syncAll() {
-	nodes, _, err := s.nodeRepo.List(nil, "")
-	if err != nil {
+	var nodes []model.GostNode
+	if err := s.nodeRepo.DB.Find(&nodes).Error; err != nil {
 		logger.Errorf("[Sync] 获取节点列表失败: %v", err)
 		return
 	}
@@ -94,32 +94,33 @@ func (s *RuleSyncService) syncAll() {
 	}
 	for _, node := range nodes {
 		// 并发同步每个节点
-		go s.syncNodeRules(node, exitNodes)
+		s.wg.Go(func() { s.syncNodeRules(node, exitNodes) })
 	}
 }
 
 // syncNodeRules 同步单个节点的规则
 func (s *RuleSyncService) syncNodeRules(node model.GostNode, exitNodes map[uint]*model.GostNode) {
-	// 如果节点离线，跳过规则同步
-	if node.Status == model.NodeStatusOffline {
-		return
-	}
 	// A slow Gost update can outlast a sync interval. Finish it before reconciling this node again.
 	if _, busy := s.syncing.LoadOrStore(node.ID, struct{}{}); busy {
 		return
 	}
 	defer s.syncing.Delete(node.ID)
 
+	client := utils.GetGostClient(&node)
+	configErr := s.reconcileNode(client, node, exitNodes)
+	if configErr != nil {
+		logger.Debugf("[Sync] 获取节点 %d (%s) 配置失败: %v", node.ID, node.Name, configErr)
+	}
+	s.updateNodeHealth(node, configErr)
+}
+
+func (s *RuleSyncService) reconcileNode(client *gost.Client, node model.GostNode, exitNodes map[uint]*model.GostNode) error {
 	endpointTunnelRuntime.RLock()
 	defer endpointTunnelRuntime.RUnlock()
 
-	client := utils.GetGostClient(&node)
-
-	// 获取节点真实运行配置
 	gostCfg, err := s.getNodeConfig(client, node)
 	if err != nil {
-		logger.Debugf("[Sync] 获取节点 %d (%s) 配置失败: %v", node.ID, node.Name, err)
-		return
+		return err
 	}
 
 	// 提取节点上的 Service 状态
@@ -145,7 +146,7 @@ func (s *RuleSyncService) syncNodeRules(node model.GostNode, exitNodes map[uint]
 	tunnels, err := s.tunnelRepo.FindByNodeID(node.ID)
 	if err != nil {
 		logger.Errorf("[Sync] 获取节点 %d 隧道规则失败: %v", node.ID, err)
-		return
+		return nil
 	}
 	s.recordRelayTraffic(node.ID, tunnels, gostCfg.Services)
 	changed, err := s.allowlist.syncRelays(client, gostCfg, node.ID, tunnels)
@@ -156,6 +157,7 @@ func (s *RuleSyncService) syncNodeRules(node model.GostNode, exitNodes map[uint]
 		s.unsavedTunnelConfig.Store(node.ID, struct{}{})
 	}
 	s.syncTunnels(client, node.ID, tunnels, gostCfg.Chains, exitNodes)
+	return nil
 }
 
 func (s *RuleSyncService) getNodeConfig(client *gost.Client, node model.GostNode) (*gost.GostConfig, error) {

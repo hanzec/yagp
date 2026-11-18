@@ -68,26 +68,28 @@ func TestOfflineRuleNeedsConfirmedStopBeforeEditing(t *testing.T) {
 	requireServiceError(t, err, nil)
 	requireServiceError(t, rules.Start(rule.ID, testAdmin, testIP, testAgent), nil)
 
-	health := NewNodeHealthService(db)
+	health := NewRuleSyncService(db)
 	remote.rejectCommand("GET /config", http.StatusServiceUnavailable)
-	health.checkNodes()
-	waitServiceCondition(t, func() bool {
-		stored, err := rules.GetByID(rule.ID)
-		requireServiceError(t, err, nil)
-		return stored.Status == model.RuleStatusStopped && stored.Node.Status == model.NodeStatusOffline && stored.ServiceID != ""
-	})
+	health.syncAll()
+	health.wg.Wait()
+	stored, err := rules.GetByID(rule.ID)
+	requireServiceError(t, err, nil)
+	if stored.Status != model.RuleStatusStopped || stored.Node.Status != model.NodeStatusOffline || stored.ServiceID == "" {
+		t.Fatalf("offline rule after polling: %+v", stored)
+	}
 	update := &dto.UpdateRuleReq{Name: rule.Name, Protocol: "tcp", ListenPort: 9090, Targets: []string{"new.test:443"}}
 	_, err = rules.Update(rule.ID, update, testAdmin, testIP, testAgent)
 	requireServiceError(t, err, bizerrors.ErrRuleRunning)
 	requireServiceError(t, rules.Stop(rule.ID, testAdmin, testIP, testAgent), bizerrors.ErrNodeOffline)
 
 	remote.rejectCommand("GET /config", 0)
-	health.checkNodes()
-	waitServiceCondition(t, func() bool {
-		stored, err := rules.nodeRepo.FindByID(node.ID)
-		requireServiceError(t, err, nil)
-		return stored.Status == model.NodeStatusOnline
-	})
+	health.syncAll()
+	health.wg.Wait()
+	reconnected, err := rules.nodeRepo.FindByID(node.ID)
+	requireServiceError(t, err, nil)
+	if reconnected.Status != model.NodeStatusOnline {
+		t.Fatalf("node status after reconnect: %s", reconnected.Status)
+	}
 	requireServiceError(t, rules.Stop(rule.ID, testAdmin, testIP, testAgent), nil)
 	_, err = rules.Update(rule.ID, update, testAdmin, testIP, testAgent)
 	requireServiceError(t, err, nil)

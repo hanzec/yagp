@@ -49,40 +49,16 @@ func (s *LogService) List(req *dto.LogListReq) ([]model.OperationLog, int64, err
 	return s.logRepo.List(opt)
 }
 
-// LogAction 操作日志参数
-type LogAction struct {
-	Username     string
-	Action       string
-	ResourceType string
-	ResourceID   uint
-	Details      string
-	IP           string
-	UserAgent    string
-}
-
 // Record 记录操作日志
 func (s *LogService) Record(username, action, resourceType string, resourceID uint, details, ip, userAgent string) {
-	s.RecordAction(&LogAction{
+	log := &model.OperationLog{
 		Username:     username,
 		Action:       action,
 		ResourceType: resourceType,
 		ResourceID:   resourceID,
 		Details:      details,
-		IP:           ip,
+		IPAddress:    ip,
 		UserAgent:    userAgent,
-	})
-}
-
-// RecordAction 使用结构体记录操作日志
-func (s *LogService) RecordAction(action *LogAction) {
-	log := &model.OperationLog{
-		Username:     action.Username,
-		Action:       action.Action,
-		ResourceType: action.ResourceType,
-		ResourceID:   action.ResourceID,
-		Details:      action.Details,
-		IPAddress:    action.IP,
-		UserAgent:    action.UserAgent,
 	}
 	if err := s.logRepo.Create(log); err != nil {
 		logger.Errorf("记录操作日志失败: %v", err)

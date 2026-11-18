@@ -79,15 +79,34 @@ fi
 
 if [[ "$action" == uninstall ]]; then
     if [[ "$manager" == systemd ]]; then
-        systemctl disable --now "$bridge_unit" "$gost_unit" || true
+        for unit in "$bridge_unit" "$gost_unit"; do
+            if ! systemctl stop "$unit"; then
+                case $(systemctl is-active "$unit" || true) in
+                    inactive|failed) ;;
+                    *) die "无法确认 $unit 已停止，保留安装文件" ;;
+                esac
+            fi
+            if [[ -f "/etc/systemd/system/$unit.service" ]]; then
+                systemctl disable "$unit"
+            fi
+        done
         rm -f -- "/etc/systemd/system/$bridge_unit.service" "/etc/systemd/system/$gost_unit.service"
         rm -f -- "/etc/systemd/system/$bridge_unit.service.d/50-yagp-network.conf"
         rmdir -- "/etc/systemd/system/$bridge_unit.service.d" 2>/dev/null || true
         systemctl daemon-reload
     else
         for unit in "$bridge_unit" "$gost_unit"; do
-            rc-service "$unit" stop || true
-            rc-update del "$unit" default || true
+            [[ -e "/etc/init.d/$unit" ]] || continue
+            if ! rc-service "$unit" stop; then
+                status=0
+                rc-service "$unit" status >/dev/null || status=$?
+                [[ $status == 3 ]] || die "无法确认 $unit 已停止，保留安装文件"
+            fi
+        done
+        for unit in "$bridge_unit" "$gost_unit"; do
+            if [[ -e "/etc/runlevels/default/$unit" ]]; then
+                rc-update del "$unit" default
+            fi
             rm -f -- "/etc/init.d/$unit"
         done
     fi

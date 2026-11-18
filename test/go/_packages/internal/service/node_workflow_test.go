@@ -103,10 +103,7 @@ func TestUnreachableNodeStopsItsRulesAndRelatedTunnels(t *testing.T) {
 	if len(got.Services) != 0 {
 		t.Fatalf("unexpected configured services: %+v", got.Services)
 	}
-	health := NewNodeHealthService(db)
-	if health.checkNodeHealth(node) != model.NodeStatusOnline || health.checkNodeHealth(model.GostNode{}) != model.NodeStatusOffline {
-		t.Fatal("health check failed to distinguish online node from incomplete enrollment")
-	}
+	health := NewRuleSyncService(db)
 
 	remote.mu.Lock()
 	remote.reject = map[string]int{"GET /config": http.StatusServiceUnavailable}

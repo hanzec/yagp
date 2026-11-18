@@ -53,13 +53,6 @@ func (r *TunnelRepository) FindByID(id uint) (*model.GostTunnel, error) {
 	return &tunnel, nil
 }
 
-// FindByEntranceID looks up the tunnel reserving either role of an entrance.
-func (r *TunnelRepository) FindByEntranceID(ruleID uint) (*model.GostTunnel, error) {
-	var tunnel model.GostTunnel
-	err := r.DB.Where("entry_rule_id = ? OR exit_rule_id = ?", ruleID, ruleID).First(&tunnel).Error
-	return &tunnel, err
-}
-
 // List 查询隧道列表
 func (r *TunnelRepository) List(opt *QueryOption) ([]model.GostTunnel, int64, error) {
 	var tunnels []model.GostTunnel
@@ -128,13 +121,4 @@ func (r *TunnelRepository) HasRulesUsingTunnel(tunnelID uint) (bool, error) {
 // HasRules 检查隧道是否被规则使用（别名方法）
 func (r *TunnelRepository) HasRules(tunnelID uint) (bool, error) {
 	return r.HasRulesUsingTunnel(tunnelID)
-}
-
-// UpdateServiceInfo 更新隧道的服务 ID 和 Chain ID
-func (r *TunnelRepository) UpdateServiceInfo(id uint, serviceID, chainID string) error {
-	return r.DB.Model(&model.GostTunnel{}).Where("id = ?", id).
-		Updates(map[string]any{
-			"service_id": serviceID,
-			"chain_id":   chainID,
-		}).Error
 }

@@ -116,13 +116,6 @@ func (r *RuleRepository) FindByNodeID(nodeID uint) ([]model.GostRule, error) {
 	return rules, err
 }
 
-// FindByTunnelID 根据隧道 ID 查询规则
-func (r *RuleRepository) FindByTunnelID(tunnelID uint) ([]model.GostRule, error) {
-	var rules []model.GostRule
-	err := r.DB.Where("tunnel_id = ?", tunnelID).Find(&rules).Error
-	return rules, err
-}
-
 // EntranceBindings finds the tunnels selecting any of the listed rule IDs.
 func (r *RuleRepository) EntranceBindings(ruleIDs []uint) ([]model.GostTunnel, error) {
 	var tunnels []model.GostTunnel
@@ -160,11 +153,6 @@ func (r *RuleRepository) UpdateStatus(id uint, status model.RuleStatus) error {
 	return r.UpdateField(&model.GostRule{}, id, "status", status)
 }
 
-// UpdateServiceID 更新服务 ID
-func (r *RuleRepository) UpdateServiceID(id uint, serviceID string) error {
-	return r.UpdateField(&model.GostRule{}, id, "service_id", serviceID)
-}
-
 // UpdateRuntime updates the service ID and status together.
 func (r *RuleRepository) UpdateRuntime(id uint, serviceID string, status model.RuleStatus) error {
 	return r.UpdateFields(&model.GostRule{}, id, map[string]interface{}{
@@ -183,13 +171,6 @@ func (r *RuleRepository) StopEndpoint(id uint) error {
 // UpdateObserverID 更新观察器 ID
 func (r *RuleRepository) UpdateObserverID(id uint, observerID string) error {
 	return r.UpdateField(&model.GostRule{}, id, "observer_id", observerID)
-}
-
-// CountByNodeID 按节点统计数量
-func (r *RuleRepository) CountByNodeID(nodeID uint) (int64, error) {
-	var count int64
-	err := r.DB.Model(&model.GostRule{}).Where("node_id = ?", nodeID).Count(&count).Error
-	return count, err
 }
 
 // StopByNodeID 停止指定节点的所有规则

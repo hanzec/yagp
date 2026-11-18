@@ -331,6 +331,7 @@ type lifecycleNode struct {
 	resources   map[string]json.RawMessage
 	reject      map[string]int
 	gostConfig  string
+	configReads int
 	observerErr error
 }
 
@@ -342,6 +343,7 @@ func (n *lifecycleNode) Execute(_ context.Context, req *nodegrpc.CommandRequest)
 		return &nodegrpc.CommandReply{StatusCode: int32(code)}, nil
 	}
 	if path == "/config" && method == http.MethodGet {
+		n.configReads++
 		body := n.gostConfig
 		if body == "" {
 			body = "{}"

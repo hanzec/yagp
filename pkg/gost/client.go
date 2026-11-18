@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
-	"yagp/internal/errors"
 
+	bizerrors "yagp/internal/errors"
 	"yagp/pkg/logger"
 	"yagp/pkg/nodegrpc"
 
@@ -256,6 +257,9 @@ type GostConfig struct {
 	Observers  []ObserverConfig  `json:"observers"`
 }
 
+// ErrInvalidConfig means the admin API responded successfully but the config could not be decoded.
+var ErrInvalidConfig = errors.New("解析配置失败")
+
 // GetConfig 获取节点配置
 func (c *Client) GetConfig() (*GostConfig, error) {
 	return c.GetConfigContext(context.Background())
@@ -275,7 +279,7 @@ func (c *Client) GetConfigContext(ctx context.Context) (*GostConfig, error) {
 
 	var config GostConfig
 	if err = json.NewDecoder(resp.Body).Decode(&config); err != nil {
-		return nil, fmt.Errorf("解析配置失败: %v", err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
 
 	return &config, nil
@@ -621,7 +625,7 @@ func (c *Client) SetObserver(observer *ObserverConfig) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return errors.ErrTunnelObserverCreateFailed
+		return bizerrors.ErrTunnelObserverCreateFailed
 	}
 
 	return nil

@@ -100,6 +100,32 @@ describe('inline node service status', () => {
     expect(view.get('#node-gost-logs').isVisible()).toBe(false)
   })
 
+  it('labels the last known status offline and permits restarting only while connected', async () => {
+    api.getGostService.mockResolvedValue(response(active))
+    const view = mountService()
+    await flushPromises()
+    const restart = button(view, '重启 Gost')
+    const badge = view.get('[aria-labelledby="gost-status-title"] .ops-status')
+    expect(restart.element.disabled).toBe(false)
+    const confirmation = deferred()
+    messages.confirm.mockReturnValueOnce(confirmation.promise)
+    await restart.trigger('click')
+    await view.setProps({ node: { ...node, status: 'offline' } })
+    expect(badge.text()).toBe('节点离线，上次读取为运行中')
+    expect(badge.classes()).toContain('is-muted')
+    expect(restart.element.disabled).toBe(true)
+    confirmation.resolve('confirm')
+    await flushPromises()
+    expect(api.restartGostService).not.toHaveBeenCalled()
+    expect(api.getGostService).toHaveBeenCalledTimes(1)
+
+    api.getGostService.mockResolvedValueOnce(response({ ...active, active_state: 'inactive' }))
+    await view.setProps({ node: { ...node, status: 'online' } })
+    await flushPromises()
+    expect(badge.text()).toBe('未运行')
+    expect(restart.element.disabled).toBe(false)
+  })
+
   it('retries independent read failures and handles restart cancellation, failure and success', async () => {
     api.getGostService.mockRejectedValueOnce(apiError('节点离线')).mockResolvedValue(response(active))
     api.getGostLogs.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(response({ entries: [] }))

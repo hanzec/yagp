@@ -32,7 +32,6 @@ func TestServicePropagatesDatabaseReadFailures(t *testing.T) {
 		for _, err := range []error{createErr, getErr, updateErr, deleteErr, tokenErr, statsErr, upgradeErr, ruleErr, tunnelErr, allowlistErr, rulesetErr} {
 			requireMissingTableError(t, err, "nodes")
 		}
-		NewNodeHealthService(db).checkNodes()
 		NewRuleSyncService(db).syncAll()
 		NewNodeUpgradeService(db).runAutomatic(ctx)
 	})

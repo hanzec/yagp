@@ -816,6 +816,31 @@ describe('forwarding rule editor and actions', () => {
     })
   })
 
+  it('keeps the next editor and its listener result when the previous save finishes', async () => {
+    getRuleList.mockResolvedValue(result([{ ...direct, status: 'stopped' }, relayRule]))
+    const pending = Promise.withResolvers()
+    updateRule.mockReturnValueOnce(pending.promise)
+    const wrapper = mountInventory(Rules)
+    await flushPromises()
+    for (const name of ['HTTPS', 'DNS']) await command(row(wrapper, name), 'listener-check')
+    await wrapper.get('[aria-label="编辑 HTTPS"]').trigger('click')
+    await button(editDialog(wrapper), '保存端点').trigger('click')
+    await flushPromises()
+    expect(updateRule).toHaveBeenCalledExactlyOnceWith(direct.id, expect.objectContaining({ name: 'HTTPS' }))
+    await button(editDialog(wrapper), '取消').trigger('click')
+    await wrapper.get('[aria-label="编辑 DNS"]').trigger('click')
+    await field(editDialog(wrapper), 'name').get('input').setValue('DNS draft')
+
+    pending.resolve({})
+    await flushPromises()
+    expect(field(editDialog(wrapper), 'name').get('input').element.value).toBe('DNS draft')
+    expect(row(wrapper, 'HTTPS').text()).not.toContain('监听地址可用')
+    expect(row(wrapper, 'DNS').text()).toContain('监听地址可用')
+    await button(editDialog(wrapper), '保存端点').trigger('click')
+    await flushPromises()
+    expect(updateRule).toHaveBeenLastCalledWith(relayRule.id, expect.objectContaining({ name: 'DNS draft' }))
+  })
+
   it('keeps edits on a failed save, leaves existing targets unchanged, and copies only endpoint settings', async () => {
     getRuleList.mockResolvedValueOnce(result([{ ...direct, status: 'stopped' }, relayRule]))
     const wrapper = mountInventory(Rules)
