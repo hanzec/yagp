@@ -157,7 +157,7 @@ func TestRulesetSyncRetriesSaveWithoutRecreatingBypass(t *testing.T) {
 	}{
 		{"", []uint{node.ID}},
 		{"http://rules.test", nil},
-		{upstream.URL + "/rules", []uint{99}},
+		{upstream.URL + "/rules", []uint{offline.ID + 1}},
 		{upstream.URL + "/not-found", nil},
 		{upstream.URL + "/large", nil},
 	} {
