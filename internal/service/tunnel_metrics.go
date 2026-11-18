@@ -70,20 +70,20 @@ func (s *TunnelService) Metrics(ctx context.Context, id uint, span string) (*Tun
 	if !ok {
 		return nil, errors.ErrTunnelMetricRange
 	}
-	if _, err := s.GetByID(id); err != nil {
+	exists, err := s.tunnelRepo.Exists(ctx, id)
+	if err != nil {
 		return nil, err
+	}
+	if !exists {
+		return nil, errors.ErrTunnelNotFound
 	}
 
 	to := time.Now().UTC().Truncate(time.Second)
 	from := to.Add(-window.duration)
-	samples, err := s.tunnelRepo.ProbeHistory(ctx, id, from.Unix(), to.Unix())
-	if err != nil {
-		return nil, err
-	}
-	return summarizeTunnelMetrics(from, to, window.bucket, samples), nil
+	return s.readTunnelMetrics(ctx, id, from, to, window.bucket)
 }
 
-func summarizeTunnelMetrics(from, to time.Time, bucket time.Duration, samples []model.TunnelProbeSample) *TunnelMetrics {
+func (s *TunnelService) readTunnelMetrics(ctx context.Context, id uint, from, to time.Time, bucket time.Duration) (*TunnelMetrics, error) {
 	metrics := &TunnelMetrics{
 		From:            from,
 		To:              to,
@@ -95,15 +95,11 @@ func summarizeTunnelMetrics(from, to time.Time, bucket time.Duration, samples []
 		metrics.Points[i].Timestamp = from.Add(time.Duration(i) * bucket)
 	}
 
-	latencies := make([]float64, 0, len(samples))
+	var latencies []float64
+	var latest model.TunnelProbeSample
 	summary := &metrics.Summary
-	if len(samples) != 0 {
-		last := samples[len(samples)-1]
-		sampledAt := time.Unix(last.SampledAt, 0).UTC()
-		summary.LatestProbeAt = &sampledAt
-		summary.LatestStatus = &last.Status
-	}
-	for _, sample := range samples {
+	err := s.tunnelRepo.WalkProbeHistory(ctx, id, from.Unix(), to.Unix(), func(sample model.TunnelProbeSample) {
+		latest = sample
 		sampledAt := time.Unix(sample.SampledAt, 0).UTC()
 		// The right edge is inclusive, so a sample taken exactly at `to` belongs to the final bucket.
 		index := min(int(sampledAt.Sub(from)/bucket), len(metrics.Points)-1)
@@ -118,6 +114,14 @@ func summarizeTunnelMetrics(from, to time.Time, bucket time.Duration, samples []
 			latencies = append(latencies, *sample.LatencyMS)
 			summary.LatestLatencyMS = sample.LatencyMS
 		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if summary.Attempts > 0 {
+		sampledAt := time.Unix(latest.SampledAt, 0).UTC()
+		summary.LatestProbeAt = &sampledAt
+		summary.LatestStatus = &latest.Status
 	}
 	for i := range metrics.Points {
 		metrics.Points[i].finish()
@@ -126,9 +130,9 @@ func summarizeTunnelMetrics(from, to time.Time, bucket time.Duration, samples []
 	if len(latencies) != 0 {
 		slices.Sort(latencies)
 		index := (95*len(latencies)+99)/100 - 1
-		summary.P95LatencyMS = &latencies[index]
+		summary.P95LatencyMS = new(latencies[index])
 	}
-	return metrics
+	return metrics, nil
 }
 
 func (s *TunnelMetricStats) record(sample model.TunnelProbeSample) {

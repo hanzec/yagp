@@ -59,7 +59,7 @@ var (
 	// ErrRulePortExists 端口已被使用
 	ErrRulePortExists = New(10102, "端口已被使用", http.StatusBadRequest)
 	// ErrRuleRunning 规则正在运行中
-	ErrRuleRunning = New(10103, "规则正在运行中，请先停止", http.StatusBadRequest)
+	ErrRuleRunning = New(10103, "请先停止规则，再修改配置", http.StatusBadRequest)
 	// ErrRuleStartFailed 启动规则失败
 	ErrRuleStartFailed = New(10104, "启动规则失败", http.StatusInternalServerError)
 	// ErrTunnelRequired 隧道转发需要选择隧道

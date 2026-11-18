@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"yagp/internal/dto"
-	"yagp/internal/model"
 	"yagp/pkg/nodegrpc"
 
 	"google.golang.org/grpc/codes"
@@ -21,17 +20,16 @@ func TestNodeHealthStoresInstalledGostVersion(t *testing.T) {
 	remote := &gostVersionNode{lifecycleNode: lifecycleNode{t: t}, version: "v3.2.7"}
 	node := startServiceTestNode(t, remote)
 	saveServiceFixtures(t, db, &node)
-	health := NewNodeHealthService(db)
+	health := NewRuleSyncService(db)
 	nodes := NewNodeService(db, "")
 
-	health.checkAll()
-	var saved *model.GostNode
-	waitServiceCondition(t, func() bool {
-		var err error
-		saved, err = nodes.GetByID(node.ID)
-		requireServiceError(t, err, nil)
-		return saved.LastCheckAt != nil && saved.GostVersion == "v3.2.7"
-	})
+	health.syncAll()
+	health.wg.Wait()
+	saved, err := nodes.GetByID(node.ID)
+	requireServiceError(t, err, nil)
+	if saved.LastCheckAt == nil || saved.GostVersion != "v3.2.7" {
+		t.Fatalf("node health check did not record the installed version: %+v", saved)
+	}
 
 	listed, total, err := nodes.List(&dto.NodeListReq{})
 	requireServiceError(t, err, nil)

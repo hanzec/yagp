@@ -97,21 +97,21 @@ describe('forwarding rule inventory', () => {
   it('uses all node pages for filtering and creating an entrance on a later node', async () => {
     const actualNodeAPI = await vi.importActual('@/api/node')
     getRoutingNodes.mockImplementationOnce(actualNodeAPI.getRoutingNodes)
-    const firstPage = Array.from({ length: 100 }, (_, index) => ({ id: index + 1, name: '节点 ' + (index + 1) }))
-    const lastNode = { id: 101, name: '第二页节点', ipv4: '192.0.2.101' }
+    const firstPage = [{ id: 5, name: '节点 5' }, { id: 2, name: '节点 2' }]
+    const lastNode = { id: 1, name: '第二页节点', ipv4: '192.0.2.101' }
     const originalAdapter = request.defaults.adapter
     const adapter = vi.fn(config => Promise.resolve({
       status: 200, statusText: 'OK', headers: {}, config,
-      data: { code: 0, data: { total: 101, list: config.params.page === 1 ? firstPage : [lastNode] } }
+      data: { code: 0, data: config.params.before ? { list: [lastNode], next: 0 } : { list: firstPage, next: 2 } }
     }))
     request.defaults.adapter = adapter
     try {
       const wrapper = mountInventory(Rules)
       await flushPromises()
       expect(adapter.mock.calls.map(([config]) => [config.url, config.params])).toEqual([
-        ['/nodes', { page: 1, pageSize: 100 }], ['/nodes', { page: 2, pageSize: 100 }]
+        ['/nodes/options', { before: undefined }], ['/nodes/options', { before: 2 }]
       ])
-      expect(select(wrapper, 'rule-node').findAllComponents(ElOption)).toHaveLength(101)
+      expect(select(wrapper, 'rule-node').findAllComponents(ElOption)).toHaveLength(3)
       await choose(select(wrapper, 'rule-node'), lastNode.id)
       await wrapper.get('form[aria-label="端点筛选"]').trigger('submit')
       await flushPromises()
@@ -134,23 +134,23 @@ describe('forwarding rule inventory', () => {
     const actualNodeAPI = await vi.importActual('@/api/node')
     getRoutingNodes.mockImplementation(actualNodeAPI.getRoutingNodes)
     vi.spyOn(ElMessage, 'error').mockImplementation(() => {})
-    const firstPage = Array.from({ length: 100 }, (_, index) => ({ id: index + 1, name: '节点 ' + (index + 1) }))
-    const lastNode = { id: 101, name: '第二页节点' }
+    const firstPage = [{ id: 5, name: '节点 5' }, { id: 2, name: '节点 2' }]
+    const lastNode = { id: 1, name: '第二页节点' }
     const secondPage = Promise.withResolvers()
     const originalAdapter = request.defaults.adapter
     let retrying = false
     const adapter = vi.fn(config => {
-      if (config.params.page === 2 && !retrying) return secondPage.promise
+      if (config.params.before === 2 && !retrying) return secondPage.promise
       return Promise.resolve({
         status: 200, statusText: 'OK', headers: {}, config,
-        data: { code: 0, data: { total: 101, list: config.params.page === 1 ? firstPage : [lastNode] } }
+        data: { code: 0, data: config.params.before ? { list: [lastNode], next: 0 } : { list: firstPage, next: 2 } }
       })
     })
     request.defaults.adapter = adapter
     try {
       const wrapper = mountInventory(Rules)
       await flushPromises()
-      expect(adapter.mock.calls.map(([config]) => config.params.page)).toEqual([1, 2])
+      expect(adapter.mock.calls.map(([config]) => config.params.before)).toEqual([undefined, 2])
       await command(row(wrapper, 'DNS'), 'copy')
       const dialog = editDialog(wrapper)
       await field(dialog, 'listen_port').get('input').setValue('5354')
@@ -170,7 +170,7 @@ describe('forwarding rule inventory', () => {
       retrying = true
       await button(dialog, '重新加载节点').trigger('click')
       await flushPromises()
-      expect(adapter.mock.calls.map(([config]) => config.params.page)).toEqual([1, 2, 1, 2])
+      expect(adapter.mock.calls.map(([config]) => config.params.before)).toEqual([undefined, 2, undefined, 2])
       expect(dialog.find('[role="alert"]').exists()).toBe(false)
       expect(selectField(dialog, 'node_id').findAllComponents(ElOption).map(option => option.props('value'))).toEqual([
         ...firstPage.map(node => node.id), lastNode.id
@@ -229,6 +229,22 @@ describe('forwarding rule inventory', () => {
     expect(wrapper.get('.rule-placeholder').text()).toContain('还没有端点')
   })
 
+  it('lets a slow background refresh finish before polling again', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const wrapper = mountInventory(Rules)
+    await flushPromises()
+    const pending = Promise.withResolvers()
+    getRuleList.mockReturnValueOnce(pending.promise)
+    await vi.advanceTimersByTimeAsync(11_000)
+    expect(getRuleList).toHaveBeenCalledTimes(2)
+
+    pending.resolve(result([{ ...direct, name: 'Updated entry' }]))
+    await flushPromises()
+    expect(wrapper.get('tbody').text()).toContain('Updated entry')
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(getRuleList).toHaveBeenCalledTimes(3)
+  })
+
   it('pauses automatic polling for background tabs or failures and resumes after a manual retry', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
@@ -249,6 +265,29 @@ describe('forwarding rule inventory', () => {
     await vi.advanceTimersByTimeAsync(5000)
     expect(getRuleList).toHaveBeenCalledTimes(3)
     expect(row(wrapper, 'HTTPS').exists()).toBe(true)
+  })
+
+  it('applies a manual filter immediately while a poll is pending', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const wrapper = mountInventory(Rules)
+    await flushPromises()
+    const poll = Promise.withResolvers()
+    const search = Promise.withResolvers()
+    getRuleList.mockReturnValueOnce(poll.promise).mockReturnValueOnce(search.promise)
+    await vi.advanceTimersByTimeAsync(5000)
+    await wrapper.get('#rule-keyword').setValue(relayRule.name)
+    await wrapper.get('form[aria-label="端点筛选"]').trigger('submit')
+    expect(getRuleList).toHaveBeenLastCalledWith(expect.objectContaining({ keyword: relayRule.name }))
+
+    poll.reject(new Error('outdated poll'))
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(getRuleList).toHaveBeenCalledTimes(3)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    search.resolve(result([relayRule]))
+    await flushPromises()
+    expect(wrapper.get('tbody').text()).toContain(relayRule.name)
+    expect(wrapper.get('tbody').text()).not.toContain(direct.name)
   })
 
   it('ignores a slow response after the user changes pages again', async () => {
@@ -816,7 +855,33 @@ describe('forwarding rule editor and actions', () => {
     })
   })
 
+  it('keeps the next editor and its listener result when the previous save finishes', async () => {
+    getRuleList.mockResolvedValue(result([{ ...direct, status: 'stopped' }, relayRule]))
+    const pending = Promise.withResolvers()
+    updateRule.mockReturnValueOnce(pending.promise)
+    const wrapper = mountInventory(Rules)
+    await flushPromises()
+    for (const name of ['HTTPS', 'DNS']) await command(row(wrapper, name), 'listener-check')
+    await wrapper.get('[aria-label="编辑 HTTPS"]').trigger('click')
+    await button(editDialog(wrapper), '保存端点').trigger('click')
+    await flushPromises()
+    expect(updateRule).toHaveBeenCalledExactlyOnceWith(direct.id, expect.objectContaining({ name: 'HTTPS' }))
+    await button(editDialog(wrapper), '取消').trigger('click')
+    await wrapper.get('[aria-label="编辑 DNS"]').trigger('click')
+    await field(editDialog(wrapper), 'name').get('input').setValue('DNS draft')
+
+    pending.resolve({})
+    await flushPromises()
+    expect(field(editDialog(wrapper), 'name').get('input').element.value).toBe('DNS draft')
+    expect(row(wrapper, 'HTTPS').text()).not.toContain('监听地址可用')
+    expect(row(wrapper, 'DNS').text()).toContain('监听地址可用')
+    await button(editDialog(wrapper), '保存端点').trigger('click')
+    await flushPromises()
+    expect(updateRule).toHaveBeenLastCalledWith(relayRule.id, expect.objectContaining({ name: 'DNS draft' }))
+  })
+
   it('keeps edits on a failed save, leaves existing targets unchanged, and copies only endpoint settings', async () => {
+    getRuleList.mockResolvedValueOnce(result([{ ...direct, status: 'stopped' }, relayRule]))
     const wrapper = mountInventory(Rules)
     await flushPromises()
     await wrapper.get('[aria-label="编辑 HTTPS"]').trigger('click')
@@ -847,6 +912,19 @@ describe('forwarding rule editor and actions', () => {
       listen_ip: '2001:db8::8', listen_port: 5354, remark: '',
       role: 'entry', targets: [], use_clash_ruleset: false, strategy: 'round'
     })
+  })
+
+  it('requires stopping a retained service before editing a disconnected rule', async () => {
+    getRuleList.mockResolvedValueOnce(result([{ ...relayRule, service_id: 'rule-2' }]))
+    const wrapper = mountInventory(Rules)
+    await flushPromises()
+    expect(wrapper.get('[aria-label="编辑 DNS"]').element.disabled).toBe(true)
+    expect(wrapper.find('[aria-label="启动 DNS"]').exists()).toBe(false)
+    await wrapper.get('[aria-label="停止 DNS"]').trigger('click')
+    await flushPromises()
+    expect(stopRule).toHaveBeenCalledExactlyOnceWith(relayRule.id)
+    expect(wrapper.get('[aria-label="编辑 DNS"]').element.disabled).toBe(false)
+    expect(wrapper.get('[aria-label="启动 DNS"]').exists()).toBe(true)
   })
 
   it('starts, stops and deletes rules through their row actions', async () => {

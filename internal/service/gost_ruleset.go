@@ -133,8 +133,16 @@ func (s *GostRulesetService) UpdateByID(ctx context.Context, id uint, name, sour
 		return nil, err
 	}
 	current.Name, current.URL, current.Matchers = ruleset.Name, ruleset.URL, ruleset.Matchers
-	if err := s.db.WithContext(ctx).Save(&current).Error; err != nil {
-		return nil, err
+	db := s.db.WithContext(ctx)
+	update := db.Model(&current).Select("Name", "URL", "Matchers", "UpdatedAt").Updates(&current)
+	if update.Error != nil {
+		return nil, update.Error
+	}
+	if update.RowsAffected == 0 {
+		// MySQL may report zero affected rows for an unchanged subscription.
+		if err := db.First(&current, id).Error; err != nil {
+			return nil, err
+		}
 	}
 	return &current, nil
 }
@@ -166,21 +174,27 @@ func (s *GostRulesetService) prepareSubscription(ctx context.Context, name, sour
 }
 
 func (s *GostRulesetService) requireUnreferenced(ctx context.Context, id uint) error {
+	references := func(useClash bool, ids []uint, domains []string) bool {
+		return slices.Contains(ids, id) || id == gostRulesetID && usesDefaultRuleset(useClash, ids, domains)
+	}
+	columns := []string{"id", "use_clash_ruleset", "ruleset_ids", "manual_domains"}
 	var rules []model.GostRule
-	if err := s.db.WithContext(ctx).Select("id", "ruleset_ids", "applied_endpoint").Find(&rules).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select(append(columns, "applied_endpoint")).Find(&rules).Error; err != nil {
 		return err
 	}
 	for _, rule := range rules {
-		if slices.Contains(rule.RulesetIDs, id) || slices.Contains(rule.WithAppliedEndpoint().RulesetIDs, id) {
+		applied := rule.AppliedEndpoint
+		if references(rule.UseClashRuleset, rule.RulesetIDs, rule.ManualDomains) ||
+			(applied != nil && references(applied.UseClashRuleset, applied.RulesetIDs, applied.ManualDomains)) {
 			return fmt.Errorf("规则集正在被端点 %d 使用，请先移除引用", rule.ID)
 		}
 	}
 	var tunnels []model.GostTunnel
-	if err := s.db.WithContext(ctx).Select("id", "ruleset_ids").Find(&tunnels).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select(columns).Find(&tunnels).Error; err != nil {
 		return err
 	}
 	for _, tunnel := range tunnels {
-		if slices.Contains(tunnel.RulesetIDs, id) {
+		if references(tunnel.UseClashRuleset, tunnel.RulesetIDs, tunnel.ManualDomains) {
 			return fmt.Errorf("规则集正在被隧道 %d 使用，请先移除引用", tunnel.ID)
 		}
 	}
@@ -198,7 +212,8 @@ func (s *GostRulesetService) NormalizeSelection(ctx context.Context, ids []uint,
 	if len(ids) > 0 && ids[0] == 0 {
 		return nil, nil, bizerrors.InvalidRulesetSelection("规则集 ID 无效")
 	}
-	if _, err := s.selectedRulesets(ctx, ids); err != nil {
+	subscriptions := rulesetCache{}
+	if _, err := subscriptions.selectRulesets(s.db.WithContext(ctx), ids); err != nil {
 		return nil, nil, err
 	}
 	normalized := make([]string, 0, len(domains))
@@ -218,7 +233,14 @@ func (s *GostRulesetService) NormalizeSelection(ctx context.Context, ids []uint,
 
 // SelectedMatchers combines saved selections; manual rules without a port default to 443.
 func (s *GostRulesetService) SelectedMatchers(ctx context.Context, ids []uint, domains []string) ([]string, error) {
-	rulesets, err := s.selectedRulesets(ctx, ids)
+	return rulesetCache{}.selectedMatchers(s.db.WithContext(ctx), ids, domains)
+}
+
+// Each synchronization pass shares its loaded subscriptions across tunnel selections.
+type rulesetCache map[uint]model.GostRuleset
+
+func (cache rulesetCache) selectedMatchers(db *gorm.DB, ids []uint, domains []string) ([]string, error) {
+	rulesets, err := cache.selectRulesets(db, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -249,27 +271,41 @@ func (s *GostRulesetService) SelectedMatchers(ctx context.Context, ids []uint, d
 	return matchers, nil
 }
 
-func (s *GostRulesetService) selectedRulesets(ctx context.Context, ids []uint) ([]model.GostRuleset, error) {
-	if len(ids) == 0 {
-		return nil, nil
+func (cache rulesetCache) selectRulesets(db *gorm.DB, ids []uint) ([]model.GostRuleset, error) {
+	if !slices.IsSorted(ids) {
+		ids = slices.Clone(ids)
+		slices.Sort(ids)
 	}
-	var rulesets []model.GostRuleset
-	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Order("id").Find(&rulesets).Error; err != nil {
-		return nil, err
-	}
-	if len(rulesets) != len(ids) {
-		for _, id := range ids {
-			if !slices.ContainsFunc(rulesets, func(ruleset model.GostRuleset) bool { return ruleset.ID == id }) {
-				return nil, bizerrors.InvalidRulesetSelection(fmt.Sprintf("规则集 %d 不存在，请刷新后重新选择", id))
-			}
+	var missing []uint
+	for _, id := range ids {
+		if _, known := cache[id]; !known {
+			missing = append(missing, id)
 		}
 	}
-	for _, ruleset := range rulesets {
+	if len(missing) > 0 {
+		var found []model.GostRuleset
+		if err := db.Where("id IN ?", missing).Find(&found).Error; err != nil {
+			return nil, err
+		}
+		for _, id := range missing {
+			cache[id] = model.GostRuleset{}
+		}
+		for _, ruleset := range found {
+			cache[ruleset.ID] = ruleset
+		}
+	}
+	var selected []model.GostRuleset
+	for _, id := range ids {
+		ruleset := cache[id]
+		if ruleset.ID == 0 {
+			return nil, bizerrors.InvalidRulesetSelection(fmt.Sprintf("规则集 %d 不存在，请刷新后重新选择", id))
+		}
 		if ruleset.URL == "" || len(ruleset.Matchers) == 0 {
-			return nil, bizerrors.InvalidRulesetSelection(fmt.Sprintf("规则集 %d 尚无有效规则，请先配置订阅", ruleset.ID))
+			return nil, bizerrors.InvalidRulesetSelection(fmt.Sprintf("规则集 %d 尚无有效规则，请先配置订阅", id))
 		}
+		selected = append(selected, ruleset)
 	}
-	return rulesets, nil
+	return selected, nil
 }
 
 func (s *GostRulesetService) download(ctx context.Context, source string) ([]string, error) {
@@ -321,14 +357,13 @@ func (s *GostRulesetService) Run(ctx context.Context) {
 
 func (s *GostRulesetService) refresh(ctx context.Context) {
 	var rulesets []model.GostRuleset
-	if err := s.db.WithContext(ctx).Where("url <> ?", "").Find(&rulesets).Error; err != nil {
+	if err := s.db.WithContext(ctx).Select("id", "url").Where("url <> ?", "").Find(&rulesets).Error; err != nil {
 		return
 	}
-	for i := range rulesets {
+	for _, cfg := range rulesets {
 		if ctx.Err() != nil {
 			return
 		}
-		cfg := &rulesets[i]
 		matchers, err := s.download(ctx, cfg.URL)
 		if err != nil {
 			logger.Warnf("刷新 Gost 规则集 %d 失败: %v", cfg.ID, err)
@@ -337,7 +372,7 @@ func (s *GostRulesetService) refresh(ctx context.Context) {
 		// A refresh may finish after the administrator has saved another source.
 		now := time.Now()
 		cfg.Matchers, cfg.UpdatedAt = matchers, &now
-		if err := s.db.WithContext(ctx).Model(cfg).Where("url = ?", cfg.URL).Select("Matchers", "UpdatedAt").Updates(cfg).Error; err != nil {
+		if err := s.db.WithContext(ctx).Model(&cfg).Where("url = ?", cfg.URL).Select("Matchers", "UpdatedAt").Updates(cfg).Error; err != nil {
 			logger.Warnf("无法保存刷新的 Gost 规则集 %d: %v", cfg.ID, err)
 		}
 	}
@@ -415,6 +450,8 @@ func (s *GostRulesetService) syncPolicies(ctx context.Context, cfg *model.GostRu
 		logger.Warnf("读取透明入口规则集选择失败: %v", err)
 		return policies
 	}
+	subscriptions := rulesetCache{gostRulesetID: *cfg}
+	db := s.db.WithContext(ctx)
 	for i := range tunnels {
 		tunnel := &tunnels[i]
 		if tunnel.EntryRule == nil {
@@ -431,7 +468,7 @@ func (s *GostRulesetService) syncPolicies(ctx context.Context, cfg *model.GostRu
 			}
 			continue
 		}
-		matchers, err := s.SelectedMatchers(ctx, policy.RulesetIDs, policy.ManualDomains)
+		matchers, err := subscriptions.selectedMatchers(db, policy.RulesetIDs, policy.ManualDomains)
 		if err != nil || len(matchers) == 0 {
 			// Retain the last applied selection when a subscription is unavailable.
 			logger.Warnf("同步隧道 %d 的规则集选择失败: %v", tunnel.ID, err)

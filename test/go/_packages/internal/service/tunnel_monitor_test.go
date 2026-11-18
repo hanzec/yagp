@@ -3,6 +3,9 @@ package service
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -104,6 +107,66 @@ func TestTunnelMonitorRecordsRelayOutcomeAndIndependentTTL(t *testing.T) {
 			(got.LatencyMS != nil && *got.LatencyMS != 0) || (got.TTL != nil) != want.hasTTL || (got.TTL != nil && *got.TTL != ttl) {
 			t.Errorf("sample %d = %+v, want %+v", i, got, want)
 		}
+	}
+}
+
+func TestMonitorStartsNextTunnelWhenOneProbeFinishes(t *testing.T) {
+	db := newServiceTestDB(t)
+	requireServiceError(t, db.AutoMigrate(&model.TunnelProbeSample{}), nil)
+	started := make(chan string, tunnelProbeConcurrency+1)
+	release := make(chan struct{})
+	var active atomic.Int32
+	entry := startServiceTestNode(t, monitorTestNode{probe: func(req *nodegrpc.TunnelProbeRequest) (*nodegrpc.TunnelProbeReply, error) {
+		if n := active.Add(1); n > tunnelProbeConcurrency {
+			t.Errorf("started %d concurrent probes, limit %d", n, tunnelProbeConcurrency)
+		}
+		defer active.Add(-1)
+		started <- req.GetChainName()
+		<-release
+		return &nodegrpc.TunnelProbeReply{RoundTripMs: 1}, nil
+	}})
+	exit := startServiceTestNode(t, monitorTestNode{endpoint: &nodegrpc.TunnelProbeEndpoint{Address: "127.0.0.1:4001", Token: bytes.Repeat([]byte{1}, 32)}})
+	saveServiceFixtures(t, db, &entry, &exit)
+	for i := range tunnelProbeConcurrency + 1 {
+		name := fmt.Sprintf("tunnel-%d-chain", i+1)
+		saveServiceFixtures(t, db, &model.GostTunnel{
+			Name: name, ChainID: name, Status: model.TunnelStatusRunning, EntryNodeID: entry.ID, ExitNodeID: exit.ID,
+		})
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		NewTunnelService(db).sampleRunningTunnels(t.Context())
+	}()
+	finish := sync.OnceFunc(func() { close(release); <-done })
+	t.Cleanup(finish)
+
+	last := fmt.Sprintf("tunnel-%d-chain", tunnelProbeConcurrency+1)
+	for range tunnelProbeConcurrency {
+		select {
+		case name := <-started:
+			if name == last {
+				t.Fatal("extra probe started before a slot was available")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("initial probes did not all start")
+		}
+	}
+	release <- struct{}{}
+	select {
+	case name := <-started:
+		if name != last {
+			t.Fatalf("started %s, want %s", name, last)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("next tunnel still waiting after a probe slot became available")
+	}
+	finish()
+	var saved int64
+	requireServiceError(t, db.Model(&model.TunnelProbeSample{}).Where("status = ?", model.TunnelProbeSuccessful).Count(&saved).Error, nil)
+	if saved != tunnelProbeConcurrency+1 {
+		t.Fatalf("saved %d successful samples, want %d", saved, tunnelProbeConcurrency+1)
 	}
 }
 

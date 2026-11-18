@@ -11,7 +11,12 @@ export installed_unit_state=not-found
 
 systemctl() {
     printf '%s\n' "$*" >> "$service_requests"
-    if [[ "$1" == show ]]; then
+    if [[ "$1" == stop && ${2:-} == yagp-gost ]]; then
+        return "${stop_result:-0}"
+    elif [[ "$1" == is-active ]]; then
+        printf '%s\n' "${unit_state:-active}"
+        return 3
+    elif [[ "$1" == show ]]; then
         printf 'LoadState=%s\n' "$installed_unit_state"
     fi
 }
@@ -130,8 +135,20 @@ grep -Fx 'start yagp-daemon.service' "$service_requests"
 
 : > "$service_requests"
 sed -i "s|/etc/systemd/system/|$test_dir/systemd-units/|g" "$flat_installer"
+mkdir -p "$test_dir/systemd-units"
+touch "$test_dir/systemd-units"/{yagp-daemon,yagp-gost}.service
+export stop_result=1 unit_state=active
+if bash "$flat_installer" uninstall --node-id "$test_node"; then exit 1; fi
+[[ -e "$flat_root/yagp-daemon" && -e "$flat_root/gost" ]]
+[[ -e "$test_dir/systemd-units/yagp-daemon.service" && -e "$test_dir/systemd-units/yagp-gost.service" ]]
+if grep -q '^disable ' "$service_requests"; then
+    printf 'An unconfirmed stop disabled a node service\n' >&2
+    exit 1
+fi
+export unit_state=inactive
 bash "$flat_installer" uninstall --node-id "$test_node"
-grep -Fx 'disable --now yagp-daemon yagp-gost' "$service_requests"
+grep -Fx 'disable yagp-daemon' "$service_requests"
+grep -Fx 'disable yagp-gost' "$service_requests"
 [[ ! -e "$flat_root/yagp-daemon" && ! -e "$flat_root/gost" && ! -e "$flat_root/.runtime-layout" ]]
 [[ -f "$flat_root/node.yaml" && -f "$flat_root/gost.yaml" && -f "$flat_root/panel-credentials.yaml" ]]
 : > "$service_requests"
@@ -151,6 +168,8 @@ cat > "$test_dir/openrc-bin/rc-service" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$service_requests"
+if [[ "$*" == "yagp-gost-$test_node stop" ]]; then exit "${openrc_stop_result:-0}"; fi
+if [[ "$*" == "yagp-gost-$test_node status" ]]; then exit "${openrc_status_result:-0}"; fi
 [[ "$*" != "yagp-daemon-$test_node start" || ! -e "$openrc_root/node.yaml" || "$fail_flat_start" == false ]]
 EOF
 chmod +x "$test_dir/openrc-bin/rc-service"
@@ -185,3 +204,10 @@ bash "$openrc_installer" reenroll --node-id "$test_node" --host panel.example.te
 grep -Fx "report_ca_file: $openrc_root/panel.crt" "$openrc_root/node.yaml"
 grep -Fx "certFile: $openrc_root/server.crt" "$openrc_root/gost.yaml"
 grep -Fx "directory=\"$openrc_root\"" "$openrc_units/yagp-gost-$test_node"
+
+export openrc_stop_result=1 openrc_status_result=0
+if bash "$openrc_installer" uninstall --node-id "$test_node"; then exit 1; fi
+[[ -e "$openrc_root/yagp-daemon" && -e "$openrc_units/yagp-daemon-$test_node" && -e "$openrc_units/yagp-gost-$test_node" ]]
+export openrc_status_result=3
+bash "$openrc_installer" uninstall --node-id "$test_node"
+[[ ! -e "$openrc_root/yagp-daemon" && ! -e "$openrc_units/yagp-daemon-$test_node" && ! -e "$openrc_units/yagp-gost-$test_node" ]]

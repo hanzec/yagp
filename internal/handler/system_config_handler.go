@@ -72,7 +72,7 @@ func (h *SystemConfigHandler) TestEmail(c *gin.Context) {
 		return
 	}
 
-	if err := h.systemConfigService.SendTestEmail(&req); err != nil {
+	if err := h.systemConfigService.SendTestEmail(c.Request.Context(), &req); err != nil {
 		response.Error(c, 500, 50001, "发送失败: "+err.Error())
 		return
 	}
@@ -98,7 +98,7 @@ func (h *SystemConfigHandler) TestBark(c *gin.Context) {
 
 // Backup 立即备份
 func (h *SystemConfigHandler) Backup(c *gin.Context) {
-	if err := h.backupService.CreateBackup(); err != nil {
+	if err := h.backupService.CreateBackup(c.Request.Context()); err != nil {
 		if err == errors.ErrBackupUnsupported {
 			response.HandleError(c, err)
 			return

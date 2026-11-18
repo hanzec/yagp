@@ -46,7 +46,8 @@ export function sendTestBark(data) {
 export function backupSystem() {
     return request({
         url: '/system/backup',
-        method: 'post'
+        method: 'post',
+        timeout: 0
     })
 }
 

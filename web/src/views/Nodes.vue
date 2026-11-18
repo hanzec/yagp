@@ -215,7 +215,7 @@
           />
         </el-tab-pane>
         <el-tab-pane label="流量校准" name="traffic" lazy>
-          <NodeTrafficCalibration :key="editingNode.id" :node="liveEditingNode" @saved="refreshCurrentView()" />
+          <NodeTrafficCalibration v-if="dialogVisible" :key="editingNode.id" :node="liveEditingNode" @saved="refreshCurrentView()" />
         </el-tab-pane>
         <el-tab-pane label="危险操作" name="danger" lazy>
           <section class="ops-panel node-settings-danger">
@@ -278,6 +278,7 @@ import { ref, reactive, computed, defineAsyncComponent, nextTick, onMounted, onB
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowRight, CopyDocument, Monitor, Plus, Search } from '@element-plus/icons-vue'
+import { useInventoryList } from '@/utils/inventory-list'
 import InventoryToolbar from '@/components/InventoryToolbar.vue'
 import MetricStrip from '@/components/MetricStrip.vue'
 import NodeDetails from '@/components/NodeDetails.vue'
@@ -319,17 +320,16 @@ const detailNode = ref(null)
 const detailLoading = ref(false)
 const detailError = ref(false)
 
-const nodeList = ref([])
-const loading = ref(true)
-const loadError = ref(false)
 const page = ref(1)
 const pageSize = ref(10)
-const total = ref(null)
 const searchKeyword = ref('')
 const searchStatus = ref('')
 const searchTag = ref('')
-const appliedTag = ref('')
-const filtered = computed(() => Boolean(searchKeyword.value.trim() || searchStatus.value || appliedTag.value))
+const appliedFilters = ref({ keyword: '', status: '', tag: '' })
+const { items: nodeList, total, loading, loadError, fetchData } = useInventoryList(() =>
+  getNodeList({ page: page.value, pageSize: pageSize.value, ...appliedFilters.value })
+)
+const filtered = computed(() => Boolean(appliedFilters.value.keyword.trim() || appliedFilters.value.status || appliedFilters.value.tag))
 const nodeMetrics = computed(() => [
   { label: '筛选结果', value: total.value, detail: '全部匹配节点', icon: Monitor },
   ...Object.entries(nodeStates).map(([status, state]) => ({
@@ -535,44 +535,24 @@ const copyInstallCommand = async () => {
   else ElMessage.warning('已选中安装命令，请使用系统复制功能。')
 }
 
-const fetchData = async (isSilent = false) => {
-  if (isSilent && (loading.value || loadError.value)) return
-  if (!isSilent) loading.value = true
-  try {
-    const res = await getNodeList({
-      page: page.value,
-      pageSize: pageSize.value,
-      keyword: searchKeyword.value,
-      status: searchStatus.value,
-      tag: appliedTag.value
-    })
-    nodeList.value = res.data.list || []
-    total.value = res.data.total || 0
-    loadError.value = false
-  } catch {
-    loadError.value = true
-  } finally {
-    if (!isSilent) loading.value = false
-  }
-}
-
+let latestDetailRequest = 0
 const fetchDetail = async (isSilent = false) => {
   if (isSilent && (detailLoading.value || detailError.value)) return
-  const id = detailId.value
+  const request = ++latestDetailRequest
   detailLoading.value = true
   try {
-    const res = await getNode(id)
-    if (detailId.value === id) {
+    const res = await getNode(detailId.value)
+    if (request === latestDetailRequest) {
       detailNode.value = res.data
       detailError.value = false
     }
   } catch (error) {
-    if (detailId.value === id) {
+    if (request === latestDetailRequest) {
       if (error.response?.status === 404) detailNode.value = null
       detailError.value = true
     }
   } finally {
-    if (detailId.value === id) detailLoading.value = false
+    if (request === latestDetailRequest) detailLoading.value = false
   }
 }
 
@@ -588,7 +568,7 @@ watch([installDialogVisible, () => installNode.value?.status], ([visible, status
 })
 
 const handleSearch = () => {
-  appliedTag.value = searchTag.value
+  appliedFilters.value = { keyword: searchKeyword.value, status: searchStatus.value, tag: searchTag.value }
   page.value = 1
   fetchData()
 }
@@ -731,6 +711,7 @@ watch(detailId, async (id, previous) => {
     upgradeNode.value = null
   }
   detailNode.value = nodeList.value.find(node => node.id === id) || null
+  ++latestDetailRequest
   detailLoading.value = detailError.value = false
   refreshCurrentView()
   if (previous === undefined) return
@@ -751,7 +732,9 @@ watch([() => detailNode.value?.id, () => route.hash], ([id, hash]) => {
 
 let refreshTimer
 onMounted(() => {
-  refreshTimer = setInterval(() => refreshCurrentView(true), 5000)
+  refreshTimer = setInterval(() => {
+    if (!document.hidden) refreshCurrentView(true)
+  }, 5000)
 })
 onBeforeUnmount(() => {
   clearInterval(refreshTimer)

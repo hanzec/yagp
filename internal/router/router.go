@@ -89,6 +89,7 @@ func (r *Router) Setup(engine *gin.Engine) {
 
 		// 节点管理
 		authRoutes.GET("/nodes", nodeHandler.List)
+		authRoutes.GET("/nodes/options", nodeHandler.RoutingOptions)
 		authRoutes.GET("/nodes/:id", nodeHandler.GetByID)
 		authRoutes.POST("/nodes", nodeHandler.Create)
 		authRoutes.POST("/nodes/:id/registration-token", nodeHandler.IssueRegistrationToken)

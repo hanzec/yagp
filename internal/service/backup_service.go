@@ -1,10 +1,11 @@
 package service
 
 import (
-	"fmt"
+	"context"
 	"os"
 	"path/filepath"
-	"sort"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,63 +17,47 @@ import (
 	"gorm.io/gorm"
 )
 
+const backupTimeLayout = "20060102_150405"
+
+// Older snapshots have whole-second timestamps. CreateTemp adds the decimal
+// suffix on current snapshots to avoid collisions at the same nanosecond.
+var backupNamePattern = regexp.MustCompile(`^gost_panel_([0-9]{8}_[0-9]{6})(?:\.[0-9]{9}-[0-9]+)?\.db$`)
+
 // BackupService 备份服务
 type BackupService struct {
-	db      *gorm.DB
-	sysRepo *repository.SystemConfigRepository
-
-	stopChan chan struct{}
+	db *gorm.DB
 }
 
-// NewBackupService 创建备份服务
 func NewBackupService(db *gorm.DB) *BackupService {
-	return &BackupService{
-		db:       db,
-		sysRepo:  repository.NewSystemConfigRepository(db),
-		stopChan: make(chan struct{}),
-	}
+	return &BackupService{db: db}
 }
 
 func (s *BackupService) Supported() bool {
 	return s.db.Dialector.Name() == "sqlite"
 }
 
-// Start 启动自动备份任务 (按小时检查)
-func (s *BackupService) Start() {
+// Run checks for today's snapshot at startup and once per hour until shutdown.
+func (s *BackupService) Run(ctx context.Context) {
 	if !s.Supported() {
 		return
 	}
-	go func() {
-		// 启动时先检查一次
-		s.processAutoBackup()
-
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				s.processAutoBackup()
-			case <-s.stopChan:
-				return
-			}
-		}
-	}()
 	logger.Info("自动备份服务已启动")
-}
-
-// Stop 停止自动备份任务
-func (s *BackupService) Stop() {
-	if !s.Supported() {
-		return
+	defer logger.Info("自动备份服务已停止")
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for ctx.Err() == nil {
+		s.processAutoBackup(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
-	close(s.stopChan)
-	logger.Info("自动备份服务已停止")
 }
 
 // processAutoBackup 执行自动备份逻辑
-func (s *BackupService) processAutoBackup() {
-	cfg, err := s.sysRepo.Get()
+func (s *BackupService) processAutoBackup(ctx context.Context) {
+	cfg, err := repository.NewSystemConfigRepository(s.db.WithContext(ctx)).Get()
 	if err != nil {
 		logger.Errorf("自动备份检查失败: 获取系统配置错误: %v", err)
 		return
@@ -89,34 +74,27 @@ func (s *BackupService) processAutoBackup() {
 		return
 	}
 
-	// 检查今天是否已经备份过
-	// 简单策略: 每天生成一个文件名含日期的文件
-	// 如果存在今天的文件，则跳过
-	today := time.Now().Format("20060102")
-	prefix := fmt.Sprintf("gost_panel_%s", today)
-
-	files, err := os.ReadDir(backupDir)
+	today := "gost_panel_" + time.Now().Format("20060102") + "_"
+	stems, err := publishedBackupStems(backupDir)
 	if err != nil {
 		logger.Errorf("自动备份失败: 读取目录错误: %v", err)
 		return
 	}
-
-	for _, file := range files {
-		if !file.IsDir() && strings.HasPrefix(file.Name(), prefix) && strings.HasSuffix(file.Name(), ".db") {
-			// 今天已备份
+	for _, stem := range stems {
+		if strings.HasPrefix(stem, today) {
 			return
 		}
 	}
 
 	// 执行备份
 	logger.Infof("开始执行自动备份...")
-	if err := s.CreateBackup(); err != nil {
+	if err := s.CreateBackup(ctx); err != nil && ctx.Err() == nil {
 		logger.Errorf("自动备份执行失败: %v", err)
 	}
 }
 
 // CreateBackup 创建备份
-func (s *BackupService) CreateBackup() error {
+func (s *BackupService) CreateBackup(ctx context.Context) error {
 	if !s.Supported() {
 		return errors.ErrBackupUnsupported
 	}
@@ -135,7 +113,7 @@ func (s *BackupService) CreateBackup() error {
 
 	// Keep incomplete snapshots out of retention and daily-backup checks. A unique
 	// temporary name also lets manual and scheduled backups run in the same second.
-	prefix := "gost_panel_" + time.Now().Format("20060102_150405.000000000")
+	prefix := "gost_panel_" + time.Now().Format(backupTimeLayout+".000000000")
 	temporary, err := os.CreateTemp(backupDir, "."+prefix+"-*.tmp")
 	if err != nil {
 		return errors.ErrBackupFailed
@@ -146,7 +124,11 @@ func (s *BackupService) CreateBackup() error {
 		return errors.ErrBackupFailed
 	}
 	// Copying the main database file would omit committed data still in its WAL.
-	if err := s.db.Exec("VACUUM INTO ?", temporaryPath).Error; err != nil {
+	err = s.db.WithContext(ctx).Exec("VACUUM INTO ?", temporaryPath).Error
+	if cancelErr := ctx.Err(); cancelErr != nil {
+		return cancelErr
+	}
+	if err != nil {
 		logger.Errorf("VACUUM INTO 备份失败: %v", err)
 		return errors.ErrBackupFailed
 	}
@@ -159,14 +141,42 @@ func (s *BackupService) CreateBackup() error {
 	logger.Infof("数据库备份成功: %s", targetPath)
 
 	// 清理旧备份
-	go s.cleanOldBackups(backupDir)
+	s.cleanOldBackups(ctx, backupDir)
 
 	return nil
 }
 
+// A stem sorts chronologically even when legacy and fractional timestamps share a second.
+// The .db extension would put a legacy snapshot after its newer fractional peers.
+func publishedBackupStems(backupDir string) ([]string, error) {
+	dir, err := os.Open(backupDir)
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	var stems []string
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		parts := backupNamePattern.FindStringSubmatch(entry.Name())
+		if parts == nil {
+			continue
+		}
+		if _, err := time.Parse(backupTimeLayout, parts[1]); err == nil {
+			stems = append(stems, strings.TrimSuffix(entry.Name(), ".db"))
+		}
+	}
+	return stems, nil
+}
+
 // cleanOldBackups 清理旧备份
-func (s *BackupService) cleanOldBackups(backupDir string) {
-	cfg, err := s.sysRepo.Get()
+func (s *BackupService) cleanOldBackups(ctx context.Context, backupDir string) {
+	cfg, err := repository.NewSystemConfigRepository(s.db.WithContext(ctx)).Get()
 	if err != nil {
 		logger.Errorf("获取系统配置失败: %v", err)
 		return
@@ -177,33 +187,17 @@ func (s *BackupService) cleanOldBackups(backupDir string) {
 		return
 	}
 
-	// 获取所有备份文件
-	files, err := os.ReadDir(backupDir)
+	stems, err := publishedBackupStems(backupDir)
 	if err != nil {
 		logger.Errorf("读取备份目录失败: %v", err)
 		return
 	}
-
-	var backupFiles []os.DirEntry
-	for _, file := range files {
-		if !file.IsDir() && strings.HasPrefix(file.Name(), "gost_panel_") && strings.HasSuffix(file.Name(), ".db") {
-			backupFiles = append(backupFiles, file)
-		}
-	}
-
-	// 如果备份数量未超过保留数量，直接返回
-	if len(backupFiles) <= retentionCount {
+	if len(stems) <= retentionCount {
 		return
 	}
-
-	// 按文件名中的创建时间排序，不使用可能被复制或恢复操作改变的文件修改时间。
-	sort.Slice(backupFiles, func(i, j int) bool {
-		return backupFiles[i].Name() > backupFiles[j].Name() // 降序，新的在前
-	})
-
-	// 删除多余的备份
-	for i := retentionCount; i < len(backupFiles); i++ {
-		filePath := filepath.Join(backupDir, backupFiles[i].Name())
+	slices.Sort(stems)
+	for _, stem := range stems[:len(stems)-retentionCount] {
+		filePath := filepath.Join(backupDir, stem+".db")
 		if err := os.Remove(filePath); err != nil {
 			logger.Errorf("删除旧备份失败 %s: %v", filePath, err)
 		} else {

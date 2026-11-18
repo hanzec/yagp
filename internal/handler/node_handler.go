@@ -180,6 +180,22 @@ func (h *NodeHandler) List(c *gin.Context) {
 	response.SuccessPage(c, items, total, req.Page, req.PageSize)
 }
 
+func (h *NodeHandler) RoutingOptions(c *gin.Context) {
+	var query struct {
+		Before uint32 `form:"before"`
+	}
+	if err := c.ShouldBindQuery(&query); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	options, next, err := h.nodeService.RoutingOptions(c.Request.Context(), uint(query.Before))
+	if err != nil {
+		response.HandleError(c, err)
+		return
+	}
+	response.Success(c, gin.H{"list": options, "next": next})
+}
+
 // GetConfig 获取节点配置
 func (h *NodeHandler) GetConfig(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)

@@ -225,6 +225,63 @@ esac
 	}
 }
 
+func TestInstallDaemonUpgradeChecksRunningVersionWhenDiskIsCurrent(t *testing.T) {
+	const target = "0.1.73-def1234"
+	dir := t.TempDir()
+	writeUpgradeFixture(t, filepath.Join(dir, "yagp-daemon"), "#!/bin/sh\necho "+target+"\n")
+	calls := filepath.Join(dir, "restarts")
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv("YAGP_UPGRADE_TEST_CALLS", calls)
+	writeUpgradeFixture(t, filepath.Join(dir, "systemctl"), `#!/bin/sh
+echo "$@" >> "$YAGP_UPGRADE_TEST_CALLS"
+if [ "$YAGP_UPGRADE_TEST_FAILURE" = yes ]; then exit 1; fi
+`)
+	listener := listenLocal(t)
+	server := grpc.NewServer()
+	t.Cleanup(server.Stop)
+	ready := health.NewServer()
+	ready.SetServingStatus(daemonHealthService+"0.1.72-abc1234", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(server, ready)
+	go func() { _ = server.Serve(listener) }()
+	cfg := Config{NodeID: 42, ObserverListen: listener.Addr().String()}
+	install := func() error {
+		return installUpgrade(t.Context(), cfg, dir, "daemon", target, func(io.Writer) error {
+			t.Fatal("downloaded an executable already installed on disk")
+			return nil
+		})
+	}
+	t.Setenv("YAGP_UPGRADE_TEST_FAILURE", "yes")
+	if err := install(); err == nil {
+		t.Fatal("reported success while the old daemon was serving and its restart failed")
+	}
+	if err := os.Remove(calls); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("YAGP_UPGRADE_TEST_FAILURE", "")
+	go func() {
+		for {
+			if _, err := os.Stat(calls); err == nil {
+				ready.SetServingStatus(daemonHealthService+target, healthpb.HealthCheckResponse_SERVING)
+				return
+			}
+			select {
+			case <-t.Context().Done():
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}()
+	if err := install(); err != nil {
+		t.Fatal(err)
+	}
+	if err := install(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(calls); err != nil || string(data) != "restart yagp-daemon-42.service\n" {
+		t.Fatalf("service operations = %q, %v; expected one restart of the stale process", data, err)
+	}
+}
+
 func TestInstalledDaemonUpgradePreservesEnrollment(t *testing.T) {
 	if os.Getenv("YAGP_TEST_UPGRADE") != "1" {
 		t.Skip("set YAGP_TEST_UPGRADE=1 in a disposable Linux container with /run/systemd/system")

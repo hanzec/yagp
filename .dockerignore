@@ -1,4 +1,5 @@
 config/*
+backups/
 !config/config.yaml
 internal/router/dist/
 web/node_modules/

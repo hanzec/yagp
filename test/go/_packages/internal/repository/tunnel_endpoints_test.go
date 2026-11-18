@@ -1,12 +1,9 @@
 package repository
 
 import (
-	"errors"
 	"testing"
 
 	"yagp/internal/model"
-
-	"gorm.io/gorm"
 )
 
 func TestTunnelRepositoryEndpointAssociations(t *testing.T) {
@@ -44,10 +41,10 @@ func TestTunnelRepositoryEndpointAssociations(t *testing.T) {
 	}
 
 	for _, ruleID := range []uint{entry.ID, exit.ID} {
-		got, err := tunnels.FindByEntranceID(ruleID)
+		got, err := rules.EntranceBindings([]uint{ruleID})
 		mustPersist(t, err)
-		if got.ID != linked.ID {
-			t.Fatalf("entrance %d resolved to tunnel %d, want %d", ruleID, got.ID, linked.ID)
+		if len(got) != 1 || got[0].ID != linked.ID {
+			t.Fatalf("entrance %d bindings = %+v, want tunnel %d", ruleID, got, linked.ID)
 		}
 	}
 	assertAssociations := func(got model.GostTunnel) {
@@ -81,10 +78,5 @@ func TestTunnelRepositoryEndpointAssociations(t *testing.T) {
 	mustPersist(t, err)
 	if len(bindings) != 0 {
 		t.Fatalf("bulk lookup retained deleted binding: %+v", bindings)
-	}
-	for _, ruleID := range []uint{entry.ID, exit.ID} {
-		if _, err := tunnels.FindByEntranceID(ruleID); !errors.Is(err, gorm.ErrRecordNotFound) {
-			t.Fatalf("deleted tunnel still reserves entrance %d: %v", ruleID, err)
-		}
 	}
 }

@@ -61,54 +61,68 @@ function download_panel_archive() {
     curl -fL "$url" -o "$target"
 }
 
+# Older releases can update the hostless listener in the original block-style template.
+function legacy_panel_port() {
+    awk -v port="$2" '
+        /^[^[:space:]#]/ { server = $0 == "server:" }
+        server && /^  port: ":[0-9]+"$/ { $0 = "  port: \":" port "\""; matches++ }
+        { print }
+        END { if (matches != 1) exit 1 }
+    ' "$1"
+}
+
 function install_panel() {
     check_memory
     TEMP_DIR=$(mktemp -d)
+    trap 'rm -rf -- "$TEMP_DIR"' EXIT
     TAR_FILE="$TEMP_DIR/$APP_NAME.tar.gz"
 
     if ! download_panel_archive "$APP_NAME-$PLATFORM.tar.gz" "$TAR_FILE"; then
-        rm -rf "$TEMP_DIR"
         error "无法下载 $APP_NAME-$PLATFORM.tar.gz，请确认 $REPO 已发布 yagp 安装包。"
     fi
     
     info "正在解压..."
     if ! tar -xzf "$TAR_FILE" -C "$TEMP_DIR"; then
-        rm -rf "$TEMP_DIR"
         error "无法解压发布包"
     fi
     EXTRACTED_BIN="$TEMP_DIR/$APP_NAME-$PLATFORM"
     if [ ! -f "$EXTRACTED_BIN" ] || [ ! -f "$TEMP_DIR/LICENSE" ]; then
-        rm -rf "$TEMP_DIR"
         error "发布包缺少二进制文件或许可证"
     fi
 
     # 处理配置目录
     mkdir -p "$CONFIG_DIR/config" "$CONFIG_DIR/data"
-    cp "$TEMP_DIR/LICENSE" "$CONFIG_DIR/LICENSE"
+    local config="$CONFIG_DIR/config/config.yaml" address= staged
     chmod +x "$EXTRACTED_BIN"
-    mv "$EXTRACTED_BIN" "$INSTALL_DIR/$APP_NAME"
-
-    if [ -f "$TEMP_DIR/config/config.yaml" ]; then
-        if [ ! -f "$CONFIG_DIR/config/config.yaml" ]; then
-            cp "$TEMP_DIR/config/config.yaml" "$CONFIG_DIR/config/config.yaml"
-            info "已从发布包初始化配置文件: $CONFIG_DIR/config/config.yaml"
-        else
-            warn "配置文件已存在，跳过覆盖"
-        fi
-        
-        # 替换端口 (如果有指定)
-        local CUSTOM_PORT="$1"
-        if [ -n "$CUSTOM_PORT" ]; then
-            info "正在根据参数修改端口为: $CUSTOM_PORT"
-            # 替换 config.yaml 中的端口配置
-            if [ -f "$CONFIG_DIR/config/config.yaml" ]; then
-                sed -i "s/port: \":.*\"/port: \":$CUSTOM_PORT\"/g" "$CONFIG_DIR/config/config.yaml"
-            fi
-        fi
+    if [[ ! -f "$config" ]]; then
+        cp "$TEMP_DIR/config/config.yaml" "$config"
     fi
-
-    # 清理临时目录
-    rm -rf "$TEMP_DIR"
+    local supports_port=false
+    if "$EXTRACTED_BIN" -help 2>&1 | grep -q -- '-install-port'; then
+        supports_port=true
+    fi
+    if [[ -n $1 ]]; then
+        config=$(readlink -f "$config")
+        staged=$(mktemp "${config}.XXXXXX")
+        cp -p "$config" "$staged"
+        local port=$((10#$1))
+        if [[ $supports_port == true ]]; then
+            if "$EXTRACTED_BIN" -c "$config" -install-port "$port" > "$staged"; then
+                address=$("$EXTRACTED_BIN" -c "$staged" -install-port current) || address=
+            fi
+        elif legacy_panel_port "$config" "$port" > "$staged"; then
+            address=":$port"
+        fi
+        if [[ ${address##*:} != "$port" ]]; then
+            rm -f "$staged"
+            error "修改监听端口失败，原配置已保留；使用旧版本时请检查 server.port 的格式"
+        fi
+        mv -f "$staged" "$config"
+    elif [[ $supports_port == true ]]; then
+        address=$("$EXTRACTED_BIN" -c "$config" -install-port current)
+    fi
+    cp "$TEMP_DIR/LICENSE" "$CONFIG_DIR/LICENSE"
+    mv "$EXTRACTED_BIN" "$INSTALL_DIR/$APP_NAME"
 
     # Create systemd service
     info "创建系统服务..."
@@ -136,32 +150,39 @@ EOF
     info "yagp 安装完成并已启动！"
     systemctl status "$SERVICE_NAME" --no-pager
     
-    # 获取最终端口
-    FINAL_PORT=$(grep "port:" "$CONFIG_DIR/config/config.yaml" | awk -F'"' '{print $2}' | sed 's/://')
-    [ -z "$FINAL_PORT" ] && FINAL_PORT="39100"
-    
-    # 获取本机外网IP
-    PUBLIC_IP=$(curl -s https://api.ipify.org || curl -s ifconfig.me || echo "127.0.0.1")
-
-    # 获取本机内网IP
-    INTERNAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-    if [ -z "$INTERNAL_IP" ]; then
-        INTERNAL_IP=$(ip -o route get to 8.8.8.8 2>/dev/null | sed -n 's/.*src \([0-9.]\+\).*/\1/p')
-    fi
-    [ -z "$INTERNAL_IP" ] && INTERNAL_IP="127.0.0.1"
-    
     echo -e "\n${GREEN}==============================================${NC}"
     echo -e "   yagp 安装成功！"
-    echo -e "   外网访问: http://${PUBLIC_IP}:${FINAL_PORT}"
-    echo -e "   内网访问: http://${INTERNAL_IP}:${FINAL_PORT}"
+    case "$address" in
+        '') echo "   监听地址见 $config 中的 server.port" ;;
+        :*|'[::]:'*|0.0.0.0:*)
+            local port=${address##*:} ip internal_ip
+            internal_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+            if [[ -z $internal_ip ]]; then
+                internal_ip=$(ip -o route get to 8.8.8.8 2>/dev/null | sed -n 's/.*src \([0-9.]\+\).*/\1/p')
+            fi
+            for ip in "$(curl -s https://api.ipify.org || curl -s ifconfig.me)" "${internal_ip:-127.0.0.1}"; do
+                [[ -n $ip ]] || continue
+                [[ $ip != *:* ]] || ip="[$ip]"
+                echo "   访问地址: http://$ip:$port"
+            done
+            ;;
+        *) echo "   访问地址: http://$address" ;;
+    esac
     echo -e "   管理员登录由 Authentik 正向认证代理处理"
     echo -e "${GREEN}==============================================${NC}\n"
 }
 
 function uninstall_panel() {
     info "正在卸载 yagp..."
-    systemctl stop "$SERVICE_NAME" || true
-    systemctl disable "$SERVICE_NAME" || true
+    if ! systemctl stop "$SERVICE_NAME"; then
+        case $(systemctl is-active "$SERVICE_NAME" || true) in
+            inactive|failed) ;;
+            *) error "无法确认 $SERVICE_NAME 已停止，保留安装文件" ;;
+        esac
+    fi
+    if [[ -f "$SERVICE_FILE" ]]; then
+        systemctl disable "$SERVICE_NAME"
+    fi
     rm -f "$SERVICE_FILE"
     systemctl daemon-reload
     rm -f "$INSTALL_DIR/$APP_NAME"
@@ -193,8 +214,10 @@ if [ -n "$1" ]; then
         exit 1
     fi
 fi
-if [ -n "$PORT" ] && ! [[ "$PORT" =~ ^[0-9]+$ ]]; then
-    error "无效的端口号: $PORT"
+if [[ -n "$PORT" ]]; then
+    if ! [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
+        error "端口号必须在 1 到 65535 之间"
+    fi
 fi
 
 case $ACTION in

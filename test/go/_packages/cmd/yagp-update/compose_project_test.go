@@ -74,6 +74,23 @@ func TestLoadComposeProjectReadsRootControlledInstallation(t *testing.T) {
 		t.Fatalf("override changed while loading project: %q, %v", got, err)
 	}
 
+	t.Run("checks the backup bind when present", func(t *testing.T) {
+		backups := filepath.Join(projectDir, "backups")
+		if err := os.Mkdir(backups, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Remove(backups) })
+		if _, err := loadComposeProject(stateDir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(backups, 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadComposeProject(stateDir); err == nil || !strings.Contains(err.Error(), backups) {
+			t.Fatalf("writable backup directory returned %v", err)
+		}
+	})
+
 	t.Run("rejects a writable state file", func(t *testing.T) {
 		marker := filepath.Join(stateDir, "project-dir")
 		if err := os.Chmod(marker, 0o620); err != nil {

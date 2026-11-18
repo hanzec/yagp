@@ -127,16 +127,18 @@ func TestSelectedEntranceReportsNodeConfigurationFailures(t *testing.T) {
 	}
 
 	setFailures(map[string]int{"DELETE /config/services/" + rule.ServiceID: http.StatusServiceUnavailable})
-	if err := rules.stopSelectedEntrance(&rule); err == nil || remote.service(rule.ServiceID).Name == "" {
+	if err := rules.Stop(rule.ID, testAdmin, testIP, testAgent); err == nil || remote.service(rule.ServiceID).Name == "" {
 		t.Fatalf("expected failed service removal to be reported, got %v", err)
 	}
 	setFailures(map[string]int{"POST /config?format=yaml": http.StatusServiceUnavailable})
-	if err := rules.stopSelectedEntrance(&rule); err == nil || remote.service(rule.ServiceID).Name != "" {
+	if err := rules.Stop(rule.ID, testAdmin, testIP, testAgent); err == nil || remote.service(rule.ServiceID).Name != "" {
 		t.Fatalf("expected failed config save after removing service, got %v", err)
 	}
 	setFailures(nil)
-	requireServiceError(t, rules.stopSelectedEntrance(&rule), nil)
-	if rule.Status != model.RuleStatusStopped {
-		t.Fatalf("stopped entrance = %+v", rule)
+	requireServiceError(t, rules.Stop(rule.ID, testAdmin, testIP, testAgent), nil)
+	stored, err = rules.GetByID(rule.ID)
+	requireServiceError(t, err, nil)
+	if stored.Status != model.RuleStatusStopped || stored.ServiceID != "" {
+		t.Fatalf("stopped entrance = %+v", stored)
 	}
 }

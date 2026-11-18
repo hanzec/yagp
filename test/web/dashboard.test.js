@@ -1,5 +1,4 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import ElementPlus from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { getLogList } from '@/api/log'
@@ -39,7 +38,7 @@ async function mountOverview() {
     routes: ['/', '/nodes', '/logs'].map((path) => ({ path, component: placeholder }))
   })
   await router.push('/')
-  wrapper = mount(Dashboard, { global: { plugins: [ElementPlus, router] } })
+  wrapper = mount(Dashboard, { global: { plugins: [router] } })
   return wrapper
 }
 
@@ -57,9 +56,26 @@ afterEach(() => {
   wrapper?.unmount()
   wrapper = undefined
   vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
 describe('Dashboard overview', () => {
+  it('pauses statistics and audit polling while hidden and resumes when visible', async () => {
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    getDashboardStats.mockResolvedValue({ data: resources })
+    getLogList.mockResolvedValue({ data: { list: logs } })
+    await mountOverview()
+    await flushPromises()
+    hidden.mockReturnValue(true)
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(getDashboardStats).toHaveBeenCalledTimes(1)
+    expect(getLogList).toHaveBeenCalledTimes(1)
+    hidden.mockReturnValue(false)
+    await pollOverview()
+    expect(getDashboardStats).toHaveBeenCalledTimes(2)
+    expect(getLogList).toHaveBeenCalledTimes(2)
+  })
+
   it('shows pending resources and displays distribution, runtime and the recent audit log', async () => {
     let resolveStats
     let resolveLogs

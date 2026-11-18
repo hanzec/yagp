@@ -2,8 +2,6 @@ package service
 
 import (
 	"context"
-	"slices"
-	"sync"
 	"time"
 
 	"yagp/internal/model"
@@ -113,18 +111,26 @@ func (s *TunnelService) sampleRunningTunnels(ctx context.Context) {
 		}
 		return
 	}
-	for batch := range slices.Chunk(tunnels, tunnelProbeConcurrency) {
-		if ctx.Err() != nil {
+	results := make(chan model.TunnelProbeSample, tunnelProbeConcurrency)
+	samples := make([]model.TunnelProbeSample, 0, tunnelProbeConcurrency)
+	running := 0
+	for {
+		for running < tunnelProbeConcurrency && len(tunnels) > 0 && ctx.Err() == nil {
+			tunnel := &tunnels[0]
+			tunnels = tunnels[1:]
+			running++
+			go func() { results <- sampleTunnel(ctx, tunnel) }()
+		}
+		if running == 0 {
 			return
 		}
-		samples := make([]model.TunnelProbeSample, len(batch))
-		var probes sync.WaitGroup
-		for i := range batch {
-			probes.Go(func() { samples[i] = sampleTunnel(ctx, &batch[i]) })
-		}
-		probes.Wait()
-		if err := s.tunnelRepo.SaveProbeSamples(ctx, samples); err != nil && ctx.Err() == nil {
-			logger.Warnf("保存隧道监测记录失败: %v", err)
+		samples = append(samples, <-results)
+		running--
+		if len(samples) == tunnelProbeConcurrency || running == 0 {
+			if err := s.tunnelRepo.SaveProbeSamples(ctx, samples); err != nil && ctx.Err() == nil {
+				logger.Warnf("保存隧道监测记录失败: %v", err)
+			}
+			samples = samples[:0]
 		}
 	}
 }

@@ -287,3 +287,37 @@ func TestEndpointTunnelRetriesEntranceCleanupAfterFailedFirstSave(t *testing.T) 
 		})
 	}
 }
+
+func TestEndpointTunnelWaitsForStandaloneRuleCleanup(t *testing.T) {
+	db := newServiceTestDB(t)
+	loadServiceConfig(t, "report:\n  listen: 127.0.0.1:39001\n")
+	entryRemote, exitRemote := &lifecycleNode{t: t}, &lifecycleNode{t: t}
+	entry, exit := startServiceTestNode(t, entryRemote), startServiceTestNode(t, exitRemote)
+	exit.Name = "exit"
+	saveServiceFixtures(t, db, &entry, &exit)
+	rules, tunnels := NewRuleService(db), NewTunnelService(db)
+	source := model.GostRule{Name: "standalone", NodeID: &entry.ID, ListenPort: 8100, Targets: []string{"origin.test:80"}}
+	destination := model.GostRule{Name: "exit", NodeID: &exit.ID, ListenPort: 8200}
+	saveServiceFixtures(t, db, &source, &destination)
+	name := entranceServiceName(source.ID)
+	entryRemote.rejectCommand("POST /config?format=yaml", http.StatusServiceUnavailable)
+	entryRemote.rejectCommand("DELETE /config/services/"+name, http.StatusServiceUnavailable)
+	if err := rules.Start(source.ID, testAdmin, testIP, testAgent); err == nil {
+		t.Fatal("expected standalone start and cleanup to fail")
+	}
+	entryRemote.rejectCommand("POST /config?format=yaml", 0)
+	entryRemote.rejectCommand("DELETE /config/services/"+name, 0)
+	req := &dto.CreateTunnelReq{Name: "selected", EntryRuleID: source.ID, ExitRuleID: destination.ID}
+	_, err := tunnels.Create(req, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, bizerrors.ErrTunnelEndpointInUse)
+	service := entryRemote.service(name)
+	if service.Handler == nil || service.Handler.Chain != "" {
+		t.Fatalf("existing listener changed: %+v", service)
+	}
+	requireServiceError(t, rules.Stop(source.ID, testAdmin, testIP, testAgent), nil)
+	tunnel, err := tunnels.Create(req, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
+	if got := entryRemote.service(name); got.Handler == nil || got.Handler.Chain != tunnel.ChainID {
+		t.Fatalf("expected listener to use tunnel %s, got %+v", tunnel.ChainID, got)
+	}
+}

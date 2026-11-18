@@ -1,5 +1,5 @@
 import { enableAutoUnmount, flushPromises, mount, RouterLinkStub } from '@vue/test-utils'
-import ElementPlus, { ElDropdown, ElFormItem, ElMessage, ElMessageBox, ElPagination, ElSelect } from 'element-plus'
+import { ElDropdown, ElFormItem, ElMessage, ElMessageBox, ElPagination, ElSelect } from 'element-plus'
 import { defineComponent, h, nextTick } from 'vue'
 import { afterEach, beforeEach, expect, vi } from 'vitest'
 
@@ -38,7 +38,7 @@ export const result = (list = [], total = list.length) => ({ data: { list, total
 export function mountInventory(view, plugins = []) {
   return mount(view, {
     attachTo: document.body,
-    global: { plugins: [ElementPlus, ...plugins], stubs: { ElDialog: Dialog, ElPagination: Pagination, RouterLink: RouterLinkStub } }
+    global: { plugins, stubs: { ElDialog: Dialog, ElPagination: Pagination, RouterLink: RouterLinkStub } }
   })
 }
 

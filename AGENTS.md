@@ -16,7 +16,7 @@ yagp 基于原作者 **code-gopher** 开发的 Gost Panel，沿用 MIT 许可证
 
 - `cmd/server` 是面板入口，`cmd/yagp-daemon` 是节点守护程序入口，`internal` 包含 API、业务逻辑和持久化代码。`web` 包含 Vue 前端。
 - 项目名使用 `yagp`，转发节点继续使用 Gost 名称。涉及构建产物命名时，同步核对 Makefile、Dockerfile、发布工作流和面板安装脚本。
-- 使用 `go.mod` 和 `.node-version` 指定的 Go 1.27.3 与 Node.js 26.13.0 LTS。前端产物输出到 `internal/router/dist`，由 Go 编译时嵌入。验证后端前先构建前端。
+- 面板、节点和部署工具仅支持 Linux 运行。使用 `go.mod` 和 `.node-version` 指定的 Go 1.27.4 与 Node.js 26.13.1 LTS。前端产物输出到 `internal/router/dist`，由 Go 编译时嵌入。验证后端前先构建前端。
 
 ```bash
 npm --prefix web ci
@@ -24,7 +24,7 @@ npm --prefix web run build
 go run ./test/go/_runner
 ```
 
-所有测试及其数据放在仓库根目录的 `test/`。Go 同包测试放在 `test/go/_packages/` 下与原包对应的路径，测试入口使用 Go overlay 将它们映射回所属包。前端测试放在 `test/web/`，用 `npm --prefix web test` 运行。
+所有测试及其数据放在仓库根目录的 `test/`。Go 同包测试放在 `test/go/_packages/` 下与原包对应的路径，测试入口使用 Go overlay 将它们映射回所属包，必须在 Linux 或 Linux 容器中运行；非 Linux 环境会直接报错。构建流程和测试入口的回归检查分别运行 `bash test/scripts/build_test.sh`、`bash test/scripts/go_runner_test.sh`。前端测试放在 `test/web/`，用 `npm --prefix web test` 运行。
 
 使用 `make build` 从源码构建完整面板，或用 `docker compose up -d` 启动已发布的镜像。
 

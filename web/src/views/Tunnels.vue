@@ -311,6 +311,8 @@
 import { computed, nextTick, ref, reactive, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { hasTunnelBindings, needsStop } from '@/utils/rule-state'
+import { useInventoryList } from '@/utils/inventory-list'
 import InventoryToolbar from '@/components/InventoryToolbar.vue'
 import PanelDialog from '@/components/PanelDialog.vue'
 import TunnelTestDialog from '@/components/TunnelTestDialog.vue'
@@ -342,16 +344,16 @@ const nodeOptionsError = ref(false)
 const entryList = ref([])
 const entryOptionsLoading = ref(false)
 const entryOptionsError = ref(false)
-const tunnelList = ref([])
-const loading = ref(true)
-const loadError = ref(false)
 const page = ref(1)
 const pageSize = ref(10)
-const total = ref(null)
 const searchKeyword = ref('')
 const searchNodeId = ref('')
 const searchStatus = ref('')
-const filtered = computed(() => Boolean(searchKeyword.value.trim() || searchNodeId.value || searchStatus.value))
+const appliedFilters = ref({ keyword: '', node_id: '', status: '' })
+const { items: tunnelList, total, loading, loadError, fetchData } = useInventoryList(() =>
+  getTunnelList({ page: page.value, pageSize: pageSize.value, ...appliedFilters.value })
+)
+const filtered = computed(() => Boolean(appliedFilters.value.keyword.trim() || appliedFilters.value.node_id || appliedFilters.value.status))
 const tunnelMetrics = computed(() => [
   { label: '筛选结果', value: total.value, detail: '全部匹配隧道', icon: Connection },
   ...Object.entries(tunnelStates).map(([status, state]) => ({
@@ -415,11 +417,10 @@ const relayConnectEndpoints = computed(() => Object.fromEntries(tunnelList.value
   tunnel.id, mappedConnectEndpoint(tunnel.exit_node, tunnel.exit_rule?.listen_ip, tunnel.relay_port)
 ])))
 const availableEntrances = computed(() => entryList.value.filter(rule => {
-  const linked = rule.linked_tunnels
-  if (linked?.length || rule.linked_tunnel_id) {
-    return !!rule.role || rule.linked_tunnel_id === editId.value || linked?.some(tunnel => tunnel.id === editId.value)
+  if (hasTunnelBindings(rule)) {
+    return !!rule.role || rule.linked_tunnel_id === editId.value || rule.linked_tunnels?.some(tunnel => tunnel.id === editId.value)
   }
-  return !rule.tunnel_id && rule.status !== 'running'
+  return !rule.tunnel_id && !needsStop(rule)
 }))
 const sourceOptions = computed(() => availableEntrances.value.filter(rule => !rule.role || rule.role === 'entry'))
 const destinationOptions = computed(() => availableEntrances.value.filter(rule =>
@@ -512,28 +513,8 @@ const fetchNodes = async () => {
   }
 }
 
-const fetchData = async (isSilent = false) => {
-  if (isSilent && (loading.value || loadError.value)) return
-  if (!isSilent) loading.value = true
-  try {
-    const res = await getTunnelList({
-      page: page.value,
-      pageSize: pageSize.value,
-      node_id: searchNodeId.value,
-      status: searchStatus.value,
-      keyword: searchKeyword.value
-    })
-    tunnelList.value = res.data.list || []
-    total.value = res.data.total || 0
-    loadError.value = false
-  } catch {
-    loadError.value = true
-  } finally {
-    if (!isSilent) loading.value = false
-  }
-}
-
 const handleSearch = () => {
+  appliedFilters.value = { keyword: searchKeyword.value, node_id: searchNodeId.value, status: searchStatus.value }
   page.value = 1
   fetchData()
 }
@@ -699,7 +680,9 @@ let refreshTimer
 onMounted(() => {
   fetchNodes()
   fetchData()
-  refreshTimer = setInterval(() => fetchData(true), 5000)
+  refreshTimer = setInterval(() => {
+    if (!document.hidden) fetchData(true)
+  }, 5000)
 })
 onBeforeUnmount(() => clearInterval(refreshTimer))
 </script>

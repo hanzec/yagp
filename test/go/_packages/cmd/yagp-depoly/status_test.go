@@ -190,8 +190,17 @@ func TestSignedUpdateStatusWebSocket(t *testing.T) {
 	}
 	defer reconnected.CloseNow()
 	read(reconnected, "running", "deploying image\n")
+	// An identical tail still advances when a job repeatedly logs the same line.
+	reconnected.SetReadLimit(2 * deployjob.MaxLogRead)
+	tail := strings.Repeat("x\n", deployjob.MaxLogRead/2)
+	writeWebhookFixture(t, filepath.Join(jobDir, "job.log"), tail)
+	read(reconnected, "running", tail)
+	writeWebhookFixture(t, filepath.Join(jobDir, "job.log"), tail+"x\n")
+	if got := read(reconnected, "running", tail); got.LogOffset != 2 {
+		t.Fatalf("shifted stream offset = %d, want 2", got.LogOffset)
+	}
 	writeStatus(`{"mode":"compose","state":"failed","exit_code":7}`)
-	status := read(reconnected, "failed", "deploying image\n")
+	status := read(reconnected, "failed", tail)
 	if status.ExitCode == nil || *status.ExitCode != 7 {
 		t.Fatalf("unexpected exit code in status %+v", status)
 	}

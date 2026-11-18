@@ -12,6 +12,8 @@ import (
 	bizerrors "yagp/internal/errors"
 	"yagp/internal/model"
 	"yagp/pkg/gost"
+
+	"gorm.io/gorm"
 )
 
 func TestGostSubscriptionsPreserveLegacyIDAndRefreshIndependently(t *testing.T) {
@@ -180,5 +182,113 @@ func TestGostSelectedPoliciesSyncWithoutGlobalSubscriptionAndRetainOnFailure(t *
 	svc.sync(t.Context(), unsaved)
 	if !slices.Equal(read(), []string{".updated.example", ".manual.example:443"}) {
 		t.Fatal("missing subscription erased the last applied selection")
+	}
+}
+
+func TestClearingDefaultRulesetProtectsLegacyTunnelRestart(t *testing.T) {
+	f := newTransparentTestTunnel(t)
+	requireServiceError(t, f.start(), nil)
+	svc := NewGostRulesetService(f.db)
+	if _, err := svc.Update(t.Context(), "", nil); err == nil {
+		t.Fatal("cleared default subscription in use by a running legacy tunnel")
+	}
+	requireServiceError(t, f.stop(), nil)
+	requireServiceError(t, f.start(), nil)
+}
+
+func TestClearingDefaultRulesetChecksAppliedAndTunnelSelections(t *testing.T) {
+	db := newServiceTestDB(t)
+	rule := model.GostRule{AppliedEndpoint: &model.EndpointConfig{UseClashRuleset: true}}
+	tunnel := model.GostTunnel{UseClashRuleset: true}
+	saveServiceFixtures(t, db, &model.GostRuleset{ID: gostRulesetID, URL: "https://default.test"}, &rule, &tunnel)
+	svc := NewGostRulesetService(db)
+	if _, err := svc.Update(t.Context(), "", nil); err == nil || !strings.Contains(err.Error(), "端点") {
+		t.Fatalf("clearing default with legacy applied endpoint: %v", err)
+	}
+	requireServiceError(t, db.Delete(&rule).Error, nil)
+	if _, err := svc.Update(t.Context(), "", nil); err == nil || !strings.Contains(err.Error(), "隧道") {
+		t.Fatalf("clearing default with legacy tunnel: %v", err)
+	}
+	tunnel.ManualDomains = []string{"manual.test"}
+	requireServiceError(t, db.Save(&tunnel).Error, nil)
+	_, err := svc.Update(t.Context(), "", nil)
+	requireServiceError(t, err, nil)
+}
+
+func TestEditingDeletedSubscriptionDoesNotRecreateIt(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		select {
+		case <-release:
+			fmt.Fprintln(w, "DOMAIN-SUFFIX,updated.test")
+		case <-r.Context().Done():
+		}
+	}))
+	defer upstream.Close()
+	db := newServiceTestDB(t)
+	subscription := model.GostRuleset{ID: 2, Name: "original", URL: "https://original.test"}
+	saveServiceFixtures(t, db, &subscription)
+	svc := NewGostRulesetService(db)
+	svc.client.Transport = upstream.Client().Transport
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.UpdateByID(t.Context(), subscription.ID, "edited", upstream.URL)
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case err := <-done:
+		t.Fatalf("edit ended before download: %v", err)
+	}
+	err := svc.Delete(t.Context(), subscription.ID)
+	close(release)
+	requireServiceError(t, err, nil)
+	requireServiceError(t, <-done, gorm.ErrRecordNotFound)
+	list, err := svc.List(t.Context())
+	requireServiceError(t, err, nil)
+	if len(list) != 0 {
+		t.Fatalf("edit restored deleted subscription: %+v", list)
+	}
+}
+
+func TestGostPolicySyncReadsSharedSubscriptionOnce(t *testing.T) {
+	db := newServiceTestDB(t)
+	subscription := model.GostRuleset{ID: 2, URL: "https://shared.test", Matchers: []string{".shared.test"}}
+	entryNode, exitNode := model.GostNode{Name: "entry"}, model.GostNode{Name: "exit"}
+	saveServiceFixtures(t, db, &entryNode, &exitNode)
+	exit := model.GostRule{NodeID: &exitNode.ID, Role: model.EndpointRoleExit, RulesetIDs: []uint{subscription.ID}, ManualDomains: []string{"one.test"}}
+	otherExit := model.GostRule{NodeID: &exitNode.ID, Role: model.EndpointRoleExit, RulesetIDs: []uint{subscription.ID}, ManualDomains: []string{"two.test"}}
+	saveServiceFixtures(t, db, &subscription, &exit, &otherExit)
+	wantManual := make(map[string]string)
+	for i := range 100 {
+		selected := &exit
+		if i%2 != 0 {
+			selected = &otherExit
+		}
+		entry := model.GostRule{Role: model.EndpointRoleEntry, NodeID: &entryNode.ID, ListenPort: 12000 + i}
+		saveServiceFixtures(t, db, &entry)
+		tunnel := model.GostTunnel{EntryNodeID: entryNode.ID, EntryRuleID: &entry.ID, ExitNodeID: exitNode.ID, ExitRuleID: &selected.ID, Status: model.TunnelStatusRunning}
+		saveServiceFixtures(t, db, &tunnel)
+		wantManual[transparentPolicyName(tunnel.ID)] = "." + selected.ManualDomains[0] + ":443"
+	}
+
+	total, subscriptions := 0, 0
+	requireServiceError(t, db.Callback().Query().After("gorm:query").Register("count_policy_queries", func(tx *gorm.DB) {
+		total++
+		if tx.Statement.Table == "gost_rulesets" {
+			subscriptions++
+		}
+	}), nil)
+	svc := NewGostRulesetService(db)
+	policies := svc.syncPolicies(t.Context(), &model.GostRuleset{})[entryNode.ID]
+	if subscriptions != 1 || len(policies) != 100 {
+		t.Fatalf("%d subscription reads for %d policies", subscriptions, len(policies))
+	}
+	t.Logf("100 tunnels: %d SELECTs, %d subscription SELECT", total, subscriptions)
+	for name, manual := range wantManual {
+		if !slices.Equal(policies[name], []string{".shared.test", manual}) {
+			t.Fatalf("unexpected matchers for %s: %v", name, policies[name])
+		}
 	}
 }

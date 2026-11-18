@@ -71,9 +71,9 @@ func TestNodeRepositoryEnrollmentAndStaleReports(t *testing.T) {
 	legacyPort := stale.Port
 	stale.Name, stale.Remark, stale.Port = "renamed", "saved after enrollment", 39111
 	mustPersist(t, nodes.Update(&stale, nil, nil, nil, nil))
-	current, err := nodes.FindByName("renamed")
+	current, err := nodes.FindByID(stale.ID)
 	mustPersist(t, err)
-	if current.Password != enrolled.Password || current.Status != model.NodeStatusOnline || current.LastCheckAt == nil ||
+	if current.Name != stale.Name || current.Password != enrolled.Password || current.Status != model.NodeStatusOnline || current.LastCheckAt == nil ||
 		current.RegistrationTokenHash != "" || current.RegistrationExpiresAt != nil || current.Port != legacyPort || current.Remark != stale.Remark || !slices.Equal(current.ManualAddresses, manual) {
 		t.Fatalf("metadata update overwrote enrollment or health state: %+v", current)
 	}
@@ -112,7 +112,7 @@ func TestNodeRepositoryEnrollmentAndStaleReports(t *testing.T) {
 	mustPersist(t, nodes.SetStats(ctx, current.ID, 2, 9))
 	mustPersist(t, nodes.UpdateStats(current.ID, 1, 4))
 	mustPersist(t, nodes.UpdateStatus(current.ID, model.NodeStatusOnline))
-	online, err := nodes.GetAllOnline()
+	online, _, err := nodes.List(&QueryOption{Conditions: map[string]any{"status = ?": model.NodeStatusOnline}}, "")
 	mustPersist(t, err)
 	if len(online) != 1 || online[0].ID != current.ID || online[0].Address != "198.51.100.2" || online[0].IPv6 != "2001:db8::2" ||
 		online[0].InputBytes != 3 || online[0].OutputBytes != 13 || online[0].TotalBytes != 16 || !slices.Equal(online[0].ManualAddresses, manual) {
@@ -183,8 +183,9 @@ func TestRepositoryForwardingRelationsAndScopedUpdates(t *testing.T) {
 	mustPersist(t, tunnels.Create(&other))
 	tunnel.Remark = "persisted"
 	mustPersist(t, tunnels.Update(&tunnel, false))
-	mustPersist(t, tunnels.UpdateServiceInfo(tunnel.ID, "relay-service", "relay-chain"))
-	mustPersist(t, tunnels.UpdateStatus(tunnel.ID, model.TunnelStatusRunning))
+	mustPersist(t, tunnels.UpdateFields(&tunnel, tunnel.ID, map[string]any{
+		"service_id": "relay-service", "chain_id": "relay-chain", "status": model.TunnelStatusRunning,
+	}))
 	mustPersist(t, tunnels.UpdateStatus(other.ID, model.TunnelStatusRunning))
 
 	direct := model.GostRule{Name: "direct", NodeID: &entry.ID, Type: model.RuleTypeForward, ListenIP: "127.0.0.1", ListenPort: 9000}
@@ -197,7 +198,7 @@ func TestRepositoryForwardingRelationsAndScopedUpdates(t *testing.T) {
 	proxied.Targets = []string{"127.0.0.1:8080"}
 	proxied.Status = model.RuleStatusRunning
 	mustPersist(t, rules.Update(&proxied))
-	mustPersist(t, rules.UpdateServiceID(proxied.ID, "proxied-service"))
+	mustPersist(t, rules.UpdateRuntime(proxied.ID, "proxied-service", model.RuleStatusRunning))
 	mustPersist(t, rules.UpdateObserverID(proxied.ID, "observer-global"))
 
 	sample := model.ObserverCounters{InputBytes: 3, OutputBytes: 6, Connections: 2}
@@ -223,13 +224,14 @@ func TestRepositoryForwardingRelationsAndScopedUpdates(t *testing.T) {
 		entryDetail.EntryTunnels[0].ID != tunnel.ID || len(entryDetail.ExitTunnels) != 0 {
 		t.Fatalf("related node details: %+v", entryDetail)
 	}
-	byNode, err := rules.FindByNodeID(entry.ID)
+	byNode, err := rules.FindByEntryNodeID(entry.ID, []model.GostTunnel{tunnel, other})
 	mustPersist(t, err)
-	byTunnel, err := rules.FindByTunnelID(tunnel.ID)
+	byTunnel, _, err := rules.List(&QueryOption{Conditions: map[string]any{"tunnel_id = ?": tunnel.ID}}, 0)
 	mustPersist(t, err)
 	byExit, err := tunnels.FindByNodeID(exit.ID)
 	mustPersist(t, err)
-	if len(byNode) != 1 || byNode[0].ID != direct.ID || len(byTunnel) != 1 || byTunnel[0].ID != proxied.ID || len(byExit) != 2 {
+	if len(byNode) != 2 || !slices.ContainsFunc(byNode, func(r model.GostRule) bool { return r.ID == direct.ID }) ||
+		!slices.ContainsFunc(byNode, func(r model.GostRule) bool { return r.ID == proxied.ID }) || len(byTunnel) != 1 || byTunnel[0].ID != proxied.ID || len(byExit) != 2 {
 		t.Fatalf("filters: by node %+v, by tunnel %+v, by exit %+v", byNode, byTunnel, byExit)
 	}
 	for _, tc := range []struct {
@@ -265,22 +267,22 @@ func TestRepositoryForwardingRelationsAndScopedUpdates(t *testing.T) {
 	mustPersist(t, rules.StopByTunnelIDs(nil))
 	mustPersist(t, rules.StopByTunnelIDs([]uint{tunnel.ID}))
 	mustPersist(t, tunnels.StopByNodeID(entry.ID))
-	runningRules, err := rules.CountByStatus(model.RuleStatusRunning)
+	ruleSummary, err := rules.Summary()
 	mustPersist(t, err)
-	runningTunnels, err := tunnels.CountByStatus(model.TunnelStatusRunning)
+	tunnelSummary, err := tunnels.Summary()
 	mustPersist(t, err)
 	active, err := rules.FindByID(otherDirect.ID)
 	mustPersist(t, err)
 	otherTunnel, err := tunnels.FindByID(other.ID)
 	mustPersist(t, err)
-	if runningRules != 1 || runningTunnels != 1 || active.Status != model.RuleStatusRunning || otherTunnel.Status != model.TunnelStatusRunning {
-		t.Fatalf("scoped stop affected unrelated records: %d rules, %d tunnels, rule %s, tunnel %s", runningRules, runningTunnels, active.Status, otherTunnel.Status)
+	if ruleSummary.Running != 1 || tunnelSummary.Running != 1 || active.Status != model.RuleStatusRunning || otherTunnel.Status != model.TunnelStatusRunning {
+		t.Fatalf("scoped stop affected unrelated records: %d rules, %d tunnels, rule %s, tunnel %s", ruleSummary.Running, tunnelSummary.Running, active.Status, otherTunnel.Status)
 	}
 	mustPersist(t, rules.Delete(proxied.ID))
 	if _, err := rules.FindByID(proxied.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("soft-deleted rule is still visible: %v", err)
 	}
-	hasRules, err = tunnels.HasRulesUsingTunnel(tunnel.ID)
+	hasRules, err = tunnels.HasRules(tunnel.ID)
 	mustPersist(t, err)
 	if hasRules {
 		t.Fatal("deleted rule still blocks tunnel removal")
@@ -289,16 +291,14 @@ func TestRepositoryForwardingRelationsAndScopedUpdates(t *testing.T) {
 	if _, err := tunnels.FindByID(tunnel.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("soft-deleted tunnel is still visible: %v", err)
 	}
-	count, err := tunnels.CountAll()
+	tunnelSummary, err = tunnels.Summary()
 	mustPersist(t, err)
-	allRules, err := rules.CountAll()
+	ruleSummary, err = rules.Summary()
 	mustPersist(t, err)
-	entryRules, err := rules.CountByNodeID(entry.ID)
+	_, entryRules, err := rules.List(nil, entry.ID)
 	mustPersist(t, err)
-	tunnelRules, err := rules.CountByType(model.RuleTypeTunnel)
-	mustPersist(t, err)
-	if count != 1 || allRules != 2 || entryRules != 1 || tunnelRules != 0 {
-		t.Fatalf("counts after removal: %d tunnels, %d total rules, %d entry rules, %d tunnel rules", count, allRules, entryRules, tunnelRules)
+	if tunnelSummary.Total != 1 || ruleSummary.Total != 2 || entryRules != 1 || ruleSummary.TunnelType != 0 {
+		t.Fatalf("counts after removal: %d tunnels, %d total rules, %d entry rules, %d tunnel rules", tunnelSummary.Total, ruleSummary.Total, entryRules, ruleSummary.TunnelType)
 	}
 }
 
@@ -356,7 +356,7 @@ func TestRepositoryListPaginationAndQueryErrors(t *testing.T) {
 	if clamped.PageSize != 100 {
 		t.Fatalf("maximum page size was not enforced: %+v", clamped)
 	}
-	rulePage, ruleTotal, err := rules.List(nil)
+	rulePage, ruleTotal, err := rules.List(nil, 0)
 	mustPersist(t, err)
 	tunnelPage, tunnelTotal, err := tunnels.List(nil)
 	mustPersist(t, err)
@@ -369,12 +369,10 @@ func TestRepositoryListPaginationAndQueryErrors(t *testing.T) {
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("deleted node still visible: %v", err)
 	}
-	all, err := nodes.CountAll()
+	nodeSummary, err := nodes.Summary()
 	mustPersist(t, err)
-	online, err := nodes.CountByStatus(model.NodeStatusOnline)
-	mustPersist(t, err)
-	if all != 2 || online != 2 {
-		t.Fatalf("node counts after removal: total %d, online %d", all, online)
+	if nodeSummary.Total != 2 || nodeSummary.Online != 2 {
+		t.Fatalf("node counts after removal: %+v", nodeSummary)
 	}
 
 	for _, opt := range []*QueryOption{
@@ -384,7 +382,7 @@ func TestRepositoryListPaginationAndQueryErrors(t *testing.T) {
 		if _, _, err := nodes.List(opt, ""); err == nil {
 			t.Fatalf("node list silently ignored a query error: %+v", opt)
 		}
-		if _, _, err := rules.List(opt); err == nil {
+		if _, _, err := rules.List(opt, 0); err == nil {
 			t.Fatalf("rule list silently ignored a query error: %+v", opt)
 		}
 		if _, _, err := tunnels.List(opt); err == nil {
@@ -393,9 +391,6 @@ func TestRepositoryListPaginationAndQueryErrors(t *testing.T) {
 		if _, _, err := logs.List(opt); err == nil {
 			t.Fatalf("log list silently ignored a query error: %+v", opt)
 		}
-	}
-	if _, err := nodes.FindByName("missing"); !errors.Is(err, gorm.ErrRecordNotFound) {
-		t.Fatalf("absent node by name: %v", err)
 	}
 	if _, err := nodes.FindByIDWithRelations(offline.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("absent node with relations: %v", err)

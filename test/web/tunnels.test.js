@@ -66,6 +66,70 @@ beforeEach(async () => {
 })
 
 describe('Relay tunnel inventory', () => {
+  it.each(['success', 'error'])('keeps the latest search when an earlier request finishes with %s', async outcome => {
+    const earlier = Promise.withResolvers()
+    getTunnelList.mockReturnValueOnce(earlier.promise).mockResolvedValueOnce(result([relay]))
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+    await wrapper.get('#tunnel-keyword').setValue(relay.name)
+    await wrapper.get('form[aria-label="筛选隧道"]').trigger('submit')
+    await flushPromises()
+    expect(row(wrapper, relay.name).exists()).toBe(true)
+
+    if (outcome === 'success') earlier.resolve(result([udpRelay]))
+    else earlier.reject(new Error('earlier request failed'))
+    await flushPromises()
+
+    expect(wrapper.get('#tunnel-keyword').element.value).toBe(relay.name)
+    expect(row(wrapper, relay.name).exists()).toBe(true)
+    expect(wrapper.text()).not.toContain(udpRelay.name)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('lets a slow background refresh finish before polling again', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+    const pending = Promise.withResolvers()
+    getTunnelList.mockReturnValueOnce(pending.promise)
+    await vi.advanceTimersByTimeAsync(11_000)
+    expect(getTunnelList).toHaveBeenCalledTimes(2)
+
+    pending.resolve(result([{ ...relay, name: 'Updated entry' }]))
+    await flushPromises()
+    expect(wrapper.get('tbody').text()).toContain('Updated entry')
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(getTunnelList).toHaveBeenCalledTimes(3)
+  })
+
+  it('polls with the applied keyword while input edits remain drafts', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+    await wrapper.get('#tunnel-keyword').setValue('first keyword')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(getTunnelList).toHaveBeenLastCalledWith({ page: 1, pageSize: 10, keyword: '', node_id: '', status: '' })
+
+    await wrapper.get('form[aria-label="筛选隧道"]').trigger('submit')
+    await flushPromises()
+    await wrapper.get('#tunnel-keyword').setValue('next keyword draft')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(getTunnelList).toHaveBeenLastCalledWith({ page: 1, pageSize: 10, keyword: 'first keyword', node_id: '', status: '' })
+  })
+
+  it('pauses polling while the page is hidden and resumes when visible', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    mountInventory(Tunnels)
+    await flushPromises()
+    hidden.mockReturnValue(true)
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(getTunnelList).toHaveBeenCalledTimes(1)
+    hidden.mockReturnValue(false)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(getTunnelList).toHaveBeenCalledTimes(2)
+  })
+
   it('opens the selected tunnel from a click in a non-title cell', async () => {
     const wrapper = mountInventory(Tunnels)
     await flushPromises()
@@ -333,6 +397,33 @@ describe('Relay tunnel configuration', () => {
     expect(createTunnel).toHaveBeenCalledExactlyOnceWith({
       name: 'Shared endpoint tunnel', entry_rule_id: entry.id, exit_rule_id: exit.id, remark: ''
     })
+  })
+
+  it('clears a selected standalone listener when the refreshed inventory reports pending cleanup', async () => {
+    const exit = { ...destination, role: 'exit', targets: ['app.example:443'] }
+    const blocked = { ...source, status: 'error', service_id: 'rule-21' }
+    getRuleList.mockResolvedValueOnce(result([source, exit])).mockResolvedValueOnce(result([blocked, exit]))
+    createTunnel.mockRejectedValueOnce(new Error('endpoint in use'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+    await button(wrapper, '添加隧道').trigger('click')
+    await flushPromises()
+    const editor = dialog(wrapper)
+    await field(editor, 'name').get('input').setValue('New tunnel')
+    await choose(selectField(editor, 'entry_rule_id'), source.id)
+    await choose(selectField(editor, 'exit_rule_id'), exit.id)
+    await button(editor, '添加并启动').trigger('click')
+    await flushPromises()
+
+    expect(getRuleList).toHaveBeenCalledTimes(2)
+    const entries = selectField(editor, 'entry_rule_id')
+    expect(entries.props('modelValue')).toBe(null)
+    expect(entries.findAllComponents(ElOption).map(option => option.props('value'))).not.toContain(source.id)
+    expect(selectField(editor, 'exit_rule_id').props('modelValue')).toBe(exit.id)
+    await button(editor, '添加并启动').trigger('click')
+    await flushPromises()
+    expect(createTunnel).toHaveBeenCalledTimes(1)
   })
 
   it('requires a different pair when both selected endpoints already belong to the same tunnel', async () => {

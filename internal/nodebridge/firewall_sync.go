@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -39,6 +38,7 @@ type firewallPolicy struct {
 	legacy          *FirewallManager
 	ready           bool
 	hasExitEndpoint *bool
+	pendingCache    *nodegrpc.NodeConfig
 	cleanup         *FirewallManager
 	cleanupRequired bool
 }
@@ -64,9 +64,11 @@ func (s *controlServer) maintainFirewall(ctx context.Context, current *atomic.Po
 	ticker := time.NewTicker(firewallSyncInterval)
 	defer ticker.Stop()
 	for ctx.Err() == nil {
+		var client nodegrpc.V1Client
 		if session := current.Load(); session != nil {
-			policy.refresh(ctx, s, nodegrpc.NewV1Client(session))
+			client = nodegrpc.NewV1Client(session)
 		}
+		policy.refresh(ctx, s, client)
 		policy.check(ctx, s, hostFirewallBackend)
 		select {
 		case <-ctx.Done():
@@ -125,15 +127,23 @@ func (p *firewallPolicy) redetect(s *controlServer, backend string) {
 }
 
 func (p *firewallPolicy) refresh(ctx context.Context, s *controlServer, client nodegrpc.V1Client) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	config, err := client.GetNodeConfig(ctx, &emptypb.Empty{})
-	if err != nil || !p.update(s, config.HasExitEndpoint) || s.config.ConfigFile == "" {
+	if client != nil {
+		readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		config, err := client.GetNodeConfig(readCtx, &emptypb.Empty{})
+		cancel()
+		if err == nil && p.update(s, config.HasExitEndpoint) && s.config.ConfigFile != "" {
+			p.pendingCache = config
+		}
+	}
+	// Retry a failed disk write even if the panel has since disconnected.
+	if p.pendingCache == nil {
 		return
 	}
-	if err := storePanelConfig(s.config.ConfigFile, config); err != nil {
+	if err := storePanelConfig(s.config.ConfigFile, p.pendingCache); err != nil {
 		log.Printf("cache automatic firewall policy: %v", err)
+		return
 	}
+	p.pendingCache = nil
 }
 
 func (p *firewallPolicy) update(s *controlServer, hasExitEndpoint *bool) bool {
@@ -275,7 +285,7 @@ func managedFirewallPorts(services []gost.ServiceConfig) FirewallPorts {
 				continue
 			}
 		}
-		switch firewallTransport(service.Listener) {
+		switch service.Listener.Network() {
 		case "tcp":
 			addFirewallEndpoint(&ports.TCP, &ports.TCPAddresses, addr, uint16(port))
 		case "udp":
@@ -290,26 +300,5 @@ func addFirewallEndpoint(ports *[]uint16, addresses *[]FirewallEndpoint, addr ne
 		*addresses = append(*addresses, FirewallEndpoint{Address: addr, Port: port})
 	} else {
 		*ports = append(*ports, port)
-	}
-}
-
-func firewallTransport(listener *gost.ListenerConfig) string {
-	switch listener.Type {
-	case "tcp", "mtcp", "tls", "mtls", "ws", "mws", "wss", "mwss", "h2", "h2c", "grpc", "pht", "phts", "ohttp", "otls":
-		return "tcp"
-	case "udp", "quic", "h3":
-		return "udp"
-	case "kcp":
-		for _, key := range []string{"kcp.tcp", "tcp"} {
-			if value, ok := listener.Metadata[key]; ok {
-				if enabled, _ := strconv.ParseBool(strings.TrimSpace(fmt.Sprint(value))); enabled {
-					return "tcp"
-				}
-				break
-			}
-		}
-		return "udp"
-	default:
-		return ""
 	}
 }

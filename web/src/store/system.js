@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { getPublicSystemConfig } from '@/api/system'
 
 export const defaultLogoUrl = '/favicon.svg'
+const defaultSiteTitle = 'yagp'
 const previousDefaultLogoUrl = 'https://gost.run/images/gost.png'
 
 function logoOverride(url) {
@@ -11,7 +12,7 @@ function logoOverride(url) {
 
 export const useSystemStore = defineStore('system', () => {
     // State
-    const siteTitle = ref(localStorage.getItem('siteTitle') || 'yagp')
+    const siteTitle = ref(localStorage.getItem('siteTitle') || defaultSiteTitle)
     const logoUrl = ref(logoOverride(localStorage.getItem('logoUrl')))
     const copyright = ref(localStorage.getItem('copyright') || '')
     const version = ref('')
@@ -25,10 +26,14 @@ export const useSystemStore = defineStore('system', () => {
                 version.value = config.version || ''
 
                 // Update state
-                if (config.siteTitle) {
-                    siteTitle.value = config.siteTitle
-                    document.title = config.siteTitle
-                    localStorage.setItem('siteTitle', config.siteTitle)
+                if (config.siteTitle !== undefined) {
+                    siteTitle.value = config.siteTitle || defaultSiteTitle
+                    document.title = siteTitle.value
+                    if (config.siteTitle) {
+                        localStorage.setItem('siteTitle', config.siteTitle)
+                    } else {
+                        localStorage.removeItem('siteTitle')
+                    }
                 }
 
                 logoUrl.value = logoOverride(config.logoUrl)
@@ -53,9 +58,7 @@ export const useSystemStore = defineStore('system', () => {
     }
 
     // Initialize document title from storage immediately
-    if (localStorage.getItem('siteTitle')) {
-        document.title = localStorage.getItem('siteTitle')
-    }
+    document.title = siteTitle.value
 
     return {
         siteTitle,

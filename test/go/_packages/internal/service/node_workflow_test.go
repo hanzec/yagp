@@ -103,10 +103,7 @@ func TestUnreachableNodeStopsItsRulesAndRelatedTunnels(t *testing.T) {
 	if len(got.Services) != 0 {
 		t.Fatalf("unexpected configured services: %+v", got.Services)
 	}
-	health := NewNodeHealthService(db)
-	if health.checkNodeHealth(node) != model.NodeStatusOnline || health.checkNodeHealth(model.GostNode{}) != model.NodeStatusOffline {
-		t.Fatal("health check failed to distinguish online node from incomplete enrollment")
-	}
+	health := NewRuleSyncService(db)
 
 	remote.mu.Lock()
 	remote.reject = map[string]int{"GET /config": http.StatusServiceUnavailable}
@@ -182,6 +179,66 @@ func TestObserverCountersAndTransactionRollback(t *testing.T) {
 	requireServiceError(t, db.First(&entry, entry.ID).Error, nil)
 	if entry.TotalBytes != 295 {
 		t.Fatalf("node traffic = %d, want 295", entry.TotalBytes)
+	}
+}
+
+func TestObserverReplayReadsCheckpointsOnceAndSkipsWrites(t *testing.T) {
+	db := newServiceTestDB(t)
+	node := model.GostNode{Name: "reporting node"}
+	saveServiceFixtures(t, db, &node)
+	rules := make([]model.GostRule, 100)
+	for i := range rules {
+		rules[i] = model.GostRule{Name: fmt.Sprintf("listener-%d", i), NodeID: &node.ID, ListenPort: 12000 + i}
+	}
+	requireServiceError(t, db.Create(&rules).Error, nil)
+	reports := make([]TrafficSample, len(rules))
+	for i, rule := range rules {
+		reports[i] = TrafficSample{RuleID: rule.ID, ObserverCounters: model.ObserverCounters{InputBytes: 40, OutputBytes: 60, Connections: 5}}
+	}
+	observer := NewObserverService(db)
+	requireServiceError(t, observer.RecordTraffic(t.Context(), node.ID, reports), nil)
+
+	var reads, writes int
+	requireServiceError(t, db.Callback().Query().After("gorm:query").Register("test:count_observer_reads", func(*gorm.DB) { reads++ }), nil)
+	requireServiceError(t, db.Callback().Update().After("gorm:update").Register("test:count_observer_writes", func(*gorm.DB) { writes++ }), nil)
+	requireServiceError(t, observer.RecordTraffic(t.Context(), node.ID, reports), nil)
+	if reads != 1 || writes != 0 {
+		t.Fatalf("unchanged batch issued %d reads and %d writes, want one read and zero writes", reads, writes)
+	}
+
+	// Each subsequent event for the same rule must use the preceding event's checkpoint.
+	changed := reports[0]
+	changed.InputBytes += 10
+	requireServiceError(t, observer.RecordTraffic(t.Context(), node.ID, []TrafficSample{
+		changed, changed, {RuleID: changed.RuleID, Reset: true}, changed,
+	}), nil)
+	var rule model.GostRule
+	requireServiceError(t, db.First(&rule, changed.RuleID).Error, nil)
+	if rule.InputBytes != 100 || rule.OutputBytes != 120 || rule.TotalRequests != 10 || rule.ObserverCounters != changed.ObserverCounters {
+		t.Fatalf("unexpected counters after replay and reset: %+v", rule)
+	}
+}
+
+func TestObserverAuthorizationRollsBackAcrossBatches(t *testing.T) {
+	db := newServiceTestDB(t)
+	entry, other := model.GostNode{Name: "entry"}, model.GostNode{Name: "other"}
+	saveServiceFixtures(t, db, &entry, &other)
+	local := model.GostRule{Name: "local", NodeID: &entry.ID}
+	foreign := model.GostRule{Name: "foreign", NodeID: &other.ID}
+	saveServiceFixtures(t, db, &local, &foreign)
+
+	reports := make([]TrafficSample, 501)
+	for i := range reports {
+		reports[i] = TrafficSample{RuleID: local.ID, ObserverCounters: model.ObserverCounters{InputBytes: 1}}
+	}
+	// Even an unchanged checkpoint must belong to the reporting node.
+	reports[len(reports)-1] = TrafficSample{RuleID: foreign.ID}
+	err := NewObserverService(db).RecordTraffic(t.Context(), entry.ID, reports)
+	requireServiceError(t, err, ErrReportNodeMismatch)
+	requireServiceError(t, db.First(&local, local.ID).Error, nil)
+	requireServiceError(t, db.First(&entry, entry.ID).Error, nil)
+	if local.InputBytes != 0 || local.ObserverCounters.InputBytes != 0 || entry.TotalBytes != 0 {
+		t.Fatalf("rejected report changed counters: rule %d checkpoint %d node %d", local.InputBytes, local.ObserverCounters.InputBytes, entry.TotalBytes)
 	}
 }
 

@@ -17,11 +17,24 @@ func (r *TunnelRepository) SaveProbeSamples(ctx context.Context, samples []model
 	return r.DB.WithContext(ctx).Create(&samples).Error
 }
 
-func (r *TunnelRepository) ProbeHistory(ctx context.Context, tunnelID uint, from, to int64) ([]model.TunnelProbeSample, error) {
-	var samples []model.TunnelProbeSample
-	err := r.DB.WithContext(ctx).Where("tunnel_id = ? AND sampled_at BETWEEN ? AND ?", tunnelID, from, to).
-		Order("sampled_at, id").Find(&samples).Error
-	return samples, err
+func (r *TunnelRepository) WalkProbeHistory(ctx context.Context, tunnelID uint, from, to int64, visit func(model.TunnelProbeSample)) error {
+	rows, err := r.DB.WithContext(ctx).Model(&model.TunnelProbeSample{}).
+		Select("sampled_at, status, latency_ms, ttl").
+		Where("tunnel_id = ? AND sampled_at BETWEEN ? AND ?", tunnelID, from, to).
+		Order("sampled_at, id").Rows()
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var sample model.TunnelProbeSample
+	for rows.Next() {
+		if err := rows.Scan(&sample.SampledAt, &sample.Status, &sample.LatencyMS, &sample.TTL); err != nil {
+			return err
+		}
+		visit(sample)
+	}
+	return rows.Err()
 }
 
 func (r *TunnelRepository) PruneProbeHistory(ctx context.Context, before int64) error {

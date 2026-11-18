@@ -240,14 +240,20 @@ func (r *NodeRepository) List(opt *QueryOption, tag string) ([]model.GostNode, i
 	return nodes, total, nil
 }
 
-// FindByName 根据名称查询节点
-func (r *NodeRepository) FindByName(name string) (*model.GostNode, error) {
-	var node model.GostNode
-	err := r.DB.Where("name = ?", name).First(&node).Error
-	if err != nil {
-		return nil, err
+func (r *NodeRepository) RoutingOptions(ctx context.Context, before uint) ([]model.RoutingNodeOption, uint, error) {
+	const pageSize = 1000
+	var options []model.RoutingNodeOption
+	query := r.DB.WithContext(ctx).Model(&model.GostNode{}).Order("id DESC").Limit(pageSize + 1)
+	if before > 0 {
+		query = query.Where("id < ?", before)
 	}
-	return &node, nil
+	if err := query.Find(&options).Error; err != nil {
+		return nil, 0, err
+	}
+	if len(options) > pageSize {
+		return options[:pageSize], options[pageSize-1].ID, nil
+	}
+	return options, 0, nil
 }
 
 // ExistsByName 检查名称是否存在
@@ -280,27 +286,6 @@ func (r *NodeRepository) UpdateGostVersion(id uint, version string, checkedAt ti
 		fields["gost_version"] = version
 	}
 	return r.DB.Model(&model.GostNode{}).Where("id = ?", id).UpdateColumns(fields).Error
-}
-
-// GetAllOnline 获取所有在线节点
-func (r *NodeRepository) GetAllOnline() ([]model.GostNode, error) {
-	var nodes []model.GostNode
-	err := r.DB.Where("status = ?", model.NodeStatusOnline).Find(&nodes).Error
-	return nodes, err
-}
-
-// CountByStatus 按状态统计数量
-func (r *NodeRepository) CountByStatus(status model.NodeStatus) (int64, error) {
-	var count int64
-	err := r.DB.Model(&model.GostNode{}).Where("status = ?", status).Count(&count).Error
-	return count, err
-}
-
-// CountAll 统计总数
-func (r *NodeRepository) CountAll() (int64, error) {
-	var count int64
-	err := r.DB.Model(&model.GostNode{}).Count(&count).Error
-	return count, err
 }
 
 // UpdateStats 累加节点流量

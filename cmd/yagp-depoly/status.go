@@ -118,7 +118,7 @@ func (h deployHandler) serveStatusStream(w http.ResponseWriter, r *http.Request,
 				_ = conn.Close(websocket.StatusInternalError, "could not read update status")
 				return
 			}
-			if next.State == status.State && next.Logs == status.Logs {
+			if next.State == status.State && next.LogOffset == status.LogOffset && next.Logs == status.Logs {
 				continue
 			}
 			if err := write(next); err != nil {

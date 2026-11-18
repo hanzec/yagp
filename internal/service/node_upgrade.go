@@ -230,6 +230,12 @@ func (s *NodeUpgradeService) runAutomaticUpgrade(ctx context.Context, node *mode
 		state, err = client.StartUpgrade(ctx, "daemon", target)
 	}
 	if err != nil {
+		switch status.Code(err) {
+		case codes.Unavailable, codes.DeadlineExceeded, codes.Canceled:
+			// The node may already have launched the worker before its reply was lost.
+			s.recordAutomaticUpgrade(node, current, target, "结果待确认："+err.Error())
+			return nil, err
+		}
 		s.recordAutomaticUpgrade(node, current, target, "启动失败："+err.Error())
 		logger.Warnf("启动节点 %d 的 yagp-daemon 自动升级失败: %v", node.ID, err)
 		return nil, nil
@@ -243,6 +249,11 @@ func (s *NodeUpgradeService) runAutomaticUpgrade(ctx context.Context, node *mode
 		}
 	}
 	if state.GetState() == "succeeded" {
+		if state.GetDaemonVersion() != target {
+			err := fmt.Errorf("节点仍报告运行版本 %q，期望 %q", state.GetDaemonVersion(), target)
+			s.recordAutomaticUpgrade(node, current, target, "结果待确认："+err.Error())
+			return nil, err
+		}
 		s.recordAutomaticUpgrade(node, current, target, "成功")
 	} else if state.GetState() == "failed" {
 		s.recordAutomaticUpgrade(node, current, target, "失败："+state.GetError())

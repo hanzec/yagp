@@ -239,13 +239,10 @@ func (s *TunnelService) Delete(id uint, username, ip, userAgent string) error {
 		return errors.ErrTunnelHasRules
 	}
 
-	// 如果隧道正在运行，先停止
-	if tunnel.Status == model.TunnelStatusRunning || (tunnel.EntryRuleID != nil && tunnel.Status == model.TunnelStatusError) {
+	// Retained runtime identities also need cleanup after a failed start or node disconnect.
+	if tunnel.Status != model.TunnelStatusStopped || tunnel.ServiceID != "" || tunnel.ChainID != "" {
 		if err = s.stop(id, username, ip, userAgent); err != nil {
-			if tunnel.EntryRuleID != nil {
-				return err
-			}
-			logger.Warnf("停止隧道失败: %v", err)
+			return err
 		}
 	}
 
@@ -317,7 +314,7 @@ func (s *TunnelService) List(req *dto.TunnelListReq) ([]model.GostTunnel, int64,
 
 // Start 启动隧道
 // 在出口节点创建 Relay 服务，在入口节点创建 Chain 连接到出口节点
-func (s *TunnelService) Start(id uint, username, ip, userAgent string) error {
+func (s *TunnelService) Start(id uint, username, ip, userAgent string) (err error) {
 	endpointTunnelRuntime.Lock()
 	defer endpointTunnelRuntime.Unlock()
 	tunnel, err := s.tunnelRepo.FindByID(id)
@@ -340,11 +337,17 @@ func (s *TunnelService) Start(id uint, username, ip, userAgent string) error {
 	// 获取入口和出口节点
 	entryNode, err := s.nodeRepo.FindByID(tunnel.EntryNodeID)
 	if err != nil {
-		return errors.ErrEntryNodeNotFound
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.ErrEntryNodeNotFound
+		}
+		return err
 	}
 	exitNode, err := s.nodeRepo.FindByID(tunnel.ExitNodeID)
 	if err != nil {
-		return errors.ErrExitNodeNotFound
+		if stderrors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.ErrExitNodeNotFound
+		}
+		return err
 	}
 
 	// 检查节点状态
@@ -354,10 +357,30 @@ func (s *TunnelService) Start(id uint, username, ip, userAgent string) error {
 	if exitNode.Status == model.NodeStatusOffline {
 		return errors.ErrExitNodeOffline
 	}
+	tunnel.EntryNode, tunnel.ExitNode = entryNode, exitNode
+	if tunnel.Status == model.TunnelStatusError || tunnel.ServiceID != "" || tunnel.ChainID != "" {
+		if err := s.removeLegacyTunnelRuntime(tunnel); err != nil {
+			return err
+		}
+	}
+	relayName, chainName := relayServiceName(id), tunnelChainName(id)
+	// Persist deterministic resource names before provisioning, including for a failed rollback.
+	if err := s.tunnelRepo.UpdateFields(tunnel, id, map[string]any{
+		"service_id": relayName, "chain_id": chainName, "status": model.TunnelStatusError,
+	}); err != nil {
+		return err
+	}
+	tunnel.ServiceID, tunnel.ChainID = relayName, chainName
+	defer func() {
+		if err != nil {
+			if cleanupErr := s.removeLegacyTunnelRuntime(tunnel); cleanupErr != nil {
+				err = stderrors.Join(err, cleanupErr)
+			}
+		}
+	}()
 
 	// 步骤1：在出口节点创建 Relay 服务
 	exitClient := utils.GetGostClient(exitNode)
-	relayName := relayServiceName(tunnel.ID)
 	var auth *gost.AuthConfig
 	if tunnel.RelaySecret != "" {
 		auth = &gost.AuthConfig{Username: relayName, Password: tunnel.RelaySecret}
@@ -379,7 +402,6 @@ func (s *TunnelService) Start(id uint, username, ip, userAgent string) error {
 	}
 	created, err := createServiceWithTrafficQuota(s.nodeRepo, exitClient, *exitNode, relaySvc)
 	if err != nil {
-		_ = s.tunnelRepo.UpdateStatus(id, model.TunnelStatusError)
 		if stderrors.Is(err, errors.ErrNodeTrafficQuotaUnavailable) {
 			return err
 		}
@@ -392,7 +414,9 @@ func (s *TunnelService) Start(id uint, username, ip, userAgent string) error {
 	}
 
 	// 保存出口节点配置
-	_ = exitClient.SaveConfig()
+	if err := exitClient.SaveConfig(); err != nil {
+		return err
+	}
 
 	// 步骤2：在入口节点创建 Chain 连接到出口节点的 Relay 服务
 	entryClient := utils.GetGostClient(entryNode)
@@ -400,32 +424,25 @@ func (s *TunnelService) Start(id uint, username, ip, userAgent string) error {
 	// 从出口节点配置中获取主机 IP
 	exitHost := exitNode.Address
 	if exitHost == "" {
-		// 回滚：删除出口节点的 Relay 服务
-		_ = exitClient.DeleteService(relayName)
-		_ = exitClient.SaveConfig()
-		_ = s.tunnelRepo.UpdateStatus(id, model.TunnelStatusError)
 		return errors.ErrExtractHostFailed
 	}
 
-	chainName := tunnelChainName(tunnel.ID)
 	relayAddr := net.JoinHostPort(strings.Trim(exitHost, "[]"), strconv.Itoa(tunnel.RelayPort))
 
 	chain := newTunnelChain(chainName, relayAddr, tunnel.Protocol, tunnel.ProtocolOptions, auth)
 
 	if err = entryClient.CreateChain(chain); err != nil {
-		// 回滚：删除出口节点的 Relay 服务
-		_ = exitClient.DeleteService(relayName)
-		_ = exitClient.SaveConfig()
-		_ = s.tunnelRepo.UpdateStatus(id, model.TunnelStatusError)
 		return errors.ErrTunnelChainCreateFailed
 	}
 
 	// 保存入口节点配置
-	_ = entryClient.SaveConfig()
+	if err := entryClient.SaveConfig(); err != nil {
+		return err
+	}
 
-	// 更新隧道状态和服务 ID
-	_ = s.tunnelRepo.UpdateServiceInfo(id, relayName, chainName)
-	_ = s.tunnelRepo.UpdateStatus(id, model.TunnelStatusRunning)
+	if err := s.tunnelRepo.UpdateStatus(id, model.TunnelStatusRunning); err != nil {
+		return err
+	}
 
 	s.logService.Record(
 		username,
@@ -476,38 +493,19 @@ func (s *TunnelService) stop(id uint, username, ip, userAgent string) error {
 		return nil
 	}
 
-	// 未运行则跳过
-	if tunnel.Status != model.TunnelStatusRunning {
+	if tunnel.Status == model.TunnelStatusStopped && tunnel.ServiceID == "" && tunnel.ChainID == "" {
 		return nil
 	}
 
-	// 获取入口和出口节点
-	entryNode, _ := s.nodeRepo.FindByID(tunnel.EntryNodeID)
-	exitNode, _ := s.nodeRepo.FindByID(tunnel.ExitNodeID)
-
-	// 步骤1：删除入口节点的 Chain
-	if entryNode != nil && entryNode.Status == model.NodeStatusOnline && tunnel.ChainID != "" {
-		entryClient := utils.GetGostClient(entryNode)
-		if err = entryClient.DeleteChain(tunnel.ChainID); err != nil {
-			logger.Warnf("删除隧道 Chain 失败: %v", err)
-		}
-		if err = entryClient.DeleteChain(clashTunnelChainName(id)); err != nil {
-			logger.Warnf("删除隧道 Clash 分流链失败: %v", err)
-		}
-		_ = entryClient.SaveConfig()
+	if err := s.removeLegacyTunnelRuntime(tunnel); err != nil {
+		return err
 	}
 
-	// 步骤2：删除出口节点的 Relay 服务
-	if exitNode != nil && exitNode.Status == model.NodeStatusOnline && tunnel.ServiceID != "" {
-		exitClient := utils.GetGostClient(exitNode)
-		if err = exitClient.DeleteService(tunnel.ServiceID); err != nil {
-			logger.Warnf("删除隧道 Relay 服务失败: %v", err)
-		}
-		_ = exitClient.SaveConfig()
+	if err := s.tunnelRepo.UpdateFields(tunnel, id, map[string]any{
+		"service_id": "", "chain_id": "", "status": model.TunnelStatusStopped,
+	}); err != nil {
+		return err
 	}
-
-	// 更新状态
-	_ = s.tunnelRepo.UpdateStatus(id, model.TunnelStatusStopped)
 
 	s.logService.Record(
 		username,
@@ -522,20 +520,26 @@ func (s *TunnelService) stop(id uint, username, ip, userAgent string) error {
 	return nil
 }
 
-// GetChainID 获取隧道的 Chain ID（供规则服务使用）
-func (s *TunnelService) GetChainID(tunnelID uint) (string, error) {
-	tunnel, err := s.tunnelRepo.FindByID(tunnelID)
-	if err != nil {
-		return "", err
+func (s *TunnelService) removeLegacyTunnelRuntime(tunnel *model.GostTunnel) error {
+	if tunnel.EntryNode == nil {
+		return errors.ErrEntryNodeNotFound
 	}
-	return tunnel.ChainID, nil
-}
-
-// GetEntryNodeID 获取隧道的入口节点 ID（供规则服务使用）
-func (s *TunnelService) GetEntryNodeID(tunnelID uint) (uint, error) {
-	tunnel, err := s.tunnelRepo.FindByID(tunnelID)
-	if err != nil {
-		return 0, err
+	if tunnel.ExitNode == nil {
+		return errors.ErrExitNodeNotFound
 	}
-	return tunnel.EntryNodeID, nil
+	if err := endpointNodesOnline(tunnel); err != nil {
+		return err
+	}
+	entryClient, exitClient := utils.GetGostClient(tunnel.EntryNode), utils.GetGostClient(tunnel.ExitNode)
+	chainID, serviceID := tunnel.ChainID, tunnel.ServiceID
+	if chainID == "" {
+		chainID = tunnelChainName(tunnel.ID)
+	}
+	if serviceID == "" {
+		serviceID = relayServiceName(tunnel.ID)
+	}
+	if err := stderrors.Join(entryClient.DeleteChain(chainID), entryClient.DeleteChain(clashTunnelChainName(tunnel.ID)), exitClient.DeleteService(serviceID)); err != nil {
+		return err
+	}
+	return stderrors.Join(entryClient.SaveConfig(), exitClient.SaveConfig())
 }

@@ -44,6 +44,10 @@ func hasSelectedRules(rule *model.GostRule) bool {
 	return len(rule.RulesetIDs) != 0 || len(rule.ManualDomains) != 0
 }
 
+func usesDefaultRuleset(useClash bool, ids []uint, domains []string) bool {
+	return useClash && len(ids) == 0 && len(domains) == 0
+}
+
 func transparentFiltering(rule *model.GostRule) bool {
 	return rule.UseClashRuleset || hasSelectedRules(rule)
 }
@@ -75,7 +79,7 @@ func (s *RuleService) prepareTransparentBypass(client *gost.Client, name string,
 		if _, err := client.SetNamedTransparentBypass(bypass, matchers); err != nil {
 			return "", errors.ErrRuleChainCreateFailed
 		}
-	} else if rule.UseClashRuleset {
+	} else if usesDefaultRuleset(rule.UseClashRuleset, rule.RulesetIDs, rule.ManualDomains) {
 		ruleset, err := s.rulesetService.Get(context.Background())
 		if err != nil {
 			return "", err

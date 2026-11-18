@@ -1,5 +1,5 @@
 # 前端构建阶段
-FROM node:26.13.0-alpine AS web-builder
+FROM --platform=$BUILDPLATFORM node:26.13.1-alpine AS web-builder
 WORKDIR /app/web
 COPY web/package*.json ./
 RUN npm ci
@@ -10,8 +10,10 @@ COPY pkg/gost/relay_options.json /app/pkg/gost/relay_options.json
 RUN npm run build
 
 # 后端构建阶段
-FROM golang:1.27.3-alpine AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine AS backend-builder
 WORKDIR /app
+ARG TARGETOS
+ARG TARGETARCH
 
 # 版本号参数（通过 --build-arg VERSION=xxx 传入）
 ARG VERSION=dev
@@ -31,7 +33,7 @@ COPY pkg/ pkg/
 COPY --from=web-builder /app/internal/router/dist ./internal/router/dist
 
 # 编译（关闭 CGO，使用纯 Go SQLite 驱动，注入版本号）
-RUN CGO_ENABLED=0 GOOS=linux \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -ldflags="-s -w -X 'yagp/internal/buildinfo.Version=${VERSION}'" -o yagp ./cmd/server
 
 # 运行阶段

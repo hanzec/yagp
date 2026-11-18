@@ -41,9 +41,13 @@ func syncTrafficQuota(repo *repository.NodeRepository, client *gost.Client, node
 		window = model.TrafficQuotaWindowUnset
 	case window == node.TrafficQuotaWindowStart:
 		used = node.TrafficQuotaUsedBytes
-	case window == 0 && node.TotalBytes > 0:
+	case window == 0:
 		// Historical Gost totals are only available for the lifetime window.
-		used = uint64(node.TotalBytes)
+		relays, err := repo.RelayUsageByNode(context.Background(), []uint{nodeID})
+		if err != nil {
+			return err
+		}
+		used = lifetimeTrafficBytes(node.TotalBytes, relays[nodeID])
 	}
 
 	limit := uint64(node.TrafficLimitBytes)
@@ -92,10 +96,10 @@ func quotaPorts(services []gost.ServiceConfig) (tcp, udp []uint32) {
 		if err != nil || value == 0 {
 			continue
 		}
-		switch svc.Listener.Type {
-		case "tcp", "tls", "mtls", "ws", "mws", "red":
+		switch svc.Listener.Network() {
+		case "tcp":
 			tcp = append(tcp, uint32(value))
-		case "udp", "quic":
+		case "udp":
 			udp = append(udp, uint32(value))
 		}
 	}

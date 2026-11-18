@@ -88,6 +88,15 @@ func installUpgrade(ctx context.Context, cfg Config, dir, component, tag string,
 		return fmt.Errorf("read installed version: %w", err)
 	}
 	if current == tag {
+		if component == "daemon" {
+			// A previous worker may have replaced the executable before it restarted the daemon.
+			probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+			err := waitForDaemon(probeCtx, cfg, tag)
+			cancel()
+			if err != nil {
+				return restartAndCheckUpgrade(ctx, cfg, cfg.runtimeUnit(component), component, tag)
+			}
+		}
 		return nil
 	}
 	if !upgrade.IsNewer(component, current, tag) {

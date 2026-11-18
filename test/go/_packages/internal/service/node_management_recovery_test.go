@@ -22,7 +22,7 @@ func TestAutomaticDaemonUpgradeContinuesAfterConfirmedFailure(t *testing.T) {
 		want     []string
 	}{
 		{
-			name: "worker rejects launch", err: status.Error(codes.Unavailable, "worker temporarily unavailable"),
+			name: "worker rejects launch", err: status.Error(codes.FailedPrecondition, "worker launch rejected"),
 			want: []string{"daemon/0.1.90-abcdef0"},
 		},
 		{

@@ -78,58 +78,38 @@ func (s *StatsService) GetDashboardStats() (*DashboardStats, error) {
 	stats := &DashboardStats{}
 
 	// 节点统计
-	nodeTotal, err := s.nodeRepo.CountAll()
-	if err != nil {
-		return nil, err
-	}
-	nodeOnline, err := s.nodeRepo.CountByStatus("online")
+	nodes, err := s.nodeRepo.Summary()
 	if err != nil {
 		return nil, err
 	}
 	stats.Nodes = NodeStats{
-		Total:   nodeTotal,
-		Online:  nodeOnline,
-		Offline: nodeTotal - nodeOnline,
+		Total:   nodes.Total,
+		Online:  nodes.Online,
+		Offline: nodes.Total - nodes.Online,
 	}
 
 	// 规则统计
-	ruleTotal, err := s.ruleRepo.CountAll()
-	if err != nil {
-		return nil, err
-	}
-	ruleRunning, err := s.ruleRepo.CountByStatus(model.RuleStatusRunning)
-	if err != nil {
-		return nil, err
-	}
-	forwardType, err := s.ruleRepo.CountByType(model.RuleTypeForward)
-	if err != nil {
-		return nil, err
-	}
-	tunnelType, err := s.ruleRepo.CountByType(model.RuleTypeTunnel)
+	rules, err := s.ruleRepo.Summary()
 	if err != nil {
 		return nil, err
 	}
 	stats.Rules = RuleStats{
-		Total:       ruleTotal,
-		Running:     ruleRunning,
-		Stopped:     ruleTotal - ruleRunning,
-		ForwardType: forwardType,
-		TunnelType:  tunnelType,
+		Total:       rules.Total,
+		Running:     rules.Running,
+		Stopped:     rules.Total - rules.Running,
+		ForwardType: rules.ForwardType,
+		TunnelType:  rules.TunnelType,
 	}
 
 	// 隧道统计
-	tunnelTotal, err := s.tunnelRepo.CountAll()
-	if err != nil {
-		return nil, err
-	}
-	tunnelRunning, err := s.tunnelRepo.CountByStatus(model.TunnelStatusRunning)
+	tunnels, err := s.tunnelRepo.Summary()
 	if err != nil {
 		return nil, err
 	}
 	stats.Tunnels = TunnelStats{
-		Total:   tunnelTotal,
-		Running: tunnelRunning,
-		Stopped: tunnelTotal - tunnelRunning,
+		Total:   tunnels.Total,
+		Running: tunnels.Running,
+		Stopped: tunnels.Total - tunnels.Running,
 	}
 	stats.Traffic.Tunnels, err = s.tunnelRepo.ExitTraffic()
 	if err != nil {

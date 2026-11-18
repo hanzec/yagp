@@ -256,3 +256,37 @@ func TestSharedRelayAuthenticationThroughGost(t *testing.T) {
 	probe(first, false)
 	probe(second, true)
 }
+
+func TestEquivalentRelayPoliciesKeepFile(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "node.yaml")
+	control := &controlServer{config: Config{ConfigFile: config}}
+	const name = "relay-tunnel-1"
+	path := relayAuthPolicyPath(config, name)
+	put := func(body string) os.FileInfo {
+		t.Helper()
+		_, err := control.Execute(t.Context(), &nodegrpc.CommandRequest{
+			Method: http.MethodPut, Path: nodegrpc.RelayAuthPathPrefix + name, Body: []byte(body),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		file, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return file
+	}
+	first := put(`{"users":[{"username":"b","password":"two"},{"username":"a","password":"one","allowed_ips":["192.0.2.1","::ffff:192.0.2.1"]}]}`)
+	same := put(`{"users":[{"username":"a","password":"one","allowed_ips":["192.0.2.1"]},{"username":"b","password":"two"}]}`)
+	if !os.SameFile(first, same) {
+		t.Fatal("equivalent relay policy replaced its file")
+	}
+	changed := put(`{"users":[]}`)
+	if os.SameFile(first, changed) {
+		t.Fatal("changed relay policy was not written")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	put(`{"users":[]}`)
+}

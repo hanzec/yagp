@@ -115,16 +115,16 @@
               <td class="rule-actions-cell" role="cell" data-label="操作">
                 <div class="rule-row-actions">
                   <el-button
-                    v-if="!row.role && !hasTunnelBindings(row) && !row.use_clash_ruleset && row.targets?.length"
+                    v-if="!hasTunnelBindings(row) && (needsStop(row) || (!row.role && !row.use_clash_ruleset && row.targets?.length))"
                     text
-                    :type="row.status === 'running' ? 'warning' : 'success'"
+                    :type="needsStop(row) ? 'warning' : 'success'"
                     :loading="pendingRuleIds.has(row.id)"
-                    :aria-label="(row.status === 'running' ? '停止 ' : '启动 ') + row.name"
+                    :aria-label="(needsStop(row) ? '停止 ' : '启动 ') + row.name"
                     @click="toggleRule(row)"
                   >
-                    {{ row.status === 'running' ? '停止' : '启动' }}
+                    {{ needsStop(row) ? '停止' : '启动' }}
                   </el-button>
-                  <el-button text :aria-label="'编辑 ' + row.name" @click="openDialog(row)">编辑</el-button>
+                  <el-button text :disabled="!hasTunnelBindings(row) && needsStop(row)" :aria-label="'编辑 ' + row.name" @click="openDialog(row)">编辑</el-button>
                   <el-dropdown trigger="click" @command="handleRowCommand(row, $event)">
                     <el-button text :aria-label="row.name + '的更多操作'">
                       更多 <el-icon aria-hidden="true"><ArrowDown /></el-icon>
@@ -271,7 +271,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitLoading" :disabled="!isEdit && (nodeOptionsLoading || nodeOptionsError)" @click="handleSubmit">
+        <el-button type="primary" :loading="editor.submitting" :disabled="!isEdit && (nodeOptionsLoading || nodeOptionsError)" @click="handleSubmit">
           {{ isEdit ? '保存端点' : '创建端点' }}
         </el-button>
       </template>
@@ -282,6 +282,8 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { hasTunnelBindings, needsStop } from '@/utils/rule-state'
+import { useInventoryList } from '@/utils/inventory-list'
 import InventoryToolbar from '@/components/InventoryToolbar.vue'
 import PanelDialog from '@/components/PanelDialog.vue'
 import GostTransportOptions from '@/components/GostTransportOptions.vue'
@@ -298,20 +300,20 @@ import { checkRuleListener, createRule, deleteRule, getRuleList, startRule, stop
 const nodeList = ref([])
 const nodeOptionsLoading = ref(false)
 const nodeOptionsError = ref(false)
-const ruleList = ref([])
-const connectEndpoints = computed(() => Object.fromEntries(ruleList.value.map(rule => [
-  rule.id, mappedConnectEndpoint(rule.node, rule.listen_ip, rule.listen_port)
-])))
-const loading = ref(false)
-const listError = ref(false)
 const page = ref(1)
 const pageSize = ref(10)
-const total = ref(0)
 
 const emptyFilters = { keyword: '', node_id: '', status: '' }
 const filters = reactive({ ...emptyFilters })
 const activeFilters = ref({ ...emptyFilters })
+const { items: ruleList, total, loading, loadError: listError, fetchData } = useInventoryList(() =>
+  getRuleList({ page: page.value, pageSize: pageSize.value, ...activeFilters.value })
+)
 const hasFilters = computed(() => Object.values(activeFilters.value).some(Boolean))
+
+const connectEndpoints = computed(() => Object.fromEntries(ruleList.value.map(rule => [
+  rule.id, mappedConnectEndpoint(rule.node, rule.listen_ip, rule.listen_port)
+])))
 
 const statusClass = { running: 'is-success', stopped: 'is-muted', error: 'is-danger' }
 const statusText = { running: '运行中', stopped: '已停止', error: '异常' }
@@ -335,16 +337,14 @@ const summary = computed(() => {
 })
 
 const dialogVisible = ref(false)
-const isEdit = ref(false)
+const editor = ref({ id: null, submitting: false })
+const isEdit = computed(() => editor.value.id != null)
 const boundTunnelCount = ref(0)
 const restartHint = computed(() => boundTunnelCount.value > 1
   ? '请先停止全部关联隧道，再逐条启动以应用配置。'
   : '请重启关联隧道以应用配置。')
 const endpointRoles = { entry: '入口', exit: '出口' }
-const hasTunnelBindings = rule => !!(rule.linked_tunnels?.length || rule.linked_tunnel_id)
 const strategies = { round: '轮询', rand: '随机', fifo: '先进先出', hash: '哈希' }
-const editId = ref(null)
-const submitLoading = ref(false)
 const formRef = ref(null)
 let savedProtocolOptions = false
 let savedRelayConfig = null
@@ -439,27 +439,6 @@ const fetchNodes = async () => {
   }
 }
 
-let latestRequest = 0
-const fetchData = async (silent = false) => {
-  const request = ++latestRequest
-  if (!silent) loading.value = true
-  try {
-    const { data } = await getRuleList({
-      page: page.value,
-      pageSize: pageSize.value,
-      ...activeFilters.value
-    })
-    if (request !== latestRequest) return
-    ruleList.value = data.list || []
-    total.value = data.total || 0
-    listError.value = false
-  } catch {
-    if (request === latestRequest) listError.value = true
-  } finally {
-    if (request === latestRequest) loading.value = false
-  }
-}
-
 const applyFilters = () => {
   activeFilters.value = { ...filters, keyword: filters.keyword.trim() }
   ruleList.value = []
@@ -474,8 +453,7 @@ const clearFilters = () => {
 }
 
 const openDialog = (row = null, copy = false) => {
-  isEdit.value = !!row && !copy
-  editId.value = isEdit.value ? row.id : null
+  editor.value = { id: row && !copy ? row.id : null, submitting: false }
   boundTunnelCount.value = isEdit.value && hasTunnelBindings(row) ? row.linked_tunnels?.length || 1 : 0
   savedProtocolOptions = isEdit.value && !!Object.keys(row.protocol_options || {}).length
   savedRelayConfig = isEdit.value ? { nodeId: row.node_id, protocol: row.protocol, mptcp: row.protocol_options?.mptcp } : null
@@ -501,16 +479,17 @@ const openDialog = (row = null, copy = false) => {
 }
 
 const handleSubmit = async () => {
-  if (!formRef.value || submitLoading.value || (!isEdit.value && (nodeOptionsLoading.value || nodeOptionsError.value))) return
-  const valid = await formRef.value.validate().catch(() => false)
-  if (!valid) {
-    await nextTick()
-    formRef.value.$el.querySelector('.el-form-item.is-error input, .el-form-item.is-error textarea')?.focus()
-    return
-  }
-
-  submitLoading.value = true
+  const current = editor.value
+  if (!formRef.value || current.submitting || (!isEdit.value && (nodeOptionsLoading.value || nodeOptionsError.value))) return
+  current.submitting = true
   try {
+    const valid = await formRef.value.validate().catch(() => false)
+    if (!dialogVisible.value || current !== editor.value) return
+    if (!valid) {
+      await nextTick()
+      formRef.value?.$el.querySelector('.el-form-item.is-error input, .el-form-item.is-error textarea')?.focus()
+      return
+    }
     const payload = {
       node_id: form.node_id,
       name: form.name,
@@ -533,21 +512,22 @@ const handleSubmit = async () => {
       payload.protocol_options = supportedProtocolOptions(form.protocol_options, selectedNode.value?.mptcp_supported,
         savedRelayConfig?.nodeId === form.node_id && savedRelayConfig?.protocol === form.protocol ? savedRelayConfig.mptcp : undefined)
     }
-    if (isEdit.value) {
-      await updateRule(editId.value, payload)
-      listenerChecks.delete(editId.value)
-      ElMessage.success(boundTunnelCount.value ? `端点已保存。${restartHint.value}` : '端点已保存')
+    if (current.id != null) {
+      const message = boundTunnelCount.value ? `端点已保存。${restartHint.value}` : '端点已保存'
+      await updateRule(current.id, payload)
+      listenerChecks.delete(current.id)
+      ElMessage.success(message)
     } else {
       const result = await createRule(payload)
       if (result.data?.id) checkListener(result.data, true)
       ElMessage.success('端点已创建')
     }
-    dialogVisible.value = false
+    if (current === editor.value) dialogVisible.value = false
     fetchData()
   } catch {
     // The request interceptor displays the backend error.
   } finally {
-    submitLoading.value = false
+    current.submitting = false
   }
 }
 
@@ -588,8 +568,8 @@ const checkListener = async (row, notify = false) => {
 }
 
 const toggleRule = row => {
-  const running = row.status === 'running'
-  return runRuleAction(row, running ? stopRule : startRule, running ? '端点已停止' : '端点已启动')
+  const stop = needsStop(row)
+  return runRuleAction(row, stop ? stopRule : startRule, stop ? '端点已停止' : '端点已启动')
 }
 
 const handleRowCommand = async (row, command) => {
@@ -617,7 +597,7 @@ onMounted(() => {
   fetchNodes()
   fetchData()
   refreshTimer = setInterval(() => {
-    if (!document.hidden && !loading.value && !listError.value) fetchData(true)
+    if (!document.hidden) fetchData(true)
   }, 5000)
 })
 onBeforeUnmount(() => clearInterval(refreshTimer))

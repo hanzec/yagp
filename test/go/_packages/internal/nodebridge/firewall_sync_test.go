@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -75,6 +76,48 @@ func TestFirewallPolicyFollowsExitEndpointAndCachesChanges(t *testing.T) {
 	newFirewallPolicy(control, legacy)
 	if got := status(); got.GetManaged() || got.GetDisabledReason() != "no_exit_endpoint" {
 		t.Fatalf("cached policy was not restored: %v", got)
+	}
+}
+
+func TestFirewallPolicyRetriesFailedCacheWrite(t *testing.T) {
+	for _, connected := range []bool{true, false} {
+		t.Run(fmt.Sprintf("connected=%t", connected), func(t *testing.T) {
+			disabled, enabled := false, true
+			dir := filepath.Join(t.TempDir(), "node")
+			if err := os.Mkdir(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			control := &controlServer{config: Config{NodeID: 42, ConfigFile: filepath.Join(dir, "node.yaml"),
+				Firewall: FirewallConfig{Enabled: &disabled, Table: "host-filter", InputChain: "host-input"}}}
+			legacy, err := newFirewallManager(42, control.config.Firewall, firewallNFT)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := storePanelConfig(control.config.ConfigFile, &nodegrpc.NodeConfig{HasExitEndpoint: &disabled}); err != nil {
+				t.Fatal(err)
+			}
+			policy := newFirewallPolicy(control, legacy)
+			client := &firewallPolicyClient{config: &nodegrpc.NodeConfig{HasExitEndpoint: &enabled}}
+			if err := os.Rename(dir, dir+".offline"); err != nil {
+				t.Fatal(err)
+			}
+			policy.refresh(t.Context(), control, client)
+			if !control.firewall.Load().Status().Managed {
+				t.Fatal("temporary cache failure prevented the live policy update")
+			}
+			if err := os.Rename(dir+".offline", dir); err != nil {
+				t.Fatal(err)
+			}
+			if connected {
+				policy.refresh(t.Context(), control, client)
+			} else {
+				policy.refresh(t.Context(), control, nil)
+			}
+			newFirewallPolicy(control, legacy)
+			if !control.firewall.Load().Status().Managed {
+				t.Fatal("daemon restarted with stale firewall policy after the cache directory recovered")
+			}
+		})
 	}
 }
 

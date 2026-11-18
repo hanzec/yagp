@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"yagp/pkg/nodegrpc"
 
@@ -111,7 +112,13 @@ func (s *controlServer) relayAuthCommand(command *nodegrpc.CommandRequest, servi
 			return nil, err
 		}
 		data, err := json.Marshal(policy)
-		if err != nil || WriteNodeFile(path, data) != nil {
+		if err != nil {
+			return nil, status.Error(codes.Internal, "cannot encode local relay authentication policy")
+		}
+		if previous, err := os.ReadFile(path); err == nil && bytes.Equal(data, previous) {
+			return reply, nil
+		}
+		if err := WriteNodeFile(path, data); err != nil {
 			return nil, status.Error(codes.Internal, "cannot save local relay authentication policy")
 		}
 	case http.MethodDelete:
@@ -146,7 +153,10 @@ func parseRelayAuthPolicy(data []byte) (nodegrpc.RelayAuthConfig, error) {
 			}
 			user.AllowedIPs[j] = address.Unmap().String()
 		}
+		slices.Sort(user.AllowedIPs)
+		user.AllowedIPs = slices.Compact(user.AllowedIPs)
 	}
+	slices.SortFunc(policy.Users, func(a, b nodegrpc.RelayAuthUser) int { return strings.Compare(a.Username, b.Username) })
 	return policy, nil
 }
 

@@ -4,12 +4,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"yagp/internal/buildinfo"
 	"yagp/internal/config"
@@ -33,6 +37,7 @@ func main() {
 	flag.StringVar(&configPath, "c", "", "配置文件路径")
 	flag.StringVar(&configPath, "config", "", "配置文件路径")
 	showVersion := flag.Bool("version", false, "打印构建版本")
+	installPort := flag.String("install-port", "", "传入 current 打印监听地址，传入端口号输出更新后的 YAML 配置")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(buildinfo.Version)
@@ -43,6 +48,16 @@ func main() {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		panic("加载配置失败: " + err.Error())
+	}
+
+	if *installPort != "" {
+		output, err := installListenAddress(configPath, cfg.Server.Port, *installPort)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(strings.TrimSuffix(output, "\n"))
+		return
 	}
 
 	// 初始化日志
@@ -58,6 +73,10 @@ func main() {
 	}()
 
 	logger.Info("yagp 启动中...")
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(quit)
+
 	backgroundCtx, stopBackground := context.WithCancel(context.Background())
 	defer stopBackground()
 
@@ -106,18 +125,15 @@ func main() {
 	r.Setup(engine)
 
 	// 启动服务器
+	server := &http.Server{Addr: cfg.Server.Port, Handler: engine.Handler()}
 	go func() {
 		logger.Infof("服务器启动在 %s", cfg.Server.Port)
-		if err := engine.Run(cfg.Server.Port); err != nil {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Fatalf("服务器启动失败: %v", err)
 		}
 	}()
 
-	// 启动节点健康检测服务
-	healthService := service.NewNodeHealthService(db)
-	healthService.Start()
-
-	// 启动规则状态同步服务
+	// 同步节点健康状态和转发规则
 	syncService := service.NewRuleSyncService(db)
 	syncService.Start()
 	go service.NewGostRulesetService(db).Run(backgroundCtx)
@@ -126,20 +142,23 @@ func main() {
 
 	// 启动自动备份服务
 	backupService := service.NewBackupService(db)
-	backupService.Start()
+	var backupWorker sync.WaitGroup
+	backupWorker.Go(func() { backupService.Run(backgroundCtx) })
 
-	// 优雅关闭
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	logger.Info("yagp 正在关闭...")
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancelDrain()
+	if err := server.Shutdown(drainCtx); err != nil {
+		logger.Warnf("等待 HTTP 请求结束失败: %v", err)
+		_ = server.Close()
+	}
 
 	// 停止相关的后台服务
 	stopBackground()
-	healthService.Stop()
 	syncService.Stop()
-	backupService.Stop()
+	backupWorker.Wait()
 }
 
 // initDatabase 初始化数据库

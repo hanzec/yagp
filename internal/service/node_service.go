@@ -289,6 +289,10 @@ func (s *NodeService) List(req *dto.NodeListReq) ([]model.GostNode, int64, error
 	return s.nodeRepo.List(opt, req.Tag)
 }
 
+func (s *NodeService) RoutingOptions(ctx context.Context, before uint) ([]model.RoutingNodeOption, uint, error) {
+	return s.nodeRepo.RoutingOptions(ctx, before)
+}
+
 // CreateGostClient 创建节点的 Gost 客户端
 func (s *NodeService) CreateGostClient(id uint) (*gost.Client, error) {
 	node, err := s.GetByID(id)

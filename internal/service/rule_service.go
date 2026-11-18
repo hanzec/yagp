@@ -147,7 +147,7 @@ func (s *RuleService) Update(id uint, req *dto.UpdateRuleReq, username, ip, user
 		return nil, err
 	}
 	bound := rule.LinkedTunnelID != nil
-	if !bound && rule.Status == model.RuleStatusRunning {
+	if !bound && rule.NeedsStop() {
 		return nil, errors.ErrRuleRunning
 	}
 	if bound && ((req.NodeID != nil && (rule.NodeID == nil || *req.NodeID != *rule.NodeID)) ||
@@ -359,8 +359,7 @@ func (s *RuleService) Delete(id uint, username, ip, userAgent string) error {
 		return errors.ErrRuleTunnelLinked
 	}
 
-	// A failed start or stop can retain a live service even when the status is not running.
-	if rule.Status == model.RuleStatusRunning || rule.ServiceID != "" {
+	if rule.NeedsStop() {
 		if err = s.Stop(id, username, ip, userAgent); err != nil {
 			return err
 		}
@@ -448,9 +447,6 @@ func (s *RuleService) List(req *dto.RuleListReq) ([]model.GostRule, int64, error
 		Conditions: make(map[string]any),
 	}
 
-	if req.NodeID > 0 {
-		opt.Conditions["node_id = ?"] = req.NodeID
-	}
 	if req.TunnelID > 0 {
 		opt.Conditions["tunnel_id = ?"] = req.TunnelID
 	}
@@ -466,7 +462,7 @@ func (s *RuleService) List(req *dto.RuleListReq) ([]model.GostRule, int64, error
 		}
 	}
 
-	rules, total, err := s.ruleRepo.List(opt)
+	rules, total, err := s.ruleRepo.List(opt, req.NodeID)
 	if err != nil || len(rules) == 0 {
 		return rules, total, err
 	}
@@ -643,11 +639,36 @@ func (s *RuleService) Stop(id uint, username, ip, userAgent string) error {
 		return err
 	}
 
-	if rule.Status != model.RuleStatusRunning && rule.ServiceID == "" {
+	if !rule.NeedsStop() {
 		return nil
 	}
 
-	if err := s.stopSelectedEntrance(rule); err != nil {
+	node, err := s.nodeRepo.FindByID(ruleEntryNodeID(rule))
+	if stderrors.Is(err, gorm.ErrRecordNotFound) {
+		return errors.ErrNodeNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if node.Status != model.NodeStatusOnline {
+		return errors.ErrNodeOffline
+	}
+	serviceID := rule.ServiceID
+	if serviceID == "" {
+		serviceID = entranceServiceName(rule.ID)
+		// Keep a retry handle if deletion succeeds but saving the node configuration fails.
+		if err := s.ruleRepo.UpdateRuntime(rule.ID, serviceID, rule.Status); err != nil {
+			return err
+		}
+	}
+	client := utils.GetGostClient(node)
+	if err := client.DeleteService(serviceID); err != nil {
+		return err
+	}
+	if err := client.SaveConfig(); err != nil {
+		return err
+	}
+	if err := s.ruleRepo.UpdateRuntime(rule.ID, "", model.RuleStatusStopped); err != nil {
 		return err
 	}
 
@@ -661,37 +682,6 @@ func (s *RuleService) Stop(id uint, username, ip, userAgent string) error {
 		userAgent)
 
 	logger.Infof("停止规则成功: %s", rule.Name)
-	return nil
-}
-
-// stopSelectedEntrance is used by the owning tunnel to stop its ingress service.
-func (s *RuleService) stopSelectedEntrance(rule *model.GostRule) error {
-	if rule.ServiceID != "" {
-		node, err := s.nodeRepo.FindByID(ruleEntryNodeID(rule))
-		if stderrors.Is(err, gorm.ErrRecordNotFound) {
-			return errors.ErrNodeNotFound
-		}
-		if err != nil {
-			return err
-		}
-		if node.Status != model.NodeStatusOnline {
-			return errors.ErrNodeOffline
-		}
-		client := utils.GetGostClient(node)
-		if err := client.DeleteService(rule.ServiceID); err != nil {
-			return err
-		}
-		if err := client.SaveConfig(); err != nil {
-			return err
-		}
-	}
-	// Retain the service ID until the node config and local state are both saved;
-	// a database write failure must leave enough information to retry the stop.
-	if err := s.ruleRepo.UpdateRuntime(rule.ID, "", model.RuleStatusStopped); err != nil {
-		return err
-	}
-	rule.ServiceID = ""
-	rule.Status = model.RuleStatusStopped
 	return nil
 }
 
@@ -793,19 +783,39 @@ func (s *RuleService) provisionService(client *gost.Client, node *model.GostNode
 func (s *RuleService) persistStartedService(client *gost.Client, rule *model.GostRule, selected bool) error {
 	serviceName := rule.ServiceID
 	// The tunnel rolls back the live service if its configuration cannot be saved.
-	if err := client.SaveConfig(); err != nil && selected {
+	if err := client.SaveConfig(); err != nil {
+		if !selected {
+			return s.rollbackStartedService(client, rule, errors.ErrRuleStartFailed)
+		}
 		// Retain the live listener identity if rollback also fails and cleanup is retried after reload.
-		_ = s.ruleRepo.UpdateRuntime(rule.ID, serviceName, model.RuleStatusError)
+		if err := s.ruleRepo.UpdateRuntime(rule.ID, serviceName, model.RuleStatusError); err != nil {
+			return err
+		}
 		return errors.ErrRuleStartFailed
 	}
 	if err := s.ruleRepo.UpdateRuntime(rule.ID, serviceName, model.RuleStatusRunning); err != nil {
 		if !selected {
-			_ = client.DeleteService(serviceName)
-			_ = client.SaveConfig()
+			return s.rollbackStartedService(client, rule, err)
 		}
 		return err
 	}
 	rule.Status = model.RuleStatusRunning
 
 	return nil
+}
+
+func (s *RuleService) rollbackStartedService(client *gost.Client, rule *model.GostRule, startErr error) error {
+	// Save the identity before cleanup so a failed removal or config save can be retried.
+	trackingErr := s.ruleRepo.UpdateRuntime(rule.ID, rule.ServiceID, model.RuleStatusError)
+	cleanupErr := client.DeleteService(rule.ServiceID)
+	if cleanupErr == nil {
+		cleanupErr = client.SaveConfig()
+	}
+	if cleanupErr != nil {
+		return stderrors.Join(startErr, trackingErr, cleanupErr)
+	}
+	if err := s.ruleRepo.UpdateRuntime(rule.ID, "", model.RuleStatusStopped); err != nil {
+		return stderrors.Join(startErr, trackingErr, err)
+	}
+	return startErr
 }

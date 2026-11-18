@@ -53,13 +53,6 @@ func (r *TunnelRepository) FindByID(id uint) (*model.GostTunnel, error) {
 	return &tunnel, nil
 }
 
-// FindByEntranceID looks up the tunnel reserving either role of an entrance.
-func (r *TunnelRepository) FindByEntranceID(ruleID uint) (*model.GostTunnel, error) {
-	var tunnel model.GostTunnel
-	err := r.DB.Where("entry_rule_id = ? OR exit_rule_id = ?", ruleID, ruleID).First(&tunnel).Error
-	return &tunnel, err
-}
-
 // List 查询隧道列表
 func (r *TunnelRepository) List(opt *QueryOption) ([]model.GostTunnel, int64, error) {
 	var tunnels []model.GostTunnel
@@ -98,11 +91,10 @@ func (r *TunnelRepository) UpdateStatus(id uint, status model.TunnelStatus) erro
 	return r.UpdateField(&model.GostTunnel{}, id, "status", status)
 }
 
-// CountAll 统计总数
-func (r *TunnelRepository) CountAll() (int64, error) {
+func (r *TunnelRepository) Exists(ctx context.Context, id uint) (bool, error) {
 	var count int64
-	err := r.DB.Model(&model.GostTunnel{}).Count(&count).Error
-	return count, err
+	err := r.DB.WithContext(ctx).Model(&model.GostTunnel{}).Where("id = ?", id).Count(&count).Error
+	return count != 0, err
 }
 
 // FindByNodeID 查找节点相关的隧道
@@ -119,30 +111,9 @@ func (r *TunnelRepository) StopByNodeID(nodeID uint) error {
 		Update("status", model.TunnelStatusStopped).Error
 }
 
-// HasRulesUsingTunnel 检查是否有规则正在使用该隧道
-func (r *TunnelRepository) HasRulesUsingTunnel(tunnelID uint) (bool, error) {
-	var count int64
-	err := r.DB.Model(&model.GostRule{}).Where("tunnel_id = ?", tunnelID).Count(&count).Error
-	return count > 0, err
-}
-
-// HasRules 检查隧道是否被规则使用（别名方法）
+// HasRules checks whether a rule still references the tunnel.
 func (r *TunnelRepository) HasRules(tunnelID uint) (bool, error) {
-	return r.HasRulesUsingTunnel(tunnelID)
-}
-
-// CountByStatus 按状态统计
-func (r *TunnelRepository) CountByStatus(status model.TunnelStatus) (int64, error) {
-	var count int64
-	err := r.DB.Model(&model.GostTunnel{}).Where("status = ?", status).Count(&count).Error
-	return count, err
-}
-
-// UpdateServiceInfo 更新隧道的服务 ID 和 Chain ID
-func (r *TunnelRepository) UpdateServiceInfo(id uint, serviceID, chainID string) error {
-	return r.DB.Model(&model.GostTunnel{}).Where("id = ?", id).
-		Updates(map[string]any{
-			"service_id": serviceID,
-			"chain_id":   chainID,
-		}).Error
+	var exists int
+	err := r.DB.Model(&model.GostRule{}).Select("1").Where("tunnel_id = ?", tunnelID).Limit(1).Scan(&exists).Error
+	return exists != 0, err
 }

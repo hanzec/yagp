@@ -25,6 +25,35 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestNodePollingSharesConfigForRecoveryAndRuleSync(t *testing.T) {
+	db := newServiceTestDB(t)
+	remote := &lifecycleNode{t: t, gostConfig: `{"services":[{"name":"live","status":{"state":"running"}}]}`}
+	node := startServiceTestNode(t, remote)
+	node.Status = model.NodeStatusOffline
+	saveServiceFixtures(t, db, &node)
+	rule := model.GostRule{Name: "forward", NodeID: &node.ID, ServiceID: "live", Status: model.RuleStatusStopped}
+	saveServiceFixtures(t, db, &rule)
+	poll := NewRuleSyncService(db)
+	for i, body := range []string{remote.gostConfig, "invalid JSON"} {
+		remote.mu.Lock()
+		remote.gostConfig = body
+		remote.mu.Unlock()
+
+		poll.syncAll()
+		poll.wg.Wait()
+		stored, err := poll.nodeRepo.FindByID(node.ID)
+		requireServiceError(t, err, nil)
+		updated, err := poll.ruleRepo.FindByID(rule.ID)
+		requireServiceError(t, err, nil)
+		remote.mu.Lock()
+		reads := remote.configReads
+		remote.mu.Unlock()
+		if reads != i+1 || stored.LastCheckAt == nil || stored.Status != model.NodeStatusOnline || updated.Status != model.RuleStatusRunning {
+			t.Fatalf("poll %d: reads=%d node=%s last check=%v rule=%s", i+1, reads, stored.Status, stored.LastCheckAt, updated.Status)
+		}
+	}
+}
+
 func TestRuleSyncRetargetsRunningTunnel(t *testing.T) {
 	if err := logger.Init(&logger.Config{Level: "error"}); err != nil {
 		t.Fatal(err)

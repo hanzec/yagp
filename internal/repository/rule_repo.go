@@ -77,11 +77,14 @@ func (r *RuleRepository) FindByID(id uint) (*model.GostRule, error) {
 }
 
 // List 查询规则列表
-func (r *RuleRepository) List(opt *QueryOption) ([]model.GostRule, int64, error) {
+func (r *RuleRepository) List(opt *QueryOption, entryNodeID uint) ([]model.GostRule, int64, error) {
 	var rules []model.GostRule
 	var total int64
 
 	db := r.DB.Model(&model.GostRule{})
+	if entryNodeID != 0 {
+		db = r.onEntryNode(entryNodeID)
+	}
 
 	// 应用条件过滤
 	db = ApplyConditions(db, opt)
@@ -109,17 +112,23 @@ func (r *RuleRepository) List(opt *QueryOption) ([]model.GostRule, int64, error)
 	return rules, total, nil
 }
 
-// FindByNodeID 根据节点 ID 查询规则
-func (r *RuleRepository) FindByNodeID(nodeID uint) ([]model.GostRule, error) {
-	var rules []model.GostRule
-	err := r.DB.Where("node_id = ?", nodeID).Find(&rules).Error
-	return rules, err
+func (r *RuleRepository) onEntryNode(nodeID uint) *gorm.DB {
+	tunnels := r.DB.Model(&model.GostTunnel{}).Select("id").Where("entry_node_id = ?", nodeID)
+	return r.DB.Model(&model.GostRule{}).
+		Where("((type = ? AND node_id = ?) OR (type = ? AND tunnel_id IN (?)))",
+			model.RuleTypeForward, nodeID, model.RuleTypeTunnel, tunnels)
 }
 
-// FindByTunnelID 根据隧道 ID 查询规则
-func (r *RuleRepository) FindByTunnelID(tunnelID uint) ([]model.GostRule, error) {
+func (r *RuleRepository) FindByEntryNodeID(nodeID uint, tunnels []model.GostTunnel) ([]model.GostRule, error) {
 	var rules []model.GostRule
-	err := r.DB.Where("tunnel_id = ?", tunnelID).Find(&rules).Error
+	query := r.DB.Where("node_id = ?", nodeID)
+	for _, tunnel := range tunnels {
+		if tunnel.EntryNodeID == nodeID {
+			query = r.onEntryNode(nodeID)
+			break
+		}
+	}
+	err := query.Find(&rules).Error
 	return rules, err
 }
 
@@ -133,11 +142,7 @@ func (r *RuleRepository) EntranceBindings(ruleIDs []uint) ([]model.GostTunnel, e
 
 // ListenerConflicts checks whether a rule on the same ingress overlaps this bind.
 func (r *RuleRepository) ListenerConflicts(nodeID uint, protocol model.RuleProtocol, ip string, port int, excludeID ...uint) (bool, error) {
-	tunnels := r.DB.Model(&model.GostTunnel{}).Select("id").Where("entry_node_id = ?", nodeID)
-	db := r.DB.Model(&model.GostRule{}).
-		Where("(listen_port = ? OR applied_endpoint IS NOT NULL)", port).
-		Where("((type = ? AND node_id = ?) OR (type = ? AND tunnel_id IN (?)))",
-			model.RuleTypeForward, nodeID, model.RuleTypeTunnel, tunnels)
+	db := r.onEntryNode(nodeID).Where("(listen_port = ? OR applied_endpoint IS NOT NULL)", port)
 	if len(excludeID) > 0 {
 		db = db.Where("id != ?", excludeID[0])
 	}
@@ -160,11 +165,6 @@ func (r *RuleRepository) UpdateStatus(id uint, status model.RuleStatus) error {
 	return r.UpdateField(&model.GostRule{}, id, "status", status)
 }
 
-// UpdateServiceID 更新服务 ID
-func (r *RuleRepository) UpdateServiceID(id uint, serviceID string) error {
-	return r.UpdateField(&model.GostRule{}, id, "service_id", serviceID)
-}
-
 // UpdateRuntime updates the service ID and status together.
 func (r *RuleRepository) UpdateRuntime(id uint, serviceID string, status model.RuleStatus) error {
 	return r.UpdateFields(&model.GostRule{}, id, map[string]interface{}{
@@ -183,34 +183,6 @@ func (r *RuleRepository) StopEndpoint(id uint) error {
 // UpdateObserverID 更新观察器 ID
 func (r *RuleRepository) UpdateObserverID(id uint, observerID string) error {
 	return r.UpdateField(&model.GostRule{}, id, "observer_id", observerID)
-}
-
-// CountByNodeID 按节点统计数量
-func (r *RuleRepository) CountByNodeID(nodeID uint) (int64, error) {
-	var count int64
-	err := r.DB.Model(&model.GostRule{}).Where("node_id = ?", nodeID).Count(&count).Error
-	return count, err
-}
-
-// CountAll 统计总数
-func (r *RuleRepository) CountAll() (int64, error) {
-	var count int64
-	err := r.DB.Model(&model.GostRule{}).Count(&count).Error
-	return count, err
-}
-
-// CountByStatus 按状态统计
-func (r *RuleRepository) CountByStatus(status model.RuleStatus) (int64, error) {
-	var count int64
-	err := r.DB.Model(&model.GostRule{}).Where("status = ?", status).Count(&count).Error
-	return count, err
-}
-
-// CountByType 按类型统计
-func (r *RuleRepository) CountByType(ruleType model.RuleType) (int64, error) {
-	var count int64
-	err := r.DB.Model(&model.GostRule{}).Where("type = ?", ruleType).Count(&count).Error
-	return count, err
 }
 
 // StopByNodeID 停止指定节点的所有规则

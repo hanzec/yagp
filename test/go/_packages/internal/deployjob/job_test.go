@@ -64,7 +64,7 @@ func TestReadStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Mode != "depoly" || status.State != "running" || status.ExitCode != nil || status.Logs != wantTail {
+	if status.Mode != "depoly" || status.State != "running" || status.ExitCode != nil || status.Logs != wantTail || status.LogOffset != int64(len("older output\n")) {
 		t.Fatalf("running job mode = %q, state = %q, exit code = %v, log size = %d, want the running job and its latest %d log bytes",
 			status.Mode, status.State, status.ExitCode, len(status.Logs), MaxLogRead)
 	}
@@ -73,5 +73,37 @@ func TestReadStatus(t *testing.T) {
 	}
 	if _, err := ReadStatus(directory, testJobID); err == nil {
 		t.Fatal("accepted invalid status JSON")
+	}
+}
+
+func TestLogOffsetsAtUTF8Boundaries(t *testing.T) {
+	directory := t.TempDir()
+	job := filepath.Join(directory, testJobID)
+	if err := os.Mkdir(job, 0750); err != nil {
+		t.Fatal(err)
+	}
+	write := func(file, data string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(job, file), []byte(data), 0640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("status.json", `{"mode":"compose","state":"running"}`)
+	// The byte cap starts in the first rune and the write ends partway through the last.
+	middle := strings.Repeat("a", MaxLogRead-6) + "\xff"
+	prefix := "节点"
+	tail := "成"
+	last := "功"
+	first := prefix + middle + tail + last[:1]
+	write("job.log", first)
+	got, err := ReadStatus(directory, testJobID)
+	if err != nil || got.LogOffset != int64(len(prefix)) || got.Logs != strings.ReplaceAll(middle, "\xff", "?")+tail {
+		t.Fatalf("first snapshot offset=%d bytes=%d err=%v", got.LogOffset, len(got.Logs), err)
+	}
+	end := got.LogOffset + int64(len(got.Logs))
+	write("job.log", first+last[1:])
+	got, err = ReadStatus(directory, testJobID)
+	if err != nil || got.LogOffset > end || end > got.LogOffset+int64(len(got.Logs)) || got.Logs[end-got.LogOffset:] != last {
+		t.Fatalf("completed character missing at previous end %d, new offset=%d bytes=%d err=%v", end, got.LogOffset, len(got.Logs), err)
 	}
 }

@@ -46,8 +46,12 @@ func TestGostAllowlistValidatesNodeSelection(t *testing.T) {
 	if _, err = service.validateNodeIDs(ctx, []uint{0}); err == nil {
 		t.Fatal("accepted an unknown node ID")
 	}
-	addresses, err := service.resolveAddresses(ctx, []uint{nodes[3].ID}, false, false)
-	if err != nil || !slices.Equal(addresses, []string{"192.0.2.2", "2001:db8::2", "203.0.113.2"}) {
+	snapshot, err := service.sourceNodes(ctx, []uint{nodes[3].ID, nodes[4].ID, nodes[5].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addresses := snapshot.addresses([]uint{nodes[3].ID}, false)
+	if !slices.Equal(addresses, []string{"192.0.2.2", "2001:db8::2", "203.0.113.2"}) {
 		t.Fatalf("resolved addresses = %v, err = %v", addresses, err)
 	}
 	for _, i := range []int{4, 5} {
@@ -55,8 +59,8 @@ func TestGostAllowlistValidatesNodeSelection(t *testing.T) {
 			t.Fatalf("node with supplemental addresses rejected: %v", err)
 		}
 	}
-	addresses, err = service.resolveAddresses(ctx, []uint{nodes[4].ID, nodes[5].ID}, false, false)
-	if err != nil || !slices.Equal(addresses, []string{"192.0.2.4", "2001:db8::4", "203.0.113.3", "203.0.113.4"}) {
+	addresses = snapshot.addresses([]uint{nodes[4].ID, nodes[5].ID}, false)
+	if !slices.Equal(addresses, []string{"192.0.2.4", "2001:db8::4", "203.0.113.3", "203.0.113.4"}) {
 		t.Fatalf("snapshot and manual addresses were not merged: %v, err = %v", addresses, err)
 	}
 	ids, err = service.validateNodeIDs(ctx, nil)

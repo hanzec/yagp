@@ -15,12 +15,21 @@ import (
 func (s *NodeService) CurrentTrafficUsage(ctx context.Context, nodes []model.GostNode, now time.Time) (map[uint]uint64, error) {
 	usage := make(map[uint]uint64, len(nodes))
 	var uncapped []uint
-	for _, node := range nodes {
+	for i := range nodes {
+		node := &nodes[i]
 		if node.TrafficLimitBytes == 0 {
 			uncapped = append(uncapped, node.ID)
-			// Observer traffic is already attributed to the node hosting the listener.
-			if node.TotalBytes > 0 {
-				usage[node.ID] = uint64(node.TotalBytes)
+		}
+	}
+	relays, err := s.nodeRepo.RelayUsageByNode(ctx, uncapped)
+	if err != nil {
+		return nil, err
+	}
+	for i := range nodes {
+		node := &nodes[i]
+		if node.TrafficLimitBytes == 0 {
+			if relayBytes, sampled := relays[node.ID]; sampled || node.TotalBytes > 0 {
+				usage[node.ID] = lifetimeTrafficBytes(node.TotalBytes, relayBytes)
 			}
 			continue
 		}
@@ -29,18 +38,11 @@ func (s *NodeService) CurrentTrafficUsage(ctx context.Context, nodes []model.Gos
 			usage[node.ID] = node.TrafficQuotaUsedBytes
 		}
 	}
-	if len(uncapped) == 0 {
-		return usage, nil
-	}
-
-	relays, err := s.nodeRepo.RelayUsageByNode(ctx, uncapped)
-	if err != nil {
-		return nil, err
-	}
-	for id, bytes := range relays {
-		usage[id] += bytes
-	}
 	return usage, nil
+}
+
+func lifetimeTrafficBytes(observerBytes int64, relayBytes uint64) uint64 {
+	return uint64(max(observerBytes, 0)) + relayBytes
 }
 
 func (s *NodeService) CalibrateNodeTotals(ctx context.Context, id uint, input, output int64) error {
