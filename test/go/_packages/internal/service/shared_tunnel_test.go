@@ -112,21 +112,181 @@ func TestEndpointTunnelsShareAnExitRelay(t *testing.T) {
 	}, testAdmin, testIP, testAgent)
 	requireServiceError(t, err, nil)
 	requireServiceError(t, tunnels.Stop(left.ID, testAdmin, testIP, testAgent), nil)
-	requireServiceError(t, tunnels.Start(left.ID, testAdmin, testIP, testAgent), bizerrors.ErrTunnelEndpointRestart)
 	if relay := exitRemote.service(right.ServiceID); relay.Addr != ":18443" {
-		t.Fatalf("applying edited settings while a peer is running changed the shared Relay: %+v", relay)
+		t.Fatalf("saving the endpoint changed the live Relay before tunnel startup: %+v", relay)
 	}
+	stopChain := "DELETE /config/chains/" + right.ChainID
+	rightRelay := right.ServiceID
+	secondRemote.rejectCommand(stopChain, http.StatusServiceUnavailable)
+	requireServiceError(t, tunnels.Start(left.ID, testAdmin, testIP, testAgent), bizerrors.ErrTunnelEndpointRestart)
+	right = loadSharedTunnel(t, tunnels, right.ID)
+	requireRunningTunnelRelay(t, right, secondRemote, "198.51.100.21:18443")
+	if listener := secondRemote.service(right.EntryRule.ServiceID); listener.Addr != ":18002" || exitRemote.service(rightRelay).Addr != ":18443" {
+		t.Fatalf("an incomplete stop did not restore the peer's old listener and Relay: %+v", listener)
+	}
+	if saved := loadSharedTunnel(t, tunnels, left.ID); saved.Status != model.TunnelStatusStopped {
+		t.Fatalf("startup continued after a peer failed to stop: %s", saved.Status)
+	}
+	secondRemote.rejectCommand(stopChain, 0)
+
+	requireServiceError(t, tunnels.Start(left.ID, testAdmin, testIP, testAgent), nil)
+	left, right = loadSharedTunnel(t, tunnels, left.ID), loadSharedTunnel(t, tunnels, right.ID)
+	if left.ServiceID != right.ServiceID || left.ExitRule.AppliedEndpoint != nil || right.ExitRule.AppliedEndpoint != nil {
+		t.Fatal("starting a stopped tunnel did not apply the pending endpoint change to its running peer")
+	}
+	for _, link := range []struct {
+		tunnel *model.GostTunnel
+		remote *lifecycleNode
+	}{{left, firstRemote}, {right, secondRemote}} {
+		requireRunningTunnelRelay(t, link.tunnel, link.remote, "198.51.100.21:18444")
+	}
+	if relay := exitRemote.service(right.ServiceID); relay.Addr != ":18444" || len(exitRemote.policy(right.ServiceID).Users) != 2 {
+		t.Fatalf("restarted Relay did not use its edited listener and both credentials: %+v", relay)
+	}
+
+	requireServiceError(t, tunnels.Stop(left.ID, testAdmin, testIP, testAgent), nil)
 	requireServiceError(t, tunnels.Stop(right.ID, testAdmin, testIP, testAgent), nil)
 	right = loadSharedTunnel(t, tunnels, right.ID)
 	if right.ExitRule.Status != model.RuleStatusStopped || exitRemote.service(left.ServiceID).Name != "" ||
 		len(exitRemote.policy(left.ServiceID).Users) != 0 {
 		t.Fatal("stopping the last tunnel did not remove its shared Relay")
 	}
-	requireServiceError(t, tunnels.Start(left.ID, testAdmin, testIP, testAgent), nil)
-	left = loadSharedTunnel(t, tunnels, left.ID)
-	if relay := exitRemote.service(left.ServiceID); relay.Addr != ":18444" {
-		t.Fatalf("starting after all peers stopped did not apply edited settings: %+v", relay)
+}
+
+func TestCreatingTunnelAppliesPendingSharedEndpointChange(t *testing.T) {
+	t.Run("starts the new tunnel", func(t *testing.T) {
+		testCreatingTunnelAppliesPendingSharedEndpointChange(t, false)
+	})
+	t.Run("recovers existing tunnels if the new tunnel fails", func(t *testing.T) {
+		testCreatingTunnelAppliesPendingSharedEndpointChange(t, true)
+	})
+}
+
+func testCreatingTunnelAppliesPendingSharedEndpointChange(t *testing.T, failFirstStart bool) {
+	t.Helper()
+	db := newServiceTestDB(t)
+	loadServiceConfig(t, "report:\n  listen: 127.0.0.1:39001\n")
+	entryRemote, newEntryRemote := &lifecycleNode{t: t}, &lifecycleNode{t: t}
+	exitRemote := &sharedRelayTestNode{lifecycleNode: lifecycleNode{t: t}, policies: make(map[string]nodegrpc.RelayAuthConfig)}
+	entry, newEntry, exit := startServiceTestNode(t, entryRemote), startServiceTestNode(t, newEntryRemote), startServiceTestNode(t, exitRemote)
+	entry.Name, newEntry.Name, exit.Name, exit.Address = "entry node", "new entry node", "exit node", "198.51.100.21"
+	saveServiceFixtures(t, db, &entry, &newEntry, &exit)
+	sharedExit := model.GostRule{Name: "shared exit", NodeID: &exit.ID, Role: model.EndpointRoleExit,
+		Protocol: model.RuleProtocolTCP, ListenPort: 18443, Targets: []string{"app.test:443"}}
+	otherExit := model.GostRule{Name: "other exit", NodeID: &exit.ID, Role: model.EndpointRoleExit,
+		Protocol: model.RuleProtocolTCP, ListenPort: 18445, Targets: []string{"other.test:443"}}
+	saveServiceFixtures(t, db, &sharedExit, &otherExit)
+	entries := [3]model.GostRule{
+		{Name: "first entry", ListenPort: 18001},
+		{Name: "second entry", ListenPort: 18002},
+		{Name: "stopped entry", ListenPort: 18003},
 	}
+	for i := range entries {
+		entries[i].NodeID, entries[i].Role, entries[i].Protocol = &entry.ID, model.EndpointRoleEntry, model.RuleProtocolTCP
+		saveServiceFixtures(t, db, &entries[i])
+	}
+	addedEntry := model.GostRule{Name: "new entry", NodeID: &newEntry.ID, Role: model.EndpointRoleEntry,
+		Protocol: model.RuleProtocolTCP, ListenPort: 18004}
+	saveServiceFixtures(t, db, &addedEntry)
+	tunnels := NewTunnelService(db)
+	first := startSharedTunnel(t, tunnels, "first path", entries[0].ID, sharedExit.ID)
+	second := startSharedTunnel(t, tunnels, "second path", entries[1].ID, sharedExit.ID)
+	other := startSharedTunnel(t, tunnels, "other path", entries[0].ID, otherExit.ID)
+	stopped := startSharedTunnel(t, tunnels, "stopped path", entries[2].ID, sharedExit.ID)
+	requireServiceError(t, tunnels.Stop(stopped.ID, testAdmin, testIP, testAgent), nil)
+
+	rules := NewRuleService(db)
+	_, err := rules.Update(sharedExit.ID, &dto.UpdateRuleReq{
+		Name: sharedExit.Name, Protocol: "tcp", ListenPort: 18444, Targets: []string{"new.test:443"},
+	}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
+	_, err = rules.Update(entries[0].ID, &dto.UpdateRuleReq{
+		Name: entries[0].Name, Protocol: "tcp", ListenPort: 18005,
+	}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
+
+	const newRelayAddress = "198.51.100.21:18444"
+	if failFirstStart {
+		const chainCommand = "POST /config/chains"
+		newEntryRemote.rejectCommand(chainCommand, http.StatusBadGateway)
+		_, err := tunnels.Create(&dto.CreateTunnelReq{
+			Name: "new path", EntryRuleID: addedEntry.ID, ExitRuleID: sharedExit.ID, AllowlistNodeIDs: []uint{},
+		}, testAdmin, testIP, testAgent)
+		requireServiceError(t, err, bizerrors.ErrTunnelChainCreateFailed)
+		for _, id := range []uint{first.ID, second.ID} {
+			requireRunningTunnelRelay(t, loadSharedTunnel(t, tunnels, id), entryRemote, newRelayAddress)
+		}
+		relay := loadSharedTunnel(t, tunnels, first.ID).ServiceID
+		if exitRemote.service(relay).Addr != ":18444" || len(exitRemote.policy(relay).Users) != 2 {
+			t.Fatal("a failed new tunnel changed the restarted peers' shared Relay")
+		}
+		newEntryRemote.rejectCommand(chainCommand, 0)
+	}
+
+	added := startSharedTunnel(t, tunnels, "new path", addedEntry.ID, sharedExit.ID)
+	requireRunningTunnelRelay(t, added, newEntryRemote, newRelayAddress)
+	for _, id := range []uint{first.ID, second.ID} {
+		tunnel := loadSharedTunnel(t, tunnels, id)
+		requireRunningTunnelRelay(t, tunnel, entryRemote, newRelayAddress)
+		if tunnel.ServiceID != added.ServiceID || tunnel.ExitRule.AppliedEndpoint != nil {
+			t.Fatalf("tunnel %d did not share the updated Relay", id)
+		}
+	}
+	relay := exitRemote.service(added.ServiceID)
+	if relay.Addr != ":18444" || len(exitRemote.policy(added.ServiceID).Users) != 3 {
+		t.Fatalf("updated Relay did not bind the new listener or retain its active users: %+v", relay)
+	}
+	other = loadSharedTunnel(t, tunnels, other.ID)
+	requireRunningTunnelRelay(t, other, entryRemote, "198.51.100.21:18445")
+	if listener := entryRemote.service(other.EntryRule.ServiceID); listener.Addr != ":18005" || other.EntryRule.AppliedEndpoint != nil {
+		t.Fatalf("creating through the shared exit did not also apply its peer's edited shared entry: %+v", listener)
+	}
+	if saved := loadSharedTunnel(t, tunnels, stopped.ID); saved.Status != model.TunnelStatusStopped ||
+		entryRemote.chain(stopped.ChainID).Name != "" {
+		t.Fatal("adding a tunnel restarted a peer that had already been stopped")
+	}
+}
+
+func requireRunningTunnelRelay(t *testing.T, tunnel *model.GostTunnel, remote *lifecycleNode, address string) {
+	t.Helper()
+	chain := remote.chain(tunnel.ChainID)
+	if actual, ok := chain.TunnelRelayAddress(); tunnel.Status != model.TunnelStatusRunning || !ok || actual != address {
+		t.Fatalf("tunnel %d has status %q and Relay address %q, want running at %q", tunnel.ID, tunnel.Status, actual, address)
+	}
+}
+
+func TestSavingUnchangedSharedEntryDoesNotStageRestart(t *testing.T) {
+	db := newServiceTestDB(t)
+	loadServiceConfig(t, "report:\n  listen: 127.0.0.1:39001\n")
+	entryRemote := &lifecycleNode{t: t}
+	exitRemote := &lifecycleNode{t: t}
+	entry, exit := startServiceTestNode(t, entryRemote), startServiceTestNode(t, exitRemote)
+	entry.Name, exit.Name, exit.Address = "entry node", "exit node", "198.51.100.21"
+	saveServiceFixtures(t, db, &entry, &exit)
+	rules := NewRuleService(db)
+	sharedEntry, err := rules.Create(&dto.CreateRuleReq{
+		Name: "shared entry", NodeID: &entry.ID, Role: "entry", Protocol: "tcp", ListenPort: 18001, Targets: []string{},
+	}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
+	firstExit := model.GostRule{Name: "first exit", NodeID: &exit.ID, Role: model.EndpointRoleExit,
+		Protocol: model.RuleProtocolTCP, ListenPort: 18443, Targets: []string{"app.test:443"}}
+	secondExit := model.GostRule{Name: "second exit", NodeID: &exit.ID, Role: model.EndpointRoleExit,
+		Protocol: model.RuleProtocolTCP, ListenPort: 18444, Targets: []string{"new.test:443"}}
+	saveServiceFixtures(t, db, &firstExit, &secondExit)
+	tunnels := NewTunnelService(db)
+	first := startSharedTunnel(t, tunnels, "first path", sharedEntry.ID, firstExit.ID)
+	entryRemote.rejectCommand("DELETE /config/chains/"+first.ChainID, http.StatusServiceUnavailable)
+
+	saved, err := rules.Update(sharedEntry.ID, &dto.UpdateRuleReq{
+		Name: "renamed entry", Protocol: "tcp", ListenPort: sharedEntry.ListenPort, Remark: "new remark",
+	}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
+	if saved.AppliedEndpoint != nil || saved.Name != "renamed entry" || saved.Remark != "new remark" {
+		t.Fatalf("saving name and remark changed runtime configuration: %+v", saved)
+	}
+	startSharedTunnel(t, tunnels, "second path", sharedEntry.ID, secondExit.ID)
+	first = loadSharedTunnel(t, tunnels, first.ID)
+	requireRunningTunnelRelay(t, first, entryRemote, "198.51.100.21:18443")
 }
 
 func TestSharedExitRetainsItsDomainBypassUntilLastTunnelStops(t *testing.T) {

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"reflect"
 	"strconv"
 	"strings"
 
@@ -257,7 +256,7 @@ func (s *RuleService) Update(id uint, req *dto.UpdateRuleReq, username, ip, user
 	}
 	rule.EnableTLS = req.EnableTLS
 	rule.Remark = req.Remark
-	if bound && rule.LinkedTunnelStatus != model.TunnelStatusStopped && !reflect.DeepEqual(previous, rule.EndpointConfig()) {
+	if bound && rule.LinkedTunnelStatus != model.TunnelStatusStopped && !previous.Equal(rule.EndpointConfig()) {
 		rule.AppliedEndpoint = &previous
 	} else {
 		rule.AppliedEndpoint = nil

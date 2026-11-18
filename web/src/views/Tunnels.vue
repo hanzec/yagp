@@ -632,6 +632,7 @@ const toggleTunnel = async (row) => {
     await fetchData()
   } catch (error) {
     console.error('更新隧道状态失败:', error)
+    if (row.status !== 'running') await fetchData()
   } finally {
     activeTunnelId.value = null
   }

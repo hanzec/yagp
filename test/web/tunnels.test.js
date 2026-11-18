@@ -1064,4 +1064,18 @@ describe('Relay tunnel configuration', () => {
     expect(ElMessage.success).toHaveBeenCalledWith('隧道已删除')
     expect(router.currentRoute.value.name).toBe('Tunnels')
   })
+
+  it('refreshes affected tunnels after a start fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+    expect(row(wrapper, relay.name).text()).toContain('运行中')
+    startTunnel.mockRejectedValueOnce(new Error('shared tunnel restart failed'))
+    getTunnelList.mockResolvedValueOnce(result([{ ...relay, status: 'stopped' }, udpRelay]))
+
+    await button(row(wrapper, udpRelay.name), '启动').trigger('click')
+    await flushPromises()
+
+    expect(row(wrapper, relay.name).text()).toContain('已停止')
+  })
 })

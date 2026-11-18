@@ -12,7 +12,6 @@ import (
 
 	bizerrors "yagp/internal/errors"
 	"yagp/internal/model"
-	"yagp/internal/repository"
 	"yagp/pkg/gost"
 	"yagp/pkg/logger"
 	"yagp/pkg/nodegrpc"
@@ -32,28 +31,6 @@ func (s *TunnelService) runningEndpointTunnels(column string, id, exclude uint) 
 		tunnel.EntryRule, tunnel.ExitRule = tunnel.EntryRule.WithAppliedEndpoint(), tunnel.ExitRule.WithAppliedEndpoint()
 	}
 	return tunnels, err
-}
-
-func (s *TunnelService) checkEndpointRestart(t *model.GostTunnel) error {
-	var pending []uint
-	for _, endpoint := range []*model.GostRule{t.EntryRule, t.ExitRule} {
-		if endpoint.AppliedEndpoint != nil {
-			pending = append(pending, endpoint.ID)
-		}
-	}
-	if len(pending) == 0 {
-		return nil
-	}
-	bindings, err := repository.NewRuleRepository(s.tunnelRepo.DB).EntranceBindings(pending)
-	if err != nil {
-		return err
-	}
-	for _, bound := range bindings {
-		if bound.ID != t.ID && bound.Status == model.TunnelStatusRunning {
-			return bizerrors.ErrTunnelEndpointRestart
-		}
-	}
-	return nil
 }
 
 func (s *TunnelService) configureSharedRelay(client *gost.Client, relay *gost.ServiceConfig, tunnels []*model.GostTunnel) error {
