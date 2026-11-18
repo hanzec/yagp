@@ -119,19 +119,33 @@ func probeTunnelEndpoint(ctx context.Context, client *gost.Client, chain string,
 	if err == nil || endpoint.GetDomainAddress() != nodegrpc.TunnelProbeDomain {
 		return reply, err
 	}
+	var firstTTL *uint32
+	targetForbidden := false
 	for _, detail := range status.Convert(err).Details() {
-		info, ok := detail.(*errdetails.ErrorInfo)
-		if !ok || info.GetDomain() != "yagp.tunnel_probe" || info.GetMetadata()["gost_error"] != "relay_target_forbidden" {
-			continue
+		switch info := detail.(type) {
+		case *errdetails.ErrorInfo:
+			if info.GetDomain() == "yagp.tunnel_probe" && info.GetMetadata()["gost_error"] == "relay_target_forbidden" {
+				targetForbidden = true
+			}
+		case *nodegrpc.TunnelProbeReply:
+			firstTTL = probeReplyTTL(info)
 		}
-		request.Address = endpoint.GetDomainAddress()
-		// Older ingress daemons and already running Relays can still use the original diagnosis.
-		if domainReply, domainErr := client.ProbeTunnel(ctx, request); domainErr == nil {
-			return domainReply, nil
-		}
-		break
 	}
-	return reply, err
+	if !targetForbidden {
+		return reply, err
+	}
+	request.Address = endpoint.GetDomainAddress()
+	// Both probe targets use the same Relay address for ICMP.
+	request.MeasureReplyIpTtl = measureTTL && firstTTL == nil
+	domainReply, domainErr := client.ProbeTunnel(ctx, request)
+	if domainErr != nil {
+		// Older ingress daemons and already running Relays can still use the original diagnosis.
+		return reply, err
+	}
+	if firstTTL != nil {
+		domainReply.ReplyIpTtl = firstTTL
+	}
+	return domainReply, nil
 }
 
 func (r *TunnelTestResult) checkTunnel(t *model.GostTunnel) error {
