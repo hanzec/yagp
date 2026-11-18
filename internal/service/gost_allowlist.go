@@ -128,8 +128,13 @@ func (s *GostAllowlistService) relayAdmission(tunnel *model.GostTunnel, nodes so
 	if tunnel.AutoAllowlist && len(addresses) == 0 {
 		return nil, nil
 	}
+	// A recovered sole survivor may still own a Relay named after a former peer.
+	name := tunnel.ServiceID
+	if name == "" {
+		name = relayServiceName(tunnel.ID)
+	}
 	return &gost.AdmissionConfig{
-		Name:      gost.TunnelRelayAllowlistName(relayServiceName(tunnel.ID)),
+		Name:      gost.TunnelRelayAllowlistName(name),
 		Whitelist: len(nodeIDs) > 0,
 		Matchers:  publicRelayMatchers(addresses),
 	}, nil
@@ -160,8 +165,9 @@ func (s *GostAllowlistService) syncRelays(client *gost.Client, current *gost.Gos
 	shared := make(map[string][]*model.GostTunnel)
 	for i := range tunnels {
 		tunnel := &tunnels[i]
-		if tunnel.ExitNodeID == nodeID && tunnel.ServiceID == relayServiceName(tunnel.ID) &&
-			(tunnel.ExitRuleID == nil || tunnel.Status == model.TunnelStatusRunning) {
+		if tunnel.ExitNodeID == nodeID && tunnel.ServiceID != "" &&
+			((tunnel.ExitRuleID == nil && tunnel.ServiceID == relayServiceName(tunnel.ID)) ||
+				(tunnel.ExitRuleID != nil && tunnel.Status == model.TunnelStatusRunning)) {
 			managed[tunnel.ServiceID] = *tunnel
 		}
 		if tunnel.ExitNodeID == nodeID && tunnel.ExitRuleID != nil && tunnel.Status == model.TunnelStatusRunning {

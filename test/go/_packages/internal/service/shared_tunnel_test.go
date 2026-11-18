@@ -29,6 +29,7 @@ func TestEndpointTunnelsShareAnExitRelay(t *testing.T) {
 	exit := startServiceTestNode(t, exitRemote)
 	first.Name, second.Name, exit.Name = "first entry", "second entry", "shared exit"
 	exit.Address = "198.51.100.21"
+	first.IPv4, second.IPv4 = "192.0.2.11", "192.0.2.12"
 	saveServiceFixtures(t, db, &first, &second, &exit)
 	firstEntry := model.GostRule{Name: "first source", NodeID: &first.ID, Role: model.EndpointRoleEntry, Protocol: model.RuleProtocolTCP, ListenPort: 18001}
 	secondEntry := model.GostRule{Name: "second source", NodeID: &second.ID, Role: model.EndpointRoleEntry, Protocol: model.RuleProtocolTCP, ListenPort: 18002}
@@ -36,11 +37,12 @@ func TestEndpointTunnelsShareAnExitRelay(t *testing.T) {
 	saveServiceFixtures(t, db, &firstEntry, &secondEntry, &sharedExit)
 	tunnels := NewTunnelService(db)
 
-	left := startSharedTunnel(t, tunnels, "first path", firstEntry.ID, sharedExit.ID)
+	left, err := tunnels.Create(&dto.CreateTunnelReq{Name: "first path", EntryRuleID: firstEntry.ID, ExitRuleID: sharedExit.ID}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
 	secondRemote.mu.Lock()
 	secondRemote.reject = map[string]int{"POST /config/chains": http.StatusBadGateway}
 	secondRemote.mu.Unlock()
-	_, err := tunnels.Create(&dto.CreateTunnelReq{Name: "failed path", EntryRuleID: secondEntry.ID, ExitRuleID: sharedExit.ID, AllowlistNodeIDs: []uint{}},
+	_, err = tunnels.Create(&dto.CreateTunnelReq{Name: "failed path", EntryRuleID: secondEntry.ID, ExitRuleID: sharedExit.ID, AllowlistNodeIDs: []uint{}},
 		testAdmin, testIP, testAgent)
 	requireServiceError(t, err, bizerrors.ErrTunnelChainCreateFailed)
 	if relay := exitRemote.service(left.ServiceID); relay.Name == "" || firstRemote.chain(left.ChainID).Name == "" {
@@ -53,7 +55,8 @@ func TestEndpointTunnelsShareAnExitRelay(t *testing.T) {
 	secondRemote.mu.Lock()
 	secondRemote.reject = nil
 	secondRemote.mu.Unlock()
-	right := startSharedTunnel(t, tunnels, "second path", secondEntry.ID, sharedExit.ID)
+	right, err := tunnels.Create(&dto.CreateTunnelReq{Name: "second path", EntryRuleID: secondEntry.ID, ExitRuleID: sharedExit.ID}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
 	left = loadSharedTunnel(t, tunnels, left.ID)
 	if left.ServiceID == "" || left.ServiceID != right.ServiceID || left.ChainID == "" || right.ChainID == "" || left.ChainID == right.ChainID {
 		t.Fatalf("expected one Relay and two independent chains, got %s %s and %s %s", left.ServiceID, left.ChainID, right.ServiceID, right.ChainID)
@@ -126,6 +129,23 @@ func TestEndpointTunnelsShareAnExitRelay(t *testing.T) {
 	}
 	if saved := loadSharedTunnel(t, tunnels, left.ID); saved.Status != model.TunnelStatusStopped {
 		t.Fatalf("startup continued after a peer failed to stop: %s", saved.Status)
+	}
+	// Recovery keeps the former peer's Relay name, but must use the surviving entry's sources.
+	recoveredRelay := exitRemote.service(rightRelay)
+	admission := exitRemote.admission(recoveredRelay.Admission)
+	if admission.Name != gost.TunnelRelayAllowlistName(rightRelay) || !admission.Whitelist ||
+		!slices.Equal(admission.Matchers, []string{second.IPv4}) {
+		t.Fatalf("recovered Relay retained the former peer's admission: %+v", admission)
+	}
+	left = loadSharedTunnel(t, tunnels, left.ID)
+	// The recovered single-user Relay must remain managed when its entry address changes.
+	second.IPv4 = "192.0.2.13"
+	cfg := gost.GostConfig{Services: []gost.ServiceConfig{recoveredRelay}, Admissions: []gost.AdmissionConfig{admission}}
+	_, err = tunnels.allowlist.syncRelays(utils.GetGostClient(&exit), &cfg, exit.ID,
+		[]model.GostTunnel{*left, *right}, sourceNodes{first.ID: &first, second.ID: &second})
+	requireServiceError(t, err, nil)
+	if updated := exitRemote.admission(recoveredRelay.Admission); !slices.Equal(updated.Matchers, []string{second.IPv4}) {
+		t.Fatalf("recovered Relay admission was not reconciled: %+v", updated)
 	}
 	secondRemote.rejectCommand(stopChain, 0)
 
