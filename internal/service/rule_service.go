@@ -147,7 +147,7 @@ func (s *RuleService) Update(id uint, req *dto.UpdateRuleReq, username, ip, user
 		return nil, err
 	}
 	bound := rule.LinkedTunnelID != nil
-	if !bound && rule.Status == model.RuleStatusRunning {
+	if !bound && rule.NeedsStop() {
 		return nil, errors.ErrRuleRunning
 	}
 	if bound && ((req.NodeID != nil && (rule.NodeID == nil || *req.NodeID != *rule.NodeID)) ||
@@ -359,8 +359,7 @@ func (s *RuleService) Delete(id uint, username, ip, userAgent string) error {
 		return errors.ErrRuleTunnelLinked
 	}
 
-	// A failed start or stop can retain a live service even when the status is not running.
-	if rule.Status == model.RuleStatusRunning || rule.ServiceID != "" {
+	if rule.NeedsStop() {
 		if err = s.Stop(id, username, ip, userAgent); err != nil {
 			return err
 		}
@@ -643,7 +642,7 @@ func (s *RuleService) Stop(id uint, username, ip, userAgent string) error {
 		return err
 	}
 
-	if rule.Status != model.RuleStatusRunning && rule.ServiceID == "" {
+	if !rule.NeedsStop() {
 		return nil
 	}
 

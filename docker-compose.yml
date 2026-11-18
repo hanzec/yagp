@@ -16,6 +16,9 @@ services:
         source: ${PWD:-.}/data
         target: /app/data
       - type: bind
+        source: ${PWD:-.}/backups
+        target: /app/backups
+      - type: bind
         source: ${PWD:-.}/logs
         target: /app/logs
     environment:

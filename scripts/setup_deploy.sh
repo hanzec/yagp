@@ -745,7 +745,9 @@ check_project_files() {
         [[ -f $1/$name ]] || fail "缺少部署文件：$1/$name"
         require_root_owned "$1/$name"
     done
-    for name in config data logs; do
+    for name in config data logs backups; do
+        # Older Compose installations may not have a backup mount yet.
+        [[ $name == backups && ! -e $1/$name && ! -L $1/$name ]] && continue
         [[ -d $1/$name ]] || fail "缺少绑定目录：$1/$name"
         require_root_owned "$1/$name"
     done

@@ -24,6 +24,56 @@ import (
 	bizerrors "yagp/internal/errors"
 )
 
+func TestSendTestEmailBoundsStalledSMTP(t *testing.T) {
+	for _, name := range []string{"silent greeting", "cancel during STARTTLS"} {
+		t.Run(name, func(t *testing.T) {
+			listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			requireServiceError(t, err, nil)
+			defer listener.Close()
+			requireServiceError(t, listener.SetDeadline(time.Now().Add(3*time.Second)), nil)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			req := &dto.EmailConfigReq{Host: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port, FromEmail: "sender@example.test"}
+			result := make(chan error, 1)
+			go func() { result <- (&SystemConfigService{}).SendTestEmail(ctx, req) }()
+			conn, err := listener.Accept()
+			requireServiceError(t, err, nil)
+			defer conn.Close()
+			requireServiceError(t, conn.SetDeadline(time.Now().Add(10*time.Second)), nil)
+			reader := bufio.NewReader(conn)
+			want := bizerrors.ErrSMTPClientFailed
+			timeout := 10 * time.Second
+			if name == "cancel during STARTTLS" {
+				for _, step := range []struct{ reply, command string }{
+					{"220 ready\r\n", "EHLO localhost\r\n"},
+					{"250-test\r\n250 STARTTLS\r\n", "STARTTLS\r\n"},
+				} {
+					_, err := io.WriteString(conn, step.reply)
+					requireServiceError(t, err, nil)
+					line, err := reader.ReadString('\n')
+					requireServiceError(t, err, nil)
+					if line != step.command {
+						t.Fatalf("SMTP command = %q, want %q", line, step.command)
+					}
+				}
+				_, err = io.WriteString(conn, "220 begin TLS\r\n")
+				requireServiceError(t, err, nil)
+				_, err = reader.ReadByte() // Wait for the TLS ClientHello.
+				requireServiceError(t, err, nil)
+				cancel()
+				want = bizerrors.ErrSMTPConnectFailed
+				timeout = time.Second
+			}
+			select {
+			case err := <-result:
+				requireServiceError(t, err, want)
+			case <-time.After(timeout):
+				t.Fatal("SMTP operation is still waiting for the server")
+			}
+		})
+	}
+}
+
 func TestSendTestEmailVerifiesSMTPSCertificate(t *testing.T) {
 	const childProcess = "YAGP_TEST_SMTP_TRUSTED_ROOTS"
 	if os.Getenv(childProcess) != "1" {
@@ -112,7 +162,7 @@ func TestSendTestEmailVerifiesSMTPSCertificate(t *testing.T) {
 			} else {
 				go func() { result <- receiveSMTPSTestMessage(listener, "", false, recipient, "yagp 测试邮件") }()
 			}
-			err = (&SystemConfigService{}).SendTestEmail(&dto.EmailConfigReq{
+			err = (&SystemConfigService{}).SendTestEmail(t.Context(), &dto.EmailConfigReq{
 				Host: "127.0.0.1", Port: 465, Username: "test-user", Password: "test-password",
 				FromEmail: "sender@example.test", ToEmail: test.recipient,
 			})
@@ -154,7 +204,7 @@ func TestSendTestEmailRejectsUntrustedSMTPS(t *testing.T) {
 		_, _ = io.WriteString(server, "554 untrusted test server\r\n")
 		result <- errors.New("client accepted the untrusted SMTP certificate")
 	}()
-	err = (&SystemConfigService{}).SendTestEmail(&dto.EmailConfigReq{
+	err = (&SystemConfigService{}).SendTestEmail(t.Context(), &dto.EmailConfigReq{
 		Host: "127.0.0.1", Port: 465, Username: "test-user", Password: "test-password", FromEmail: "sender@example.test",
 	})
 	requireServiceError(t, err, bizerrors.ErrSMTPConnectFailed)
@@ -198,11 +248,12 @@ func TestSMTPSMessageAndConnectionLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
-			req := &dto.EmailConfigReq{Host: "127.0.0.1", Username: "test-user", Password: "test-password", FromEmail: "sender@example.test"}
+			req := &dto.EmailConfigReq{Host: "127.0.0.1", Port: 465, Username: "test-user", Password: "test-password", FromEmail: "sender@example.test"}
 			if test.noAuth {
 				req.Username, req.Password = "", ""
 			}
 			err = sendSMTPTestMessage(conn, req, "recipient@example.test", []byte("Subject: test\r\n\r\nmessage\r\n"))
+			_ = conn.Close()
 			if test.failure == "QUIT" {
 				if err == nil || !strings.Contains(err.Error(), "550") {
 					t.Fatalf("rejected QUIT returned %v", err)

@@ -37,6 +37,20 @@ type NodeAddressMapping struct {
 	ConnectIP string `json:"connect_ip"`
 }
 
+// RoutingNodeOption is the projection used by rule, tunnel and subscription editors.
+type RoutingNodeOption struct {
+	ID              uint                 `json:"id"`
+	Name            string               `json:"name"`
+	Address         string               `json:"address,omitempty"`
+	IPv4            string               `gorm:"column:ipv4" json:"ipv4,omitempty"`
+	IPv6            string               `gorm:"column:ipv6" json:"ipv6,omitempty"`
+	Addresses       []string             `gorm:"serializer:json" json:"addresses,omitempty"`
+	LocalAddresses  []string             `gorm:"serializer:json" json:"local_addresses,omitempty"`
+	ManualAddresses []string             `gorm:"serializer:json" json:"manual_addresses,omitempty"`
+	AddressMappings []NodeAddressMapping `gorm:"serializer:json" json:"address_mappings,omitempty"`
+	MPTCPSupported  bool                 `gorm:"column:mptcp_supported" json:"mptcp_supported"`
+}
+
 type NodeTags []string
 
 // MarshalJSON exposes untagged legacy rows as an empty array.

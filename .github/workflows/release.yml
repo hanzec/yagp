@@ -58,10 +58,11 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Check build ordering and Linux test entry point
+      - name: Check build ordering, Linux test entry point and Compose backup mount
         run: |
           bash test/scripts/build_test.sh
           bash test/scripts/go_runner_test.sh
+          bash test/scripts/compose_backup_test.sh
 
       - name: Install frontend dependencies
         run: npm --prefix web ci
@@ -109,6 +110,7 @@ jobs:
               apk add --no-cache bash curl git nftables
               mkdir -p /run/systemd/system
               bash test/scripts/install_node_test.sh
+              bash test/scripts/install_panel_test.sh
               # Attribute API-to-daemon integration coverage across package boundaries.
               go run ./test/go/_runner -count=1 -timeout=2m -coverpkg=./... -coverprofile=/coverage/go-coverage.out ./...
             '

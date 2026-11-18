@@ -193,8 +193,10 @@ if [ -n "$1" ]; then
         exit 1
     fi
 fi
-if [ -n "$PORT" ] && ! [[ "$PORT" =~ ^[0-9]+$ ]]; then
-    error "无效的端口号: $PORT"
+if [[ -n "$PORT" ]]; then
+    if ! [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
+        error "端口号必须在 1 到 65535 之间"
+    fi
 fi
 
 case $ACTION in

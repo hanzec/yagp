@@ -192,27 +192,6 @@ func (r *RuleRepository) CountByNodeID(nodeID uint) (int64, error) {
 	return count, err
 }
 
-// CountAll 统计总数
-func (r *RuleRepository) CountAll() (int64, error) {
-	var count int64
-	err := r.DB.Model(&model.GostRule{}).Count(&count).Error
-	return count, err
-}
-
-// CountByStatus 按状态统计
-func (r *RuleRepository) CountByStatus(status model.RuleStatus) (int64, error) {
-	var count int64
-	err := r.DB.Model(&model.GostRule{}).Where("status = ?", status).Count(&count).Error
-	return count, err
-}
-
-// CountByType 按类型统计
-func (r *RuleRepository) CountByType(ruleType model.RuleType) (int64, error) {
-	var count int64
-	err := r.DB.Model(&model.GostRule{}).Where("type = ?", ruleType).Count(&count).Error
-	return count, err
-}
-
 // StopByNodeID 停止指定节点的所有规则
 func (r *RuleRepository) StopByNodeID(nodeID uint) error {
 	return r.DB.Model(&model.GostRule{}).

@@ -1,4 +1,4 @@
-import { flushPromises } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { ElOption, ElSelect } from 'element-plus'
 import { nextTick } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
@@ -791,6 +791,27 @@ describe('node registration and quota settings', () => {
 })
 
 describe('node actions', () => {
+  it('starts each calibration session from the latest report and preserves active edits', async () => {
+    // The real Element Plus dialog retains its lazy tab contents after closing.
+    wrapper = mount(Nodes, { attachTo: document.body, global: { plugins: [router], stubs: { ElSelect: true } } })
+    await flushPromises()
+    await click(wrapper, '配置')
+    await wrapper.get('#tab-traffic').trigger('click')
+    expect(wrapper.get('#calibrate-input').element.value).toBe(String(primary.input_bytes))
+    await wrapper.get('#calibrate-input').setValue('77')
+
+    api.getNodeList.mockResolvedValue(list([{ ...primary, input_bytes: 900, output_bytes: 1000, traffic_quota_used_bytes: 123 }]))
+    await wrapper.get('form[aria-label="筛选节点"]').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('#calibrate-input').element.value).toBe('77')
+    await click(wrapper, '关闭')
+    await click(wrapper, '配置')
+    await wrapper.get('#tab-traffic').trigger('click')
+    expect(wrapper.get('#calibrate-input').element.value).toBe('900')
+    expect(wrapper.get('#calibrate-output').element.value).toBe('1000')
+    expect(wrapper.get('#calibrate-quota').element.value).toBe('123')
+  })
+
   it('calibrates cumulative counters and the current quota independently', async () => {
     api.calibrateNodeTraffic.mockResolvedValue(response({}))
     const view = open()

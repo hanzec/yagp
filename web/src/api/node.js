@@ -13,13 +13,13 @@ export function getNodeList(params) {
 
 export async function getRoutingNodes() {
     const nodes = []
-    const pageSize = 100
-    for (let page = 1; ; page++) {
-        const { data } = await getNodeList({ page, pageSize })
-        const list = data.list || []
-        nodes.push(...list)
-        if (nodes.length >= data.total || list.length < pageSize) return nodes
-    }
+    let before
+    do {
+        const { data } = await request({ url: '/nodes/options', method: 'get', params: { before } })
+        nodes.push(...data.list)
+        before = data.next
+    } while (before)
+    return nodes
 }
 
 /**

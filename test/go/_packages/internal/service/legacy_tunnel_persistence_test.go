@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"yagp/internal/dto"
 	bizerrors "yagp/internal/errors"
 	"yagp/internal/model"
+	"yagp/pkg/gost"
 )
 
 func TestLegacyTunnelStartRetainsRetryStateOnPersistenceFailure(t *testing.T) {
@@ -64,6 +66,40 @@ func TestLegacyTunnelStartRetainsRetryStateOnPersistenceFailure(t *testing.T) {
 				t.Fatalf("retry did not start both tunnel endpoints: %+v", stored)
 			}
 		})
+	}
+}
+
+func TestSyncPreservesFailedLegacyTunnelUntilRestart(t *testing.T) {
+	service, tunnel, entry, exit := newLegacyTunnelTest(t)
+	chainName := tunnelChainName(tunnel.ID)
+	entry.rejectCommand("POST /config?format=yaml", http.StatusServiceUnavailable)
+	entry.rejectCommand("DELETE /config/chains/"+chainName, http.StatusServiceUnavailable)
+	if err := service.Start(tunnel.ID, testAdmin, testIP, testAgent); err == nil {
+		t.Fatal("expected failed entry save and rollback")
+	}
+	stored, err := service.GetByID(tunnel.ID)
+	requireServiceError(t, err, nil)
+	chain := entry.chain(chainName)
+	if stored.Status != model.TunnelStatusError || chain.Name == "" || exit.service(stored.ServiceID).Name != "" {
+		t.Fatalf("expected only the entry chain to survive rollback, got %+v", stored)
+	}
+
+	cfg, err := json.Marshal(gost.GostConfig{Chains: []gost.ChainConfig{chain}})
+	requireServiceError(t, err, nil)
+	entry.mu.Lock()
+	entry.gostConfig = string(cfg)
+	entry.mu.Unlock()
+	entry.rejectCommand("DELETE /config/chains/"+chainName, 0)
+	entry.rejectCommand("POST /config?format=yaml", 0)
+	NewRuleSyncService(service.tunnelRepo.DB).syncNodeRules(*stored.EntryNode, map[uint]*model.GostNode{stored.ExitNodeID: stored.ExitNode})
+	stored, err = service.GetByID(tunnel.ID)
+	requireServiceError(t, err, nil)
+	if stored.Status != model.TunnelStatusError {
+		t.Fatalf("sync changed partial startup to %s", stored.Status)
+	}
+	requireServiceError(t, service.Start(tunnel.ID, testAdmin, testIP, testAgent), nil)
+	if exit.service(stored.ServiceID).Name == "" {
+		t.Fatal("retry did not rebuild the missing relay")
 	}
 }
 

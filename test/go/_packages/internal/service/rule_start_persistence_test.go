@@ -54,3 +54,46 @@ func TestRuleStartRetainsServiceUntilRollbackIsSaved(t *testing.T) {
 		})
 	}
 }
+
+func TestOfflineRuleNeedsConfirmedStopBeforeEditing(t *testing.T) {
+	db := newServiceTestDB(t)
+	loadServiceConfig(t, "report:\n  listen: 127.0.0.1:39001\n")
+	remote := &lifecycleNode{t: t}
+	node := startServiceTestNode(t, remote)
+	saveServiceFixtures(t, db, &node)
+	rules := NewRuleService(db)
+	rule, err := rules.Create(&dto.CreateRuleReq{
+		NodeID: &node.ID, Name: "forward", Protocol: "tcp", ListenPort: 8080, Targets: []string{"old.test:443"},
+	}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
+	requireServiceError(t, rules.Start(rule.ID, testAdmin, testIP, testAgent), nil)
+
+	health := NewNodeHealthService(db)
+	remote.rejectCommand("GET /config", http.StatusServiceUnavailable)
+	health.checkNodes()
+	waitServiceCondition(t, func() bool {
+		stored, err := rules.GetByID(rule.ID)
+		requireServiceError(t, err, nil)
+		return stored.Status == model.RuleStatusStopped && stored.Node.Status == model.NodeStatusOffline && stored.ServiceID != ""
+	})
+	update := &dto.UpdateRuleReq{Name: rule.Name, Protocol: "tcp", ListenPort: 9090, Targets: []string{"new.test:443"}}
+	_, err = rules.Update(rule.ID, update, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, bizerrors.ErrRuleRunning)
+	requireServiceError(t, rules.Stop(rule.ID, testAdmin, testIP, testAgent), bizerrors.ErrNodeOffline)
+
+	remote.rejectCommand("GET /config", 0)
+	health.checkNodes()
+	waitServiceCondition(t, func() bool {
+		stored, err := rules.nodeRepo.FindByID(node.ID)
+		requireServiceError(t, err, nil)
+		return stored.Status == model.NodeStatusOnline
+	})
+	requireServiceError(t, rules.Stop(rule.ID, testAdmin, testIP, testAgent), nil)
+	_, err = rules.Update(rule.ID, update, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
+	requireServiceError(t, rules.Start(rule.ID, testAdmin, testIP, testAgent), nil)
+	actual := remote.service(entranceServiceName(rule.ID))
+	if actual.Addr != ":9090" || len(actual.Forwarder.Nodes) != 1 || actual.Forwarder.Nodes[0].Addr != "new.test:443" {
+		t.Fatalf("restarted with unexpected service %+v", actual)
+	}
+}

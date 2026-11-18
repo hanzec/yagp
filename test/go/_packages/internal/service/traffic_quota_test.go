@@ -10,22 +10,20 @@ import (
 	"testing"
 	"time"
 
+	"yagp/internal/dto"
 	bizerrors "yagp/internal/errors"
 	"yagp/internal/model"
 	"yagp/internal/repository"
 	"yagp/internal/utils"
 	"yagp/pkg/gost"
-	"yagp/pkg/logger"
 	"yagp/pkg/nodegrpc"
 
-	"github.com/glebarez/sqlite"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"gorm.io/gorm"
 )
 
 func TestTrafficQuotaSync(t *testing.T) {
-	db := newTrafficQuotaTestDB(t)
+	db := newServiceTestDB(t)
 	repo := repository.NewNodeRepository(db)
 	fixture := &trafficQuotaTestNode{}
 	node := startServiceTestNode(t, fixture)
@@ -91,6 +89,41 @@ func TestTrafficQuotaSync(t *testing.T) {
 	sync(0, 0, 0, model.TrafficQuotaWindowUnset, "")
 }
 
+func TestLifetimeQuotaStartsWithObserverAndRelayUsage(t *testing.T) {
+	for _, observer := range []int64{0, 40} {
+		db := newServiceTestDB(t)
+		want := uint64(observer) + 500
+		remote := &trafficQuotaTestNode{used: want, check: func(req *nodegrpc.TrafficQuotaRequest) {
+			if req.GetUsedBytes() != want {
+				t.Errorf("first lifetime quota uses %d bytes, want %d", req.GetUsedBytes(), want)
+			}
+		}}
+		node := startServiceTestNode(t, remote)
+		node.TotalBytes = observer
+		saveServiceFixtures(t, db, &node)
+		exit := model.GostRule{Name: "exit", Role: model.EndpointRoleExit, NodeID: &node.ID, ListenPort: 8443}
+		saveServiceFixtures(t, db, &exit)
+		requireServiceError(t, repository.NewRuleRepository(db).RecordExitRelayTraffic(exit.ID, "relay-tunnel-1", 400, 100, 400, 100, 1), nil)
+
+		nodes := NewNodeService(db, "")
+		now := time.Now()
+		usage, err := nodes.CurrentTrafficUsage(t.Context(), []model.GostNode{node}, now)
+		requireServiceError(t, err, nil)
+		if usage[node.ID] != want {
+			t.Fatalf("uncapped usage = %d, want %d", usage[node.ID], want)
+		}
+		limit := int64(100)
+		_, err = nodes.Update(node.ID, &dto.UpdateNodeReq{Name: node.Name, TrafficLimitBytes: &limit}, testAdmin, testIP, testAgent)
+		requireServiceError(t, err, nil)
+		requireServiceError(t, syncTrafficQuota(nodes.nodeRepo, utils.GetGostClient(&node), node.ID, nil, now), nil)
+		stored, err := nodes.GetByID(node.ID)
+		requireServiceError(t, err, nil)
+		if stored.TrafficQuotaState != model.TrafficQuotaBlocked || stored.TrafficQuotaUsedBytes != want {
+			t.Fatalf("after enabling quota got %s with %d bytes", stored.TrafficQuotaState, stored.TrafficQuotaUsedBytes)
+		}
+	}
+}
+
 func TestTrafficQuotaCoversSupportedListenerTransports(t *testing.T) {
 	for _, tc := range []struct {
 		protocols []string
@@ -126,7 +159,7 @@ func TestTrafficQuotaCoversSupportedListenerTransports(t *testing.T) {
 }
 
 func TestTrafficCalibrationSurvivesSyncWithStaleNode(t *testing.T) {
-	db := newTrafficQuotaTestDB(t)
+	db := newServiceTestDB(t)
 	repo := repository.NewNodeRepository(db)
 	config := trafficQuotaAdminCommand{"GET /config", http.StatusOK, `{"services":[]}`}
 	remote := &trafficQuotaAdminTestNode{t: t, commands: []trafficQuotaAdminCommand{config, config}}
@@ -166,7 +199,7 @@ func TestTrafficCalibrationSurvivesSyncWithStaleNode(t *testing.T) {
 }
 
 func TestTrafficCalibrationRequiresAnEligibleNodeAndConfirmedQuota(t *testing.T) {
-	db := newTrafficQuotaTestDB(t)
+	db := newServiceTestDB(t)
 	repo := repository.NewNodeRepository(db)
 	service := NewNodeService(db, "")
 	ctx := t.Context()
@@ -249,7 +282,7 @@ func TestCreateServiceWithTrafficQuotaRollsBackOnlyNewService(t *testing.T) {
 		{"uncapped node skips quota", 0, codes.OK, []trafficQuotaAdminCommand{absent, created}, "", nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo := repository.NewNodeRepository(newTrafficQuotaTestDB(t))
+			repo := repository.NewNodeRepository(newServiceTestDB(t))
 			fixture := &trafficQuotaAdminTestNode{t: t, commands: slices.Clone(tc.commands)}
 			fixture.quotaErr = status.Error(tc.quotaCode, "test quota failure")
 			fixture.used = 12
@@ -304,7 +337,7 @@ func TestRuleSyncClearsQuotaEvenWhenGostConfigIsUnavailable(t *testing.T) {
 		{"quota clear temporarily unavailable", codes.Unavailable, 1793548800, 100},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := newTrafficQuotaTestDB(t)
+			db := newServiceTestDB(t)
 			repo := repository.NewNodeRepository(db)
 			fixture := &trafficQuotaAdminTestNode{
 				t:        t,
@@ -343,26 +376,6 @@ func TestRuleSyncClearsQuotaEvenWhenGostConfigIsUnavailable(t *testing.T) {
 			}
 		})
 	}
-}
-
-func newTrafficQuotaTestDB(t *testing.T) *gorm.DB {
-	t.Helper()
-	if err := logger.Init(&logger.Config{Level: "error"}); err != nil {
-		t.Fatal(err)
-	}
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	if err := db.AutoMigrate(&model.GostNode{}); err != nil {
-		t.Fatal(err)
-	}
-	return db
 }
 
 type trafficQuotaTestNode struct {

@@ -199,7 +199,8 @@ func (s *RuleSyncService) syncTunnels(client *gost.Client, nodeID uint, tunnels 
 		if t.EntryNodeID != nodeID {
 			continue
 		}
-		if t.EntryRuleID != nil && t.Status != model.TunnelStatusRunning {
+		// A legacy chain may remain after a failed start. Leave those resources for the explicit retry.
+		if t.Status == model.TunnelStatusError || (t.EntryRuleID != nil && t.Status != model.TunnelStatusRunning) {
 			continue
 		}
 		managedName := tunnelChainName(t.ID)

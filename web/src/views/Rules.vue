@@ -115,16 +115,16 @@
               <td class="rule-actions-cell" role="cell" data-label="操作">
                 <div class="rule-row-actions">
                   <el-button
-                    v-if="!row.role && !hasTunnelBindings(row) && !row.use_clash_ruleset && row.targets?.length"
+                    v-if="!hasTunnelBindings(row) && (needsStop(row) || (!row.role && !row.use_clash_ruleset && row.targets?.length))"
                     text
-                    :type="row.status === 'running' ? 'warning' : 'success'"
+                    :type="needsStop(row) ? 'warning' : 'success'"
                     :loading="pendingRuleIds.has(row.id)"
-                    :aria-label="(row.status === 'running' ? '停止 ' : '启动 ') + row.name"
+                    :aria-label="(needsStop(row) ? '停止 ' : '启动 ') + row.name"
                     @click="toggleRule(row)"
                   >
-                    {{ row.status === 'running' ? '停止' : '启动' }}
+                    {{ needsStop(row) ? '停止' : '启动' }}
                   </el-button>
-                  <el-button text :aria-label="'编辑 ' + row.name" @click="openDialog(row)">编辑</el-button>
+                  <el-button text :disabled="!hasTunnelBindings(row) && needsStop(row)" :aria-label="'编辑 ' + row.name" @click="openDialog(row)">编辑</el-button>
                   <el-dropdown trigger="click" @command="handleRowCommand(row, $event)">
                     <el-button text :aria-label="row.name + '的更多操作'">
                       更多 <el-icon aria-hidden="true"><ArrowDown /></el-icon>
@@ -341,6 +341,7 @@ const restartHint = computed(() => boundTunnelCount.value > 1
   ? '请先停止全部关联隧道，再逐条启动以应用配置。'
   : '请重启关联隧道以应用配置。')
 const endpointRoles = { entry: '入口', exit: '出口' }
+const needsStop = rule => rule.status === 'running' || !!rule.service_id
 const hasTunnelBindings = rule => !!(rule.linked_tunnels?.length || rule.linked_tunnel_id)
 const strategies = { round: '轮询', rand: '随机', fifo: '先进先出', hash: '哈希' }
 const editId = ref(null)
@@ -588,8 +589,8 @@ const checkListener = async (row, notify = false) => {
 }
 
 const toggleRule = row => {
-  const running = row.status === 'running'
-  return runRuleAction(row, running ? stopRule : startRule, running ? '端点已停止' : '端点已启动')
+  const stop = needsStop(row)
+  return runRuleAction(row, stop ? stopRule : startRule, stop ? '端点已停止' : '端点已启动')
 }
 
 const handleRowCommand = async (row, command) => {

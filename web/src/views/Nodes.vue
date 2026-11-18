@@ -215,7 +215,7 @@
           />
         </el-tab-pane>
         <el-tab-pane label="流量校准" name="traffic" lazy>
-          <NodeTrafficCalibration :key="editingNode.id" :node="liveEditingNode" @saved="refreshCurrentView()" />
+          <NodeTrafficCalibration v-if="dialogVisible" :key="editingNode.id" :node="liveEditingNode" @saved="refreshCurrentView()" />
         </el-tab-pane>
         <el-tab-pane label="危险操作" name="danger" lazy>
           <section class="ops-panel node-settings-danger">

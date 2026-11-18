@@ -129,6 +129,11 @@ type EndpointConfig struct {
 	EnableTLS         bool
 }
 
+// NeedsStop also covers a service retained across a failed cleanup or an offline health check.
+func (r *GostRule) NeedsStop() bool {
+	return r.Status == RuleStatusRunning || r.ServiceID != ""
+}
+
 func (r *GostRule) EndpointConfig() EndpointConfig {
 	return EndpointConfig{
 		Protocol: r.Protocol, ListenIP: r.ListenIP, ListenPort: r.ListenPort, ProtocolOptions: r.ProtocolOptions,

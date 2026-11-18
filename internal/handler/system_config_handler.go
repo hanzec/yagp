@@ -72,7 +72,7 @@ func (h *SystemConfigHandler) TestEmail(c *gin.Context) {
 		return
 	}
 
-	if err := h.systemConfigService.SendTestEmail(&req); err != nil {
+	if err := h.systemConfigService.SendTestEmail(c.Request.Context(), &req); err != nil {
 		response.Error(c, 500, 50001, "发送失败: "+err.Error())
 		return
 	}

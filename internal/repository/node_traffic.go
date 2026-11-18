@@ -5,6 +5,9 @@ import "context"
 // RelayUsageByNode includes current exit assignments, previous assignments, and older per-tunnel counters.
 // Soft-deleted endpoints and tunnels still contribute to a node's lifetime usage.
 func (r *NodeRepository) RelayUsageByNode(ctx context.Context, ids []uint) (map[uint]uint64, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
 	var totals []struct {
 		NodeID      uint
 		InputBytes  uint64

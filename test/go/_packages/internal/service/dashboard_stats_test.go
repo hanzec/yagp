@@ -15,7 +15,7 @@ func TestDashboardSummariesPreserveCountsWithFiveQueries(t *testing.T) {
 	db := newServiceTestDB(t)
 	check := func(nodes NodeStats, rules RuleStats, tunnels TunnelStats) {
 		t.Helper()
-		queries := &dashboardQueryCounter{Interface: gormlogger.Default.LogMode(gormlogger.Silent)}
+		queries := &queryCounter{Interface: gormlogger.Default.LogMode(gormlogger.Silent)}
 		stats, err := NewStatsService(db.Session(&gorm.Session{Logger: queries})).GetDashboardStats()
 		requireServiceError(t, err, nil)
 		if stats.Nodes != nodes || stats.Rules != rules || stats.Tunnels != tunnels {
@@ -56,11 +56,11 @@ func TestDashboardSummariesPreserveCountsWithFiveQueries(t *testing.T) {
 		TunnelStats{Total: 3, Running: 1, Stopped: 2})
 }
 
-type dashboardQueryCounter struct {
+type queryCounter struct {
 	gormlogger.Interface
 	count int
 }
 
-func (c *dashboardQueryCounter) Trace(context.Context, time.Time, func() (string, int64), error) {
+func (c *queryCounter) Trace(context.Context, time.Time, func() (string, int64), error) {
 	c.count++
 }

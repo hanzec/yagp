@@ -216,7 +216,7 @@ func TestBackupFailsWhenDatabaseCannotBeSnapshotted(t *testing.T) {
 
 func TestSendTestEmailSubmitsSMTPEnvelopeAndMessage(t *testing.T) {
 	settings := &SystemConfigService{}
-	requireServiceError(t, settings.SendTestEmail(&dto.EmailConfigReq{}), bizerrors.ErrSMTPConfigIncomplete)
+	requireServiceError(t, settings.SendTestEmail(t.Context(), &dto.EmailConfigReq{}), bizerrors.ErrSMTPConfigIncomplete)
 	for _, tc := range []struct {
 		name      string
 		to        string
@@ -235,7 +235,7 @@ func TestSendTestEmailSubmitsSMTPEnvelopeAndMessage(t *testing.T) {
 				Host: "127.0.0.1", Port: listener.Addr().(*net.TCPAddr).Port,
 				Username: "test-user", Password: "test-password", FromEmail: "sender@example.test", ToEmail: tc.to,
 			}
-			requireServiceError(t, settings.SendTestEmail(req), nil)
+			requireServiceError(t, settings.SendTestEmail(t.Context(), req), nil)
 			requireServiceError(t, <-result, nil)
 		})
 	}

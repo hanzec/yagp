@@ -98,11 +98,10 @@ func (r *TunnelRepository) UpdateStatus(id uint, status model.TunnelStatus) erro
 	return r.UpdateField(&model.GostTunnel{}, id, "status", status)
 }
 
-// CountAll 统计总数
-func (r *TunnelRepository) CountAll() (int64, error) {
+func (r *TunnelRepository) Exists(ctx context.Context, id uint) (bool, error) {
 	var count int64
-	err := r.DB.Model(&model.GostTunnel{}).Count(&count).Error
-	return count, err
+	err := r.DB.WithContext(ctx).Model(&model.GostTunnel{}).Where("id = ?", id).Count(&count).Error
+	return count != 0, err
 }
 
 // FindByNodeID 查找节点相关的隧道
@@ -129,13 +128,6 @@ func (r *TunnelRepository) HasRulesUsingTunnel(tunnelID uint) (bool, error) {
 // HasRules 检查隧道是否被规则使用（别名方法）
 func (r *TunnelRepository) HasRules(tunnelID uint) (bool, error) {
 	return r.HasRulesUsingTunnel(tunnelID)
-}
-
-// CountByStatus 按状态统计
-func (r *TunnelRepository) CountByStatus(status model.TunnelStatus) (int64, error) {
-	var count int64
-	err := r.DB.Model(&model.GostTunnel{}).Where("status = ?", status).Count(&count).Error
-	return count, err
 }
 
 // UpdateServiceInfo 更新隧道的服务 ID 和 Chain ID

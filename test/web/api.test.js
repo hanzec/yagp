@@ -83,20 +83,19 @@ describe('panel API contracts', () => {
     if (data) expect(JSON.parse(config.data)).toEqual(data)
   })
 
-  it('loads all routing nodes, including an incomplete final page', async () => {
-    const firstPage = Array.from({ length: 100 }, (_, index) => ({ id: index + 1 }))
+  it('follows the lightweight node options cursor until the final page', async () => {
     adapter.mockImplementation(config => Promise.resolve(response(config, {
       code: 0,
-      data: { total: 120, list: config.params.page === 1 ? firstPage : [{ id: 101 }] }
+      data: config.params.before ? { list: [{ id: 1 }], next: 0 } : { list: [{ id: 5 }, { id: 2 }], next: 2 }
     })))
-    await expect(node.getRoutingNodes()).resolves.toEqual([...firstPage, { id: 101 }])
-    expect(adapter.mock.calls.map(([config]) => config.params)).toEqual([
-      { page: 1, pageSize: 100 }, { page: 2, pageSize: 100 }
+    await expect(node.getRoutingNodes()).resolves.toEqual([{ id: 5 }, { id: 2 }, { id: 1 }])
+    expect(adapter.mock.calls.map(([config]) => [config.url, config.params.before])).toEqual([
+      ['/nodes/options', undefined], ['/nodes/options', 2]
     ])
   })
 
   it('handles an empty inventory response', async () => {
-    adapter.mockImplementation(config => Promise.resolve(response(config, { code: 0, data: { total: 0 } })))
+    adapter.mockImplementation(config => Promise.resolve(response(config, { code: 0, data: { list: [], next: 0 } })))
     await expect(node.getRoutingNodes()).resolves.toEqual([])
     expect(adapter).toHaveBeenCalledTimes(1)
   })

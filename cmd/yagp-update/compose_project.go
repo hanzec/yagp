@@ -64,8 +64,12 @@ func resolveComposeProjectDirectory(path string) (string, error) {
 			return "", err
 		}
 	}
-	for _, bind := range []string{"config", "data", "logs"} {
+	for _, bind := range []string{"config", "data", "logs", "backups"} {
 		if err := checkSelfUpgradePath(filepath.Join(directory, bind), false); err != nil {
+			// Older Compose installations may not have a backup mount yet.
+			if bind == "backups" && os.IsNotExist(err) {
+				continue
+			}
 			return "", err
 		}
 	}

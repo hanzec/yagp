@@ -25,7 +25,7 @@ docker compose up -d
 
 编辑 `config/config.yaml`，完成 [Authentik 正向认证](#authentik-正向认证) 和[节点接入](#启用节点注册和流量上报)，然后执行 `docker compose restart yagp`。在其他目录用 `-f` 启动时，将 `PWD` 设为部署目录。
 
-默认镜像为 `release.hanzec-overseas.cn/images/yagp:latest`（Linux amd64、arm64）。固定版本可在 [docker-compose.yml](./docker-compose.yml) 中替换标签。配置、数据和日志分别保存在部署目录的 `config/`、`data/` 和 `logs/`。
+默认镜像为 `release.hanzec-overseas.cn/images/yagp:latest`（Linux amd64、arm64）。固定版本可在 [docker-compose.yml](./docker-compose.yml) 中替换标签。配置、数据、SQLite 备份和日志分别保存在部署目录的 `config/`、`data/`、`backups/` 和 `logs/`。
 
 Compose 通过 Traefik 的 `yagp-compress` 中间件启用 gzip，压缩面板页面、静态资源和 API 响应。客户端需支持 gzip，响应达到 Traefik 默认的 1024 字节阈值才会压缩。已有部署需更新 `docker-compose.yml` 后执行 `docker compose up -d yagp`，仅升级镜像不会更新这些标签。
 
@@ -57,7 +57,12 @@ authentik:
 
 ### 数据库
 
-默认使用 SQLite。在 **系统设置 → 数据库备份** 中可立即备份或开启自动备份。使用 Docker 时，先在 `yagp` 服务的 `volumes` 中添加 `${PWD:-.}/backups:/app/backups`，再执行 `docker compose up -d`，以便容器重建后仍可访问备份。
+默认使用 SQLite。在 **系统设置 → 数据库备份** 中可立即备份或开启自动备份。默认 Compose 将备份保存在部署目录的 `backups/`。如果旧安装的备份还在容器内，请先在部署目录执行以下命令复制已有备份，再用新版 Compose 重建容器。
+
+```bash
+mkdir -p backups
+docker cp yagp:/app/backups/. ./backups/
+```
 
 使用 MySQL 时，先创建数据库并授予面板账号读写和建表权限，再通过配置文件或 `YAGP_DATABASE_TYPE`、`YAGP_DATABASE_DSN` 设置连接。MySQL 由数据库服务备份。
 
