@@ -86,6 +86,8 @@ if [[ "$action" == uninstall ]]; then
                     *) die "无法确认 $unit 已停止，保留安装文件" ;;
                 esac
             fi
+        done
+        for unit in "$bridge_unit" "$gost_unit"; do
             if [[ -f "/etc/systemd/system/$unit.service" ]]; then
                 systemctl disable "$unit"
             fi

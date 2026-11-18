@@ -77,11 +77,14 @@ func (r *RuleRepository) FindByID(id uint) (*model.GostRule, error) {
 }
 
 // List 查询规则列表
-func (r *RuleRepository) List(opt *QueryOption) ([]model.GostRule, int64, error) {
+func (r *RuleRepository) List(opt *QueryOption, entryNodeID uint) ([]model.GostRule, int64, error) {
 	var rules []model.GostRule
 	var total int64
 
 	db := r.DB.Model(&model.GostRule{})
+	if entryNodeID != 0 {
+		db = r.onEntryNode(entryNodeID)
+	}
 
 	// 应用条件过滤
 	db = ApplyConditions(db, opt)

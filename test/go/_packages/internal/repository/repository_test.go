@@ -226,7 +226,7 @@ func TestRepositoryForwardingRelationsAndScopedUpdates(t *testing.T) {
 	}
 	byNode, err := rules.FindByEntryNodeID(entry.ID, []model.GostTunnel{tunnel, other})
 	mustPersist(t, err)
-	byTunnel, _, err := rules.List(&QueryOption{Conditions: map[string]any{"tunnel_id = ?": tunnel.ID}})
+	byTunnel, _, err := rules.List(&QueryOption{Conditions: map[string]any{"tunnel_id = ?": tunnel.ID}}, 0)
 	mustPersist(t, err)
 	byExit, err := tunnels.FindByNodeID(exit.ID)
 	mustPersist(t, err)
@@ -282,7 +282,7 @@ func TestRepositoryForwardingRelationsAndScopedUpdates(t *testing.T) {
 	if _, err := rules.FindByID(proxied.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("soft-deleted rule is still visible: %v", err)
 	}
-	hasRules, err = tunnels.HasRulesUsingTunnel(tunnel.ID)
+	hasRules, err = tunnels.HasRules(tunnel.ID)
 	mustPersist(t, err)
 	if hasRules {
 		t.Fatal("deleted rule still blocks tunnel removal")
@@ -295,7 +295,7 @@ func TestRepositoryForwardingRelationsAndScopedUpdates(t *testing.T) {
 	mustPersist(t, err)
 	ruleSummary, err = rules.Summary()
 	mustPersist(t, err)
-	_, entryRules, err := rules.List(&QueryOption{Conditions: map[string]any{"node_id = ?": entry.ID}})
+	_, entryRules, err := rules.List(nil, entry.ID)
 	mustPersist(t, err)
 	if tunnelSummary.Total != 1 || ruleSummary.Total != 2 || entryRules != 1 || ruleSummary.TunnelType != 0 {
 		t.Fatalf("counts after removal: %d tunnels, %d total rules, %d entry rules, %d tunnel rules", tunnelSummary.Total, ruleSummary.Total, entryRules, ruleSummary.TunnelType)
@@ -356,7 +356,7 @@ func TestRepositoryListPaginationAndQueryErrors(t *testing.T) {
 	if clamped.PageSize != 100 {
 		t.Fatalf("maximum page size was not enforced: %+v", clamped)
 	}
-	rulePage, ruleTotal, err := rules.List(nil)
+	rulePage, ruleTotal, err := rules.List(nil, 0)
 	mustPersist(t, err)
 	tunnelPage, tunnelTotal, err := tunnels.List(nil)
 	mustPersist(t, err)
@@ -382,7 +382,7 @@ func TestRepositoryListPaginationAndQueryErrors(t *testing.T) {
 		if _, _, err := nodes.List(opt, ""); err == nil {
 			t.Fatalf("node list silently ignored a query error: %+v", opt)
 		}
-		if _, _, err := rules.List(opt); err == nil {
+		if _, _, err := rules.List(opt, 0); err == nil {
 			t.Fatalf("rule list silently ignored a query error: %+v", opt)
 		}
 		if _, _, err := tunnels.List(opt); err == nil {

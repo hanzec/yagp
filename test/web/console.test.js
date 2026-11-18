@@ -203,6 +203,23 @@ describe('console routing and Authentik gate', () => {
 })
 
 describe('branding and summary components', () => {
+  it('restores the default title in the navigation, browser tab and cache after clearing it', async () => {
+    await router.push('/dashboard')
+    const pinia = createPinia()
+    wrapper = mount(App, { attachTo: document.body, global: { plugins: [router, pinia] } })
+    await flushPromises()
+    expect(wrapper.get('.console-brand__type strong').text()).toBe(branding.siteTitle)
+    expect(localStorage.getItem('siteTitle')).toBe(branding.siteTitle)
+
+    adapter.mockImplementationOnce(config => Promise.resolve(reply(config, { ...branding, siteTitle: '' })))
+    await useSystemStore(pinia).fetchSystemConfig()
+    await flushPromises()
+    expect(wrapper.get('.console-brand__type strong').text()).toBe('yagp')
+    expect(document.title).toBe('yagp')
+    expect(localStorage.getItem('siteTitle')).toBeNull()
+    expect(useSystemStore(createPinia()).siteTitle).toBe('yagp')
+  })
+
   it('removes cleared copyright text from the live footer and persisted branding', async () => {
     await router.push('/dashboard')
     const pinia = createPinia()

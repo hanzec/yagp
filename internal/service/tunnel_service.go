@@ -543,21 +543,3 @@ func (s *TunnelService) removeLegacyTunnelRuntime(tunnel *model.GostTunnel) erro
 	}
 	return stderrors.Join(entryClient.SaveConfig(), exitClient.SaveConfig())
 }
-
-// GetChainID 获取隧道的 Chain ID（供规则服务使用）
-func (s *TunnelService) GetChainID(tunnelID uint) (string, error) {
-	tunnel, err := s.tunnelRepo.FindByID(tunnelID)
-	if err != nil {
-		return "", err
-	}
-	return tunnel.ChainID, nil
-}
-
-// GetEntryNodeID 获取隧道的入口节点 ID（供规则服务使用）
-func (s *TunnelService) GetEntryNodeID(tunnelID uint) (uint, error) {
-	tunnel, err := s.tunnelRepo.FindByID(tunnelID)
-	if err != nil {
-		return 0, err
-	}
-	return tunnel.EntryNodeID, nil
-}

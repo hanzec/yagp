@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -141,7 +142,8 @@ func main() {
 
 	// 启动自动备份服务
 	backupService := service.NewBackupService(db)
-	backupService.Start()
+	var backupWorker sync.WaitGroup
+	backupWorker.Go(func() { backupService.Run(backgroundCtx) })
 
 	<-quit
 
@@ -156,7 +158,7 @@ func main() {
 	// 停止相关的后台服务
 	stopBackground()
 	syncService.Stop()
-	backupService.Stop()
+	backupWorker.Wait()
 }
 
 // initDatabase 初始化数据库

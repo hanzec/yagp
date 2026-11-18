@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -150,8 +151,9 @@ func TestBackupCreatesReadableSnapshotAndAppliesRetention(t *testing.T) {
 		if !backup.Supported() {
 			t.Fatal("SQLite backups should be supported")
 		}
-		backup.Start()
-		defer backup.Stop()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go backup.Run(ctx)
 		synctest.Wait()
 		if _, err := os.Stat(old); !os.IsNotExist(err) {
 			t.Fatalf("retention left an older backup: %v", err)
@@ -177,7 +179,7 @@ func TestBackupCreatesReadableSnapshotAndAppliesRetention(t *testing.T) {
 				t.Fatalf("retention touched excluded file %s: %v", path, err)
 			}
 		}
-		backup.processAutoBackup()
+		backup.processAutoBackup(t.Context())
 		sameFiles, err := filepath.Glob(pattern)
 		requireServiceError(t, err, nil)
 		if !reflect.DeepEqual(files, sameFiles) {
@@ -193,21 +195,22 @@ func TestBackupDirectoryFailure(t *testing.T) {
 	cfg.Database.Path = ""
 	requireServiceError(t, service.CreateBackup(t.Context()), bizerrors.ErrDBPathNotConfigured)
 	cfg.Database.Path = "live.db"
-	service.processAutoBackup()
+	service.processAutoBackup(t.Context())
 	if _, err := os.Stat("backups"); !os.IsNotExist(err) {
 		t.Fatalf("disabled auto backup touched the disk: %v", err)
 	}
-	settings, err := service.sysRepo.Get()
+	repo := repository.NewSystemConfigRepository(service.db)
+	settings, err := repo.Get()
 	requireServiceError(t, err, nil)
 	settings.AutoBackup, settings.BackupRetentionCount = true, 0
-	requireServiceError(t, service.sysRepo.Update(settings), nil)
-	service.cleanOldBackups("not-created")
+	requireServiceError(t, repo.Update(settings), nil)
+	service.cleanOldBackups(t.Context(), "not-created")
 	settings.BackupRetentionCount = 1
-	requireServiceError(t, service.sysRepo.Update(settings), nil)
-	service.cleanOldBackups("not-created")
+	requireServiceError(t, repo.Update(settings), nil)
+	service.cleanOldBackups(t.Context(), "not-created")
 	requireServiceError(t, os.WriteFile("backups", []byte("not a directory"), 0o600), nil)
 	requireServiceError(t, service.CreateBackup(t.Context()), bizerrors.ErrBackupDirCreateFailed)
-	service.processAutoBackup()
+	service.processAutoBackup(t.Context())
 }
 
 func TestBackupFailsWhenDatabaseCannotBeSnapshotted(t *testing.T) {

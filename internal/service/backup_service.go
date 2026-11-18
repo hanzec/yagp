@@ -25,61 +25,39 @@ var backupNamePattern = regexp.MustCompile(`^gost_panel_([0-9]{8}_[0-9]{6})(?:\.
 
 // BackupService 备份服务
 type BackupService struct {
-	db      *gorm.DB
-	sysRepo *repository.SystemConfigRepository
-
-	stopChan chan struct{}
+	db *gorm.DB
 }
 
-// NewBackupService 创建备份服务
 func NewBackupService(db *gorm.DB) *BackupService {
-	return &BackupService{
-		db:       db,
-		sysRepo:  repository.NewSystemConfigRepository(db),
-		stopChan: make(chan struct{}),
-	}
+	return &BackupService{db: db}
 }
 
 func (s *BackupService) Supported() bool {
 	return s.db.Dialector.Name() == "sqlite"
 }
 
-// Start 启动自动备份任务 (按小时检查)
-func (s *BackupService) Start() {
+// Run checks for today's snapshot at startup and once per hour until shutdown.
+func (s *BackupService) Run(ctx context.Context) {
 	if !s.Supported() {
 		return
 	}
-	go func() {
-		// 启动时先检查一次
-		s.processAutoBackup()
-
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				s.processAutoBackup()
-			case <-s.stopChan:
-				return
-			}
-		}
-	}()
 	logger.Info("自动备份服务已启动")
-}
-
-// Stop 停止自动备份任务
-func (s *BackupService) Stop() {
-	if !s.Supported() {
-		return
+	defer logger.Info("自动备份服务已停止")
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for ctx.Err() == nil {
+		s.processAutoBackup(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
-	close(s.stopChan)
-	logger.Info("自动备份服务已停止")
 }
 
 // processAutoBackup 执行自动备份逻辑
-func (s *BackupService) processAutoBackup() {
-	cfg, err := s.sysRepo.Get()
+func (s *BackupService) processAutoBackup(ctx context.Context) {
+	cfg, err := repository.NewSystemConfigRepository(s.db.WithContext(ctx)).Get()
 	if err != nil {
 		logger.Errorf("自动备份检查失败: 获取系统配置错误: %v", err)
 		return
@@ -110,7 +88,7 @@ func (s *BackupService) processAutoBackup() {
 
 	// 执行备份
 	logger.Infof("开始执行自动备份...")
-	if err := s.CreateBackup(context.Background()); err != nil {
+	if err := s.CreateBackup(ctx); err != nil && ctx.Err() == nil {
 		logger.Errorf("自动备份执行失败: %v", err)
 	}
 }
@@ -163,7 +141,7 @@ func (s *BackupService) CreateBackup(ctx context.Context) error {
 	logger.Infof("数据库备份成功: %s", targetPath)
 
 	// 清理旧备份
-	go s.cleanOldBackups(backupDir)
+	s.cleanOldBackups(ctx, backupDir)
 
 	return nil
 }
@@ -197,8 +175,8 @@ func publishedBackupStems(backupDir string) ([]string, error) {
 }
 
 // cleanOldBackups 清理旧备份
-func (s *BackupService) cleanOldBackups(backupDir string) {
-	cfg, err := s.sysRepo.Get()
+func (s *BackupService) cleanOldBackups(ctx context.Context, backupDir string) {
+	cfg, err := repository.NewSystemConfigRepository(s.db.WithContext(ctx)).Get()
 	if err != nil {
 		logger.Errorf("获取系统配置失败: %v", err)
 		return

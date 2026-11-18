@@ -180,9 +180,7 @@ func TestTunnelAndRuleLifecycle(t *testing.T) {
 	if running.Status != model.TunnelStatusRunning || running.ChainID == "" || running.ServiceID == "" {
 		t.Fatalf("running tunnel = %+v", running)
 	}
-	chainID, err := tunnels.GetChainID(tunnel.ID)
-	requireServiceError(t, err, nil)
-	chain := entryRemote.chain(chainID)
+	chain := entryRemote.chain(running.ChainID)
 	if len(chain.Hops) != 1 || len(chain.Hops[0].Nodes) != 1 {
 		t.Fatalf("entry chain = %+v", chain)
 	}
@@ -213,7 +211,7 @@ func TestTunnelAndRuleLifecycle(t *testing.T) {
 		t.Fatalf("running tunneled rules = %+v, total %d", ruleList, total)
 	}
 	forwarding := entryRemote.service(ruleList[0].ServiceID)
-	if forwarding.Name == "" || forwarding.Addr != "127.0.0.1:5353" || forwarding.Listener.Type != "udp" || forwarding.Handler.Chain != chainID {
+	if forwarding.Name == "" || forwarding.Addr != "127.0.0.1:5353" || forwarding.Listener.Type != "udp" || forwarding.Handler.Chain != running.ChainID {
 		t.Fatalf("tunneled forwarding service = %+v", forwarding)
 	}
 	stats, err := NewStatsService(db).GetDashboardStats()
@@ -225,15 +223,13 @@ func TestTunnelAndRuleLifecycle(t *testing.T) {
 	}
 	requireServiceError(t, rules.Delete(rule.ID, testAdmin, testIP, testAgent), nil)
 	requireServiceError(t, tunnels.Delete(tunnel.ID, testAdmin, testIP, testAgent), nil)
-	if entryRemote.chain(chainID).Name != "" || exitRemote.service(running.ServiceID).Name != "" {
+	if entryRemote.chain(running.ChainID).Name != "" || exitRemote.service(running.ServiceID).Name != "" {
 		t.Fatal("deleting running tunnel did not remove both endpoints")
 	}
 	_, err = tunnels.GetByID(tunnel.ID)
 	requireServiceError(t, err, bizerrors.ErrTunnelNotFound)
 	_, err = tunnels.Update(tunnel.ID, update, testAdmin, testIP, testAgent)
 	requireServiceError(t, err, bizerrors.ErrTunnelNotFound)
-	_, err = tunnels.GetChainID(tunnel.ID)
-	requireServiceError(t, err, gorm.ErrRecordNotFound)
 	requireServiceError(t, tunnels.Delete(tunnel.ID, testAdmin, testIP, testAgent), bizerrors.ErrTunnelNotFound)
 	requireServiceError(t, tunnels.Start(tunnel.ID, testAdmin, testIP, testAgent), gorm.ErrRecordNotFound)
 	requireServiceError(t, tunnels.Stop(tunnel.ID, testAdmin, testIP, testAgent), gorm.ErrRecordNotFound)

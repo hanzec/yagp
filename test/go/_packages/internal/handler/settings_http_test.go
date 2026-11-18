@@ -129,18 +129,6 @@ func TestSystemHTTPBackup(t *testing.T) {
 	}
 	f.request(t, "POST", "/system/backup", "", 200)
 
-	// Old-file cleanup is asynchronous. Wait until it leaves the backup we can restore.
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		_, err := os.Stat(stale)
-		if os.IsNotExist(err) {
-			break
-		}
-		if err != nil || time.Now().After(deadline) {
-			t.Fatalf("backup retention did not remove the old backup: %v", err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 	files, err := filepath.Glob(filepath.Join("backups", "gost_panel_*.db"))
 	if err != nil || len(files) != 1 {
 		t.Fatalf("backup files: %v, %v", files, err)

@@ -111,14 +111,9 @@ func (r *TunnelRepository) StopByNodeID(nodeID uint) error {
 		Update("status", model.TunnelStatusStopped).Error
 }
 
-// HasRulesUsingTunnel 检查是否有规则正在使用该隧道
-func (r *TunnelRepository) HasRulesUsingTunnel(tunnelID uint) (bool, error) {
-	var count int64
-	err := r.DB.Model(&model.GostRule{}).Where("tunnel_id = ?", tunnelID).Count(&count).Error
-	return count > 0, err
-}
-
-// HasRules 检查隧道是否被规则使用（别名方法）
+// HasRules checks whether a rule still references the tunnel.
 func (r *TunnelRepository) HasRules(tunnelID uint) (bool, error) {
-	return r.HasRulesUsingTunnel(tunnelID)
+	var exists int
+	err := r.DB.Model(&model.GostRule{}).Select("1").Where("tunnel_id = ?", tunnelID).Limit(1).Scan(&exists).Error
+	return exists != 0, err
 }

@@ -92,7 +92,7 @@ func (s *TunnelService) setTunnelEndpoints(tunnel *model.GostTunnel, entryID, ex
 		if err != nil {
 			return err
 		}
-		if len(bindings) == 0 && endpoint.Status == model.RuleStatusRunning {
+		if len(bindings) == 0 && endpoint.NeedsStop() {
 			return errors.ErrTunnelEndpointInUse
 		}
 		for _, bound := range bindings {

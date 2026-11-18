@@ -447,9 +447,6 @@ func (s *RuleService) List(req *dto.RuleListReq) ([]model.GostRule, int64, error
 		Conditions: make(map[string]any),
 	}
 
-	if req.NodeID > 0 {
-		opt.Conditions["node_id = ?"] = req.NodeID
-	}
 	if req.TunnelID > 0 {
 		opt.Conditions["tunnel_id = ?"] = req.TunnelID
 	}
@@ -465,7 +462,7 @@ func (s *RuleService) List(req *dto.RuleListReq) ([]model.GostRule, int64, error
 		}
 	}
 
-	rules, total, err := s.ruleRepo.List(opt)
+	rules, total, err := s.ruleRepo.List(opt, req.NodeID)
 	if err != nil || len(rules) == 0 {
 		return rules, total, err
 	}

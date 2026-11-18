@@ -39,3 +39,43 @@ func TestRuleListEnforcesItsAdvertisedPageSize(t *testing.T) {
 		t.Fatalf("past-last page changed the total or page size: %+v", empty)
 	}
 }
+
+func TestRuleListFiltersLegacyListenersByEntryNode(t *testing.T) {
+	f := newHandlerHTTPFixture(t)
+	f.registerForwarding()
+	entry, exit := model.GostNode{Name: "entry"}, model.GostNode{Name: "exit"}
+	for _, node := range []*model.GostNode{&entry, &exit} {
+		if err := f.db.Create(node).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	tunnel := model.GostTunnel{Name: "path", EntryNodeID: entry.ID, ExitNodeID: exit.ID}
+	if err := f.db.Create(&tunnel).Error; err != nil {
+		t.Fatal(err)
+	}
+	rules := []model.GostRule{
+		{Name: "legacy", Type: model.RuleTypeTunnel, TunnelID: &tunnel.ID},
+		{Name: "direct", Type: model.RuleTypeForward, NodeID: &entry.ID},
+		{Name: "other", Type: model.RuleTypeForward, NodeID: &exit.ID},
+	}
+	if err := f.db.Create(&rules).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		node  uint
+		query string
+		count int
+		want  string
+	}{
+		{entry.ID, "&type=tunnel", 1, "legacy"},
+		{entry.ID, "&pageSize=1", 2, ""},
+		{exit.ID, "&type=tunnel", 0, ""},
+		{exit.ID, "", 1, "other"},
+	} {
+		path := fmt.Sprintf("/rules?node_id=%d%s", tc.node, tc.query)
+		page := handlerData[handlerPage[model.GostRule]](t, f.request(t, "GET", path, "", 200))
+		if int(page.Total) != tc.count || len(page.List) != min(tc.count, 1) || tc.want != "" && page.List[0].Name != tc.want {
+			t.Fatalf("%s returned %+v", path, page)
+		}
+	}
+}

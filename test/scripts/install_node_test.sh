@@ -141,8 +141,13 @@ export stop_result=1 unit_state=active
 if bash "$flat_installer" uninstall --node-id "$test_node"; then exit 1; fi
 [[ -e "$flat_root/yagp-daemon" && -e "$flat_root/gost" ]]
 [[ -e "$test_dir/systemd-units/yagp-daemon.service" && -e "$test_dir/systemd-units/yagp-gost.service" ]]
+if grep -q '^disable ' "$service_requests"; then
+    printf 'An unconfirmed stop disabled a node service\n' >&2
+    exit 1
+fi
 export unit_state=inactive
 bash "$flat_installer" uninstall --node-id "$test_node"
+grep -Fx 'disable yagp-daemon' "$service_requests"
 grep -Fx 'disable yagp-gost' "$service_requests"
 [[ ! -e "$flat_root/yagp-daemon" && ! -e "$flat_root/gost" && ! -e "$flat_root/.runtime-layout" ]]
 [[ -f "$flat_root/node.yaml" && -f "$flat_root/gost.yaml" && -f "$flat_root/panel-credentials.yaml" ]]

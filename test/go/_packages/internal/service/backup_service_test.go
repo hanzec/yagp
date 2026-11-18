@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +11,7 @@ import (
 
 	bizerrors "yagp/internal/errors"
 	"yagp/internal/model"
+	"yagp/internal/repository"
 	"yagp/pkg/logger"
 
 	"github.com/glebarez/sqlite"
@@ -29,10 +32,11 @@ func TestBackupUsesWALSnapshotAndUniquePublishedFiles(t *testing.T) {
 	requireServiceError(t, db.Exec("PRAGMA wal_autocheckpoint=0").Error, nil)
 	requireServiceError(t, db.AutoMigrate(&model.SystemConfig{}), nil)
 	backup := NewBackupService(db)
-	settings, err := backup.sysRepo.Get()
+	repo := repository.NewSystemConfigRepository(backup.db)
+	settings, err := repo.Get()
 	requireServiceError(t, err, nil)
 	settings.BackupRetentionCount = 10
-	requireServiceError(t, backup.sysRepo.Update(settings), nil)
+	requireServiceError(t, repo.Update(settings), nil)
 	requireServiceError(t, db.Exec("CREATE TABLE snapshot_value (value TEXT NOT NULL)").Error, nil)
 	requireServiceError(t, db.Exec("PRAGMA wal_checkpoint(TRUNCATE)").Error, nil)
 	requireServiceError(t, db.Exec("INSERT INTO snapshot_value VALUES ('first committed WAL value')").Error, nil)
@@ -104,10 +108,11 @@ func TestBackupUsesWALSnapshotAndUniquePublishedFiles(t *testing.T) {
 func TestBackupRetentionOrdersLegacyAndFractionalSnapshots(t *testing.T) {
 	dir := t.TempDir()
 	backup := NewBackupService(newServiceTestDB(t))
-	settings, err := backup.sysRepo.Get()
+	repo := repository.NewSystemConfigRepository(backup.db)
+	settings, err := repo.Get()
 	requireServiceError(t, err, nil)
 	settings.BackupRetentionCount = 1
-	requireServiceError(t, backup.sysRepo.Update(settings), nil)
+	requireServiceError(t, repo.Update(settings), nil)
 
 	older := filepath.Join(dir, "gost_panel_20250131_120000.db")
 	newer := filepath.Join(dir, "gost_panel_20250131_120000.000000001-17.db")
@@ -116,7 +121,7 @@ func TestBackupRetentionOrdersLegacyAndFractionalSnapshots(t *testing.T) {
 		requireServiceError(t, os.WriteFile(name, []byte("snapshot"), 0o600), nil)
 	}
 
-	backup.cleanOldBackups(dir)
+	backup.cleanOldBackups(t.Context(), dir)
 	if _, err := os.Stat(older); !os.IsNotExist(err) {
 		t.Fatalf("older legacy snapshot was retained: %v", err)
 	}
@@ -124,5 +129,54 @@ func TestBackupRetentionOrdersLegacyAndFractionalSnapshots(t *testing.T) {
 		if _, err := os.Stat(name); err != nil {
 			t.Fatalf("missing file %s: %v", name, err)
 		}
+	}
+}
+
+func TestAutomaticBackupShutdownCancelsPendingSnapshot(t *testing.T) {
+	t.Chdir(t.TempDir())
+	loadServiceConfig(t, "database:\n  path: live.db\n")
+	db := newServiceTestDB(t)
+	saveServiceFixtures(t, db, &model.SystemConfig{ID: 1, AutoBackup: true})
+	raw, err := db.DB()
+	requireServiceError(t, err, nil)
+
+	// Occupy the sole SQLite connection after the scheduled backup creates its
+	// temporary file, just before VACUUM INTO requests the connection.
+	held := make(chan *sql.Conn, 1)
+	requireServiceError(t, db.Callback().Raw().Before("gorm:raw").Register("hold_snapshot_connection", func(tx *gorm.DB) {
+		conn, err := raw.Conn(t.Context())
+		if err != nil {
+			tx.AddError(err)
+			return
+		}
+		held <- conn
+	}), nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		NewBackupService(db).Run(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	select {
+	case conn := <-held:
+		defer conn.Close()
+	case <-time.After(3 * time.Second):
+		t.Fatal("scheduled backup did not reach VACUUM INTO")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("scheduled backup still waiting for the connection after shutdown")
+	}
+	entries, err := os.ReadDir("backups")
+	requireServiceError(t, err, nil)
+	if len(entries) != 0 {
+		t.Fatalf("interrupted backup left files: %v", entries)
 	}
 }
