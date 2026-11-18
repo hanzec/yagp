@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go/build"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -24,6 +24,9 @@ func main() {
 }
 
 func run(args []string) error {
+	if runtime.GOOS != "linux" {
+		return errors.New("Go tests require Linux; run this command on Linux or in a Linux container")
+	}
 	root, err := os.Getwd()
 	if err != nil {
 		return err
@@ -41,12 +44,6 @@ func run(args []string) error {
 		relative, err := filepath.Rel(sources, path)
 		if err != nil {
 			return err
-		}
-		if build.Default.GOOS != "linux" {
-			switch filepath.ToSlash(filepath.Dir(relative)) {
-			case "cmd/server", "cmd/yagp-daemon", "internal/nodebridge":
-				return nil
-			}
 		}
 		overlay.Replace[filepath.Join(root, relative)] = path
 		return nil

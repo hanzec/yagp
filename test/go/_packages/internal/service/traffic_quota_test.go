@@ -91,6 +91,40 @@ func TestTrafficQuotaSync(t *testing.T) {
 	sync(0, 0, 0, model.TrafficQuotaWindowUnset, "")
 }
 
+func TestTrafficQuotaCoversSupportedListenerTransports(t *testing.T) {
+	for _, tc := range []struct {
+		protocols []string
+		network   string
+	}{
+		{[]string{"tcp", "mtcp", "tls", "mtls", "ws", "mws", "wss", "mwss", "h2", "h2c", "grpc", "pht", "phts", "ohttp", "otls", "red"}, "tcp"},
+		{[]string{"udp", "kcp", "quic", "h3"}, "udp"},
+	} {
+		for _, protocol := range tc.protocols {
+			t.Run(protocol, func(t *testing.T) {
+				name, handler := "relay-tunnel-1", "relay"
+				if protocol == "red" {
+					name, handler = "rule-1", "red"
+				}
+				service := gost.ServiceConfig{
+					Name: name, Addr: ":8443", Handler: &gost.HandlerConfig{Type: handler}, Listener: gost.RelayListener(protocol, nil),
+				}
+				tcp, udp := quotaPorts([]gost.ServiceConfig{service})
+				if tc.network == "tcp" && (!slices.Equal(tcp, []uint32{8443}) || len(udp) != 0) ||
+					tc.network == "udp" && (!slices.Equal(udp, []uint32{8443}) || len(tcp) != 0) {
+					t.Fatalf("quota ports TCP %v UDP %v, want %s port 8443", tcp, udp, tc.network)
+				}
+			})
+		}
+	}
+	listener := gost.ServiceConfig{
+		Name: "relay-tunnel-1", Addr: ":8443", Handler: &gost.HandlerConfig{Type: "relay"},
+		Listener: &gost.ListenerConfig{Type: "kcp", Metadata: map[string]any{"kcp.tcp": "true"}},
+	}
+	if tcp, udp := quotaPorts([]gost.ServiceConfig{listener}); !slices.Equal(tcp, []uint32{8443}) || len(udp) != 0 {
+		t.Fatalf("KCP over TCP quota ports = TCP %v UDP %v", tcp, udp)
+	}
+}
+
 func TestTrafficCalibrationSurvivesSyncWithStaleNode(t *testing.T) {
 	db := newTrafficQuotaTestDB(t)
 	repo := repository.NewNodeRepository(db)

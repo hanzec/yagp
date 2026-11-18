@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import ElementPlus, { ElMessage, ElMessageBox, ElOption, ElSelect } from 'element-plus'
+import { ElMessage, ElMessageBox, ElOption, ElSelect } from 'element-plus'
 import { createPinia } from 'pinia'
 import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -61,7 +61,7 @@ function mountPage(component) {
   document.body.append(container)
   const wrapper = mount(component, {
     attachTo: container,
-    global: { plugins: [ElementPlus, createPinia()] }
+    global: { plugins: [createPinia()] }
   })
   mounted.push({ wrapper, container })
   return wrapper

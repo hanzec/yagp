@@ -328,8 +328,8 @@ const total = ref(null)
 const searchKeyword = ref('')
 const searchStatus = ref('')
 const searchTag = ref('')
-const appliedTag = ref('')
-const filtered = computed(() => Boolean(searchKeyword.value.trim() || searchStatus.value || appliedTag.value))
+const appliedFilters = ref({ keyword: '', status: '', tag: '' })
+const filtered = computed(() => Boolean(appliedFilters.value.keyword.trim() || appliedFilters.value.status || appliedFilters.value.tag))
 const nodeMetrics = computed(() => [
   { label: '筛选结果', value: total.value, detail: '全部匹配节点', icon: Monitor },
   ...Object.entries(nodeStates).map(([status, state]) => ({
@@ -535,24 +535,25 @@ const copyInstallCommand = async () => {
   else ElMessage.warning('已选中安装命令，请使用系统复制功能。')
 }
 
+let latestRequest = 0
 const fetchData = async (isSilent = false) => {
   if (isSilent && (loading.value || loadError.value)) return
+  const request = ++latestRequest
   if (!isSilent) loading.value = true
   try {
     const res = await getNodeList({
       page: page.value,
       pageSize: pageSize.value,
-      keyword: searchKeyword.value,
-      status: searchStatus.value,
-      tag: appliedTag.value
+      ...appliedFilters.value
     })
+    if (request !== latestRequest) return
     nodeList.value = res.data.list || []
     total.value = res.data.total || 0
     loadError.value = false
   } catch {
-    loadError.value = true
+    if (request === latestRequest) loadError.value = true
   } finally {
-    if (!isSilent) loading.value = false
+    if (request === latestRequest) loading.value = false
   }
 }
 
@@ -588,7 +589,7 @@ watch([installDialogVisible, () => installNode.value?.status], ([visible, status
 })
 
 const handleSearch = () => {
-  appliedTag.value = searchTag.value
+  appliedFilters.value = { keyword: searchKeyword.value, status: searchStatus.value, tag: searchTag.value }
   page.value = 1
   fetchData()
 }
@@ -751,7 +752,9 @@ watch([() => detailNode.value?.id, () => route.hash], ([id, hash]) => {
 
 let refreshTimer
 onMounted(() => {
-  refreshTimer = setInterval(() => refreshCurrentView(true), 5000)
+  refreshTimer = setInterval(() => {
+    if (!document.hidden) refreshCurrentView(true)
+  }, 5000)
 })
 onBeforeUnmount(() => {
   clearInterval(refreshTimer)

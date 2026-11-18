@@ -1,5 +1,4 @@
 import { mount } from '@vue/test-utils'
-import ElementPlus from 'element-plus'
 import { expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import InventoryToolbar from '@/components/InventoryToolbar.vue'
@@ -20,7 +19,6 @@ it('keeps actions in one header and opens the filter form in a dialog when space
       actions: '<button type="button">添加节点</button>'
     },
     global: {
-      plugins: [ElementPlus],
       stubs: {
         PanelDialog: {
           props: ['modelValue', 'title'],

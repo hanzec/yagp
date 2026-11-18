@@ -3,11 +3,9 @@ name: Build and Release
 on:
   push:
     branches:
-      - main
       - master
   pull_request:
     branches:
-      - main
       - master
   workflow_dispatch:
     inputs:
@@ -21,7 +19,7 @@ permissions:
 
 jobs:
   version:
-    if: ${{ github.event_name == 'push' && !github.event.deleted && (github.ref_name == 'main' || github.ref_name == github.event.repository.default_branch) }}
+    if: ${{ github.event_name == 'push' && !github.event.deleted && github.ref_name == 'master' }}
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.value }}
@@ -59,6 +57,11 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+
+      - name: Check build ordering and Linux test entry point
+        run: |
+          bash test/scripts/build_test.sh
+          bash test/scripts/go_runner_test.sh
 
       - name: Install frontend dependencies
         run: npm --prefix web ci
@@ -115,6 +118,32 @@ jobs:
             printf 'Go statement coverage must exceed 90%% (actual: %s)\n' "$total" >&2
             exit 1
           fi
+
+  docker-check:
+    name: Check Linux amd64 and arm64 images
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU for the runtime image
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build both Linux architectures without publishing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: VERSION=pr-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   build:
     needs: [version, test]

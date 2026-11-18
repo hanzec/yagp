@@ -292,15 +292,17 @@ sudo journalctl --namespace=+yagp-depoly -u yagp-depoly.service -u 'yagp-update-
 
 ## 下载与开发
 
-面板和节点守护程序均支持 Linux amd64 和 arm64。 [发布包](https://github.com/hanzec/yagp/releases)
+面板、节点守护程序和部署工具仅支持 Linux amd64 和 arm64。 [发布包](https://github.com/hanzec/yagp/releases)
 
-使用 Go 1.27.3 和 Node.js 26.13.0 LTS。运行 `make build` 构建 Linux 面板和节点守护进程。运行 Go 测试前先构建前端。在 Linux 上运行完整的 Go 测试。
+使用 Go 1.27.4 和 Node.js 26.13.1 LTS。运行 `make build` 构建 Linux 面板和节点守护进程，也支持 `make -j build` 并行构建。运行 Go 测试前先构建前端，测试入口必须在 Linux 或 Linux 容器中执行；非 Linux 环境会直接报错。
 
 ```bash
 npm --prefix web ci
 npm --prefix web run build
 go run ./test/go/_runner
 ```
+
+构建流程和测试入口的回归检查：`bash test/scripts/build_test.sh`、`bash test/scripts/go_runner_test.sh`。CI 在 Linux 上运行全部检查；Docker 镜像通过原生构建前端和 Go 交叉编译生成两种架构的产物。
 
 端点列表 API（`GET /api/v1/rules`）的 `pageSize` 上限为 100。
 

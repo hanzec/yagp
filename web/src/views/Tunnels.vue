@@ -351,7 +351,8 @@ const total = ref(null)
 const searchKeyword = ref('')
 const searchNodeId = ref('')
 const searchStatus = ref('')
-const filtered = computed(() => Boolean(searchKeyword.value.trim() || searchNodeId.value || searchStatus.value))
+const appliedFilters = ref({ keyword: '', node_id: '', status: '' })
+const filtered = computed(() => Boolean(appliedFilters.value.keyword.trim() || appliedFilters.value.node_id || appliedFilters.value.status))
 const tunnelMetrics = computed(() => [
   { label: '筛选结果', value: total.value, detail: '全部匹配隧道', icon: Connection },
   ...Object.entries(tunnelStates).map(([status, state]) => ({
@@ -512,28 +513,30 @@ const fetchNodes = async () => {
   }
 }
 
+let latestRequest = 0
 const fetchData = async (isSilent = false) => {
   if (isSilent && (loading.value || loadError.value)) return
+  const request = ++latestRequest
   if (!isSilent) loading.value = true
   try {
     const res = await getTunnelList({
       page: page.value,
       pageSize: pageSize.value,
-      node_id: searchNodeId.value,
-      status: searchStatus.value,
-      keyword: searchKeyword.value
+      ...appliedFilters.value
     })
+    if (request !== latestRequest) return
     tunnelList.value = res.data.list || []
     total.value = res.data.total || 0
     loadError.value = false
   } catch {
-    loadError.value = true
+    if (request === latestRequest) loadError.value = true
   } finally {
-    if (!isSilent) loading.value = false
+    if (request === latestRequest) loading.value = false
   }
 }
 
 const handleSearch = () => {
+  appliedFilters.value = { keyword: searchKeyword.value, node_id: searchNodeId.value, status: searchStatus.value }
   page.value = 1
   fetchData()
 }
@@ -699,7 +702,9 @@ let refreshTimer
 onMounted(() => {
   fetchNodes()
   fetchData()
-  refreshTimer = setInterval(() => fetchData(true), 5000)
+  refreshTimer = setInterval(() => {
+    if (!document.hidden) fetchData(true)
+  }, 5000)
 })
 onBeforeUnmount(() => clearInterval(refreshTimer))
 </script>

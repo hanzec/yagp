@@ -295,7 +295,9 @@ function refreshOverview() {
 
 onMounted(() => {
   refreshOverview()
-  pollTimer = window.setInterval(refreshOverview, 5000)
+  pollTimer = window.setInterval(() => {
+    if (!document.hidden) refreshOverview()
+  }, 5000)
 })
 onBeforeUnmount(() => window.clearInterval(pollTimer))
 </script>

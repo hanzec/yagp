@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -275,7 +274,7 @@ func managedFirewallPorts(services []gost.ServiceConfig) FirewallPorts {
 				continue
 			}
 		}
-		switch firewallTransport(service.Listener) {
+		switch service.Listener.Network() {
 		case "tcp":
 			addFirewallEndpoint(&ports.TCP, &ports.TCPAddresses, addr, uint16(port))
 		case "udp":
@@ -290,26 +289,5 @@ func addFirewallEndpoint(ports *[]uint16, addresses *[]FirewallEndpoint, addr ne
 		*addresses = append(*addresses, FirewallEndpoint{Address: addr, Port: port})
 	} else {
 		*ports = append(*ports, port)
-	}
-}
-
-func firewallTransport(listener *gost.ListenerConfig) string {
-	switch listener.Type {
-	case "tcp", "mtcp", "tls", "mtls", "ws", "mws", "wss", "mwss", "h2", "h2c", "grpc", "pht", "phts", "ohttp", "otls":
-		return "tcp"
-	case "udp", "quic", "h3":
-		return "udp"
-	case "kcp":
-		for _, key := range []string{"kcp.tcp", "tcp"} {
-			if value, ok := listener.Metadata[key]; ok {
-				if enabled, _ := strconv.ParseBool(strings.TrimSpace(fmt.Sprint(value))); enabled {
-					return "tcp"
-				}
-				break
-			}
-		}
-		return "udp"
-	default:
-		return ""
 	}
 }

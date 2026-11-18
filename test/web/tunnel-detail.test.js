@@ -1,5 +1,4 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
-import ElementPlus from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { getTunnel, getTunnelMetrics } from '@/api/tunnel'
@@ -48,7 +47,7 @@ async function mountDetail() {
     ]
   })
   await router.push('/tunnels/7')
-  const wrapper = mount(TunnelDetail, { global: { plugins: [router, ElementPlus] } })
+  const wrapper = mount(TunnelDetail, { global: { plugins: [router] } })
   await flushPromises()
   return wrapper
 }

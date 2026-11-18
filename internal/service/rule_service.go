@@ -793,19 +793,39 @@ func (s *RuleService) provisionService(client *gost.Client, node *model.GostNode
 func (s *RuleService) persistStartedService(client *gost.Client, rule *model.GostRule, selected bool) error {
 	serviceName := rule.ServiceID
 	// The tunnel rolls back the live service if its configuration cannot be saved.
-	if err := client.SaveConfig(); err != nil && selected {
+	if err := client.SaveConfig(); err != nil {
+		if !selected {
+			return s.rollbackStartedService(client, rule, errors.ErrRuleStartFailed)
+		}
 		// Retain the live listener identity if rollback also fails and cleanup is retried after reload.
-		_ = s.ruleRepo.UpdateRuntime(rule.ID, serviceName, model.RuleStatusError)
+		if err := s.ruleRepo.UpdateRuntime(rule.ID, serviceName, model.RuleStatusError); err != nil {
+			return err
+		}
 		return errors.ErrRuleStartFailed
 	}
 	if err := s.ruleRepo.UpdateRuntime(rule.ID, serviceName, model.RuleStatusRunning); err != nil {
 		if !selected {
-			_ = client.DeleteService(serviceName)
-			_ = client.SaveConfig()
+			return s.rollbackStartedService(client, rule, err)
 		}
 		return err
 	}
 	rule.Status = model.RuleStatusRunning
 
 	return nil
+}
+
+func (s *RuleService) rollbackStartedService(client *gost.Client, rule *model.GostRule, startErr error) error {
+	// Save the identity before cleanup so a failed removal or config save can be retried.
+	trackingErr := s.ruleRepo.UpdateRuntime(rule.ID, rule.ServiceID, model.RuleStatusError)
+	cleanupErr := client.DeleteService(rule.ServiceID)
+	if cleanupErr == nil {
+		cleanupErr = client.SaveConfig()
+	}
+	if cleanupErr != nil {
+		return stderrors.Join(startErr, trackingErr, cleanupErr)
+	}
+	if err := s.ruleRepo.UpdateRuntime(rule.ID, "", model.RuleStatusStopped); err != nil {
+		return stderrors.Join(startErr, trackingErr, err)
+	}
+	return startErr
 }

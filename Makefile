@@ -26,17 +26,17 @@ help:
 	@echo "  make release        - Build Linux amd64 and arm64 release binaries"
 
 # 完整构建
-build: build-web build-server build-node
+build: build-server build-node
 	@echo "Build complete! Binaries: yagp and yagp-daemon"
 
 # 构建前端
 build-web:
 	@echo "Building web..."
-	cd web && npm install && npm run build
+	cd web && npm ci && npm run build
 	@echo "Web build complete"
 	
 # 构建后端（包含嵌入的前端）
-build-server:
+build-server: build-web
 	@echo "Building server..."
 	CGO_ENABLED=0 GOOS=linux go build -ldflags="$(LDFLAGS)" -o yagp ./cmd/server
 	@echo "Server build complete"

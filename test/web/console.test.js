@@ -2,7 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { markRaw } from 'vue'
-import ElementPlus, { ElMessage } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { Monitor } from '@element-plus/icons-vue'
 import App from '@/App.vue'
 import MetricStrip from '@/components/MetricStrip.vue'
@@ -63,7 +63,7 @@ describe('console routing and Authentik gate', () => {
     vi.spyOn(ElMessage, 'error').mockImplementation(() => {})
     wrapper = mount(App, {
       attachTo: document.body,
-      global: { plugins: [router, createPinia(), ElementPlus], stubs: { ElDrawer: drawer } }
+      global: { plugins: [router, createPinia()], stubs: { ElDrawer: drawer } }
     })
 
     expect(wrapper.get('[role="status"]').text()).toContain('正在确认管理员身份')
@@ -143,7 +143,7 @@ describe('console routing and Authentik gate', () => {
       return defaultResponse(config)
     })
     await router.push('/nodes?node=7')
-    wrapper = mount(App, { attachTo: document.body, global: { plugins: [router, createPinia(), ElementPlus] } })
+    wrapper = mount(App, { attachTo: document.body, global: { plugins: [router, createPinia()] } })
     await flushPromises()
 
     const breadcrumb = wrapper.get('.console-topbar nav[aria-label="节点详情导航"]')
@@ -173,7 +173,7 @@ describe('console routing and Authentik gate', () => {
       return config.url in payloads ? Promise.resolve(reply(config, payloads[config.url])) : defaultResponse(config)
     })
     await router.push('/tunnels/7')
-    wrapper = mount(App, { attachTo: document.body, global: { plugins: [router, createPinia(), ElementPlus] } })
+    wrapper = mount(App, { attachTo: document.body, global: { plugins: [router, createPinia()] } })
     await flushPromises()
 
     const breadcrumb = wrapper.get('.console-topbar nav[aria-label="隧道详情导航"]')
@@ -206,7 +206,7 @@ describe('branding and summary components', () => {
   it('removes cleared copyright text from the live footer and persisted branding', async () => {
     await router.push('/dashboard')
     const pinia = createPinia()
-    wrapper = mount(App, { attachTo: document.body, global: { plugins: [router, pinia, ElementPlus] } })
+    wrapper = mount(App, { attachTo: document.body, global: { plugins: [router, pinia] } })
     await flushPromises()
     const store = useSystemStore(pinia)
     expect(wrapper.get('.console-footer').text()).toContain(branding.copyright)
@@ -278,8 +278,7 @@ describe('branding and summary components', () => {
       props: { label: '节点指标', items: [
         { label: '在线', value: 0, detail: '暂时没有在线节点', tone: 'warning', icon: markRaw(Monitor) },
         { label: '总数', value: null }
-      ] },
-      global: { plugins: [ElementPlus] }
+      ] }
     })
     expect(wrapper.get('dl').attributes('aria-label')).toBe('节点指标')
     expect(wrapper.findAll('.metric-strip-value').map(item => item.text())).toEqual(['0', '—'])

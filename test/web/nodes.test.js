@@ -76,6 +76,64 @@ async function openDetail(view) {
 }
 
 describe('node inventory', () => {
+  it.each(['success', 'error'])('keeps the latest search when an earlier request finishes with %s', async outcome => {
+    const earlier = deferred()
+    api.getNodeList.mockReturnValueOnce(earlier.promise)
+    const view = open()
+    await flushPromises()
+    await view.get('#node-keyword').setValue(primary.name)
+    await view.get('form[aria-label="筛选节点"]').trigger('submit')
+    await flushPromises()
+    expect(view.get('#node-link-7').text()).toBe(primary.name)
+
+    if (outcome === 'success') earlier.resolve(list([newNode]))
+    else earlier.reject(new Error('earlier request failed'))
+    await flushPromises()
+
+    expect(view.get('#node-keyword').element.value).toBe(primary.name)
+    expect(view.get('#node-link-7').text()).toBe(primary.name)
+    expect(view.find('#node-link-9').exists()).toBe(false)
+    expect(view.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('polls with applied filters while keyword and tag edits remain drafts', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const view = open()
+    await flushPromises()
+    await view.get('#node-keyword').setValue('first keyword')
+    await view.get('#node-tag-filter').setValue('first tag')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(api.getNodeList).toHaveBeenLastCalledWith({ page: 1, pageSize: 10, keyword: '', status: '', tag: '' })
+
+    await view.get('form[aria-label="筛选节点"]').trigger('submit')
+    await flushPromises()
+    await view.get('#node-keyword').setValue('next keyword draft')
+    await view.get('#node-tag-filter').setValue('next tag draft')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(api.getNodeList).toHaveBeenLastCalledWith({ page: 1, pageSize: 10, keyword: 'first keyword', status: '', tag: 'first tag' })
+  })
+
+  it('pauses list and detail polling while the page is hidden and resumes when visible', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    const view = open()
+    await flushPromises()
+    hidden.mockReturnValue(true)
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(api.getNodeList).toHaveBeenCalledTimes(1)
+    hidden.mockReturnValue(false)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(api.getNodeList).toHaveBeenCalledTimes(2)
+
+    await openDetail(view)
+    hidden.mockReturnValue(true)
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(api.getNode).toHaveBeenCalledTimes(1)
+    hidden.mockReturnValue(false)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(api.getNode).toHaveBeenCalledTimes(2)
+  })
+
   it('shows node labels in the inventory and detail and applies a tag filter', async () => {
     const node = { ...primary, tags: ['备用', '入口'] }
     api.getNodeList.mockResolvedValue(list([node]))

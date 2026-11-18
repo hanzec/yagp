@@ -92,10 +92,10 @@ func quotaPorts(services []gost.ServiceConfig) (tcp, udp []uint32) {
 		if err != nil || value == 0 {
 			continue
 		}
-		switch svc.Listener.Type {
-		case "tcp", "tls", "mtls", "ws", "mws", "red":
+		switch svc.Listener.Network() {
+		case "tcp":
 			tcp = append(tcp, uint32(value))
-		case "udp", "quic":
+		case "udp":
 			udp = append(udp, uint32(value))
 		}
 	}

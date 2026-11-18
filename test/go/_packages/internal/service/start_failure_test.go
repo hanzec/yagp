@@ -156,6 +156,7 @@ func TestTunnelProvisioningRejectsUnavailableEndpoints(t *testing.T) {
 	updateServiceFields(t, db, &exit, map[string]any{"traffic_limit_bytes": 0})
 
 	relay := gost.ServiceConfig{Name: relayServiceName(tunnel.ID), Handler: &gost.HandlerConfig{Type: "relay"}}
+	updateServiceFields(t, db, &tunnel, map[string]any{"status": model.TunnelStatusStopped, "service_id": "", "chain_id": ""})
 	jsonRelay, err := json.Marshal(relay)
 	requireServiceError(t, err, nil)
 	exitRemote.mu.Lock()
@@ -169,12 +170,17 @@ func TestTunnelProvisioningRejectsUnavailableEndpoints(t *testing.T) {
 	start(nil)
 	entryRemote.rejectCommand("DELETE /config/chains/"+tunnelChainName(tunnel.ID), http.StatusServiceUnavailable)
 	exitRemote.rejectCommand("DELETE /config/services/"+relay.Name, http.StatusServiceUnavailable)
-	requireServiceError(t, tunnels.Stop(tunnel.ID, testAdmin, testIP, testAgent), nil)
+	if err := tunnels.Stop(tunnel.ID, testAdmin, testIP, testAgent); err == nil {
+		t.Fatal("stop ignored unavailable node APIs")
+	}
 	saved, err := tunnels.GetByID(tunnel.ID)
 	requireServiceError(t, err, nil)
-	if saved.Status != model.TunnelStatusStopped {
+	if saved.Status != model.TunnelStatusRunning || saved.ServiceID == "" || saved.ChainID == "" {
 		t.Fatalf("stop with unavailable node APIs persisted %q", saved.Status)
 	}
+	entryRemote.rejectCommand("DELETE /config/chains/"+tunnelChainName(tunnel.ID), 0)
+	exitRemote.rejectCommand("DELETE /config/services/"+relay.Name, 0)
+	requireServiceError(t, tunnels.Stop(tunnel.ID, testAdmin, testIP, testAgent), nil)
 }
 
 func updateServiceFields(t *testing.T, db *gorm.DB, row any, fields map[string]any) {

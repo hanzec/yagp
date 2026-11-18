@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import ElementPlus, { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { defineComponent, h, watch } from 'vue'
 import { vi } from 'vitest'
 
@@ -27,7 +27,7 @@ export function mountNodeComponent(component, props = {}, plugins = []) {
     props,
     attachTo: document.body,
     global: {
-      plugins: [ElementPlus, ...plugins],
+      plugins,
       stubs: { ElDialog: Dialog }
     }
   })

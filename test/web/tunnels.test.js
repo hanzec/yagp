@@ -66,6 +66,54 @@ beforeEach(async () => {
 })
 
 describe('Relay tunnel inventory', () => {
+  it.each(['success', 'error'])('keeps the latest search when an earlier request finishes with %s', async outcome => {
+    const earlier = Promise.withResolvers()
+    getTunnelList.mockReturnValueOnce(earlier.promise).mockResolvedValueOnce(result([relay]))
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+    await wrapper.get('#tunnel-keyword').setValue(relay.name)
+    await wrapper.get('form[aria-label="筛选隧道"]').trigger('submit')
+    await flushPromises()
+    expect(row(wrapper, relay.name).exists()).toBe(true)
+
+    if (outcome === 'success') earlier.resolve(result([udpRelay]))
+    else earlier.reject(new Error('earlier request failed'))
+    await flushPromises()
+
+    expect(wrapper.get('#tunnel-keyword').element.value).toBe(relay.name)
+    expect(row(wrapper, relay.name).exists()).toBe(true)
+    expect(wrapper.text()).not.toContain(udpRelay.name)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  })
+
+  it('polls with the applied keyword while input edits remain drafts', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+    await wrapper.get('#tunnel-keyword').setValue('first keyword')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(getTunnelList).toHaveBeenLastCalledWith({ page: 1, pageSize: 10, keyword: '', node_id: '', status: '' })
+
+    await wrapper.get('form[aria-label="筛选隧道"]').trigger('submit')
+    await flushPromises()
+    await wrapper.get('#tunnel-keyword').setValue('next keyword draft')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(getTunnelList).toHaveBeenLastCalledWith({ page: 1, pageSize: 10, keyword: 'first keyword', node_id: '', status: '' })
+  })
+
+  it('pauses polling while the page is hidden and resumes when visible', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    mountInventory(Tunnels)
+    await flushPromises()
+    hidden.mockReturnValue(true)
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(getTunnelList).toHaveBeenCalledTimes(1)
+    hidden.mockReturnValue(false)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(getTunnelList).toHaveBeenCalledTimes(2)
+  })
+
   it('opens the selected tunnel from a click in a non-title cell', async () => {
     const wrapper = mountInventory(Tunnels)
     await flushPromises()
