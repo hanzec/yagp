@@ -1,6 +1,8 @@
 package model
 
 import (
+	"maps"
+	"slices"
 	"time"
 
 	"gorm.io/gorm"
@@ -132,6 +134,14 @@ type EndpointConfig struct {
 // NeedsStop also covers a service retained across a failed cleanup or an offline health check.
 func (r *GostRule) NeedsStop() bool {
 	return r.Status == RuleStatusRunning || r.ServiceID != ""
+}
+
+func (c EndpointConfig) Equal(other EndpointConfig) bool {
+	return c.Protocol == other.Protocol && c.ListenIP == other.ListenIP && c.ListenPort == other.ListenPort &&
+		maps.Equal(c.ProtocolOptions, other.ProtocolOptions) && slices.Equal(c.Targets, other.Targets) &&
+		c.UseClashRuleset == other.UseClashRuleset && c.UseOriginalTarget == other.UseOriginalTarget &&
+		slices.Equal(c.RulesetIDs, other.RulesetIDs) && slices.Equal(c.ManualDomains, other.ManualDomains) &&
+		c.Strategy == other.Strategy && c.EnableTLS == other.EnableTLS
 }
 
 func (r *GostRule) EndpointConfig() EndpointConfig {

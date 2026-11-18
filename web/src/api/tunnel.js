@@ -40,6 +40,7 @@ export function createTunnel(data) {
     return request({
         url: '/tunnels',
         method: 'post',
+        timeout: 0,
         data
     })
 }
@@ -71,7 +72,8 @@ export function deleteTunnel(id) {
 export function startTunnel(id) {
     return request({
         url: `/tunnels/${id}/start`,
-        method: 'post'
+        method: 'post',
+        timeout: 0
     })
 }
 

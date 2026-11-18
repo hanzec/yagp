@@ -215,23 +215,33 @@ func endpointNodesOnline(t *model.GostTunnel) error {
 	return nil
 }
 
-func (s *TunnelService) startEndpointTunnel(t *model.GostTunnel) error {
+func validateEndpointTunnelStart(t *model.GostTunnel) error {
 	if t.EntryRule == nil || t.ExitRule == nil {
 		return errors.ErrTunnelEndpointsRequired
 	}
 	if err := validateTunnelEndpointRoles(t.EntryRule, t.ExitRule); err != nil {
 		return err
 	}
-	if err := s.checkEndpointRestart(t); err != nil {
+	if err := validateTunnelTargets(t); err != nil {
+		return err
+	}
+	if err := endpointNodesOnline(t); err != nil {
+		return err
+	}
+	if relayHost(t.ExitRule, t.ExitNode) == "" {
+		return errors.ErrExtractHostFailed
+	}
+	return nil
+}
+
+func (s *TunnelService) startEndpointTunnelRuntime(t *model.GostTunnel) error {
+	if err := validateEndpointTunnelStart(t); err != nil {
 		return err
 	}
 	t.RelayPort = t.ExitRule.ListenPort
 	if t.ExitRule.Role == model.EndpointRoleExit {
 		t.Protocol = string(t.ExitRule.Protocol)
 		t.ProtocolOptions = nil
-	}
-	if err := validateTunnelTargets(t); err != nil {
-		return err
 	}
 	peers, err := s.runningEndpointTunnels("entry_rule_id", t.EntryRule.ID, t.ID)
 	if err != nil {
@@ -240,13 +250,7 @@ func (s *TunnelService) startEndpointTunnel(t *model.GostTunnel) error {
 	if err := validateSharedIngress(t, peers); err != nil {
 		return err
 	}
-	if err := endpointNodesOnline(t); err != nil {
-		return err
-	}
 	host := relayHost(t.ExitRule, t.ExitNode)
-	if host == "" {
-		return errors.ErrExtractHostFailed
-	}
 	if t.Status == model.TunnelStatusError {
 		if err := s.stopEndpointTunnel(t); err != nil {
 			return err
@@ -336,8 +340,13 @@ func (s *TunnelService) rollbackEndpointTunnel(t *model.GostTunnel, saved bool) 
 }
 
 func (s *TunnelService) provisionEndpointRelay(t *model.GostTunnel, entryClient, exitClient *gost.Client, host string) error {
-	t.ServiceID, t.ChainID = relayServiceName(t.ID), tunnelChainName(t.ID)
-	auth := &gost.AuthConfig{Username: t.ServiceID, Password: t.RelaySecret}
+	name := relayServiceName(t.ID)
+	// Repairing a running tunnel may reuse a shared Relay named by a former peer.
+	if t.Status != model.TunnelStatusRunning || t.ServiceID == "" {
+		t.ServiceID = name
+	}
+	t.ChainID = tunnelChainName(t.ID)
+	auth := &gost.AuthConfig{Username: name, Password: t.RelaySecret}
 	port := strconv.Itoa(t.RelayPort)
 	options := t.ProtocolOptions
 	if t.ExitRule.Role == model.EndpointRoleExit {
