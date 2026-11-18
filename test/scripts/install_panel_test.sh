@@ -39,7 +39,7 @@ esac
 if [[ -n ${YAGP_TEST_PANEL_BINARY:-} ]]; then
     cp "$YAGP_TEST_PANEL_BINARY" "$test_dir/release/$bin"
 else
-    go build -o "$test_dir/release/$bin" ./cmd/server
+    go build -buildvcs=false -o "$test_dir/release/$bin" ./cmd/server
 fi
 cp LICENSE "$test_dir/release"
 cp config/config.yaml "$test_dir/release/config/"
