@@ -158,17 +158,22 @@ describe('console routing and Authentik gate', () => {
     expect(wrapper.get('#node-link-7').text()).toBe('港深IX')
   })
 
-  it('places the tunnel detail breadcrumb in the top bar and returns to the tunnel list', async () => {
+  it('updates the detail breadcrumb without moving focus when switching links, then returns to the list', async () => {
     vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
     const defaultResponse = adapter.getMockImplementation()
+    const links = [
+      { id: 7, name: '港深隧道', status: 'running', entry_node_id: 1, exit_node_id: 2 },
+      { id: 8, name: '港沪隧道', status: 'running', entry_node_id: 1, exit_node_id: 3 }
+    ]
+    const history = {
+      from: '2026-11-16T00:00:00Z', to: '2026-11-17T00:00:00Z', interval_seconds: 60,
+      bucket_seconds: 600, summary: { attempts: 0, successful: 0, failed: 0, unavailable: 0 }, points: []
+    }
     adapter.mockImplementation(config => {
       const payloads = {
-        '/tunnels/7': { id: 7, name: '港深隧道', status: 'running' },
-        '/tunnels/7/metrics': {
-          from: '2026-11-16T00:00:00Z', to: '2026-11-17T00:00:00Z', interval_seconds: 60,
-          bucket_seconds: 600, summary: { attempts: 0, successful: 0, failed: 0, unavailable: 0 }, points: []
-        },
-        '/tunnels': { list: [], total: 0 }
+        '/tunnels/7': links[0], '/tunnels/8': links[1],
+        '/tunnels/7/metrics': history, '/tunnels/8/metrics': history,
+        '/tunnels': { list: links, total: links.length }
       }
       return config.url in payloads ? Promise.resolve(reply(config, payloads[config.url])) : defaultResponse(config)
     })
@@ -182,6 +187,14 @@ describe('console routing and Authentik gate', () => {
     expect(back.text()).toBe('返回隧道列表')
     expect(back.attributes('href')).toBe('#/tunnels')
     expect(wrapper.find('main nav[aria-label="隧道详情导航"]').exists()).toBe(false)
+
+    const picker = wrapper.get('select[aria-label="查看链路"]')
+    picker.element.focus()
+    await picker.setValue('8')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/tunnels/8')
+    expect(breadcrumb.get('[aria-current="page"]').text()).toBe('港沪隧道')
+    expect(document.activeElement).toBe(picker.element)
 
     await back.trigger('click')
     await flushPromises()

@@ -35,7 +35,7 @@ func (s *TunnelService) endpointRestartPeers(t *model.GostTunnel) ([]*model.Gost
 	for i := 0; i < len(group); i++ {
 		var pending []uint
 		for _, endpoint := range []*model.GostRule{group[i].EntryRule, group[i].ExitRule} {
-			if endpoint == nil || seenEndpoints[endpoint.ID] {
+			if endpoint == nil || endpoint.Role == model.EndpointRoleExit || seenEndpoints[endpoint.ID] {
 				continue
 			}
 			seenEndpoints[endpoint.ID] = true

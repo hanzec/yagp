@@ -138,6 +138,8 @@ describe('Multipath TCP node capability', () => {
     await choose(mptcpField(editor).getComponent(ElSelect), 'true')
     await choose(selectField(editor, 'exit_rule_id'), otherDestination.id)
     expect(mptcpField(editor).exists()).toBe(false)
+    await button(editor, '下一步').trigger('click')
+    await flushPromises()
     await button(editor, '添加并启动').trigger('click')
     await flushPromises()
     expect(createTunnel).toHaveBeenCalledWith(expect.objectContaining({ exit_rule_id: otherDestination.id, protocol_options: {} }))

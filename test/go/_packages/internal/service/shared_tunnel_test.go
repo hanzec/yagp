@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -39,150 +40,108 @@ func TestEndpointTunnelsShareAnExitRelay(t *testing.T) {
 
 	left, err := tunnels.Create(&dto.CreateTunnelReq{Name: "first path", EntryRuleID: firstEntry.ID, ExitRuleID: sharedExit.ID}, testAdmin, testIP, testAgent)
 	requireServiceError(t, err, nil)
-	secondRemote.mu.Lock()
-	secondRemote.reject = map[string]int{"POST /config/chains": http.StatusBadGateway}
-	secondRemote.mu.Unlock()
+	relay := exitRemote.service(left.ServiceID)
+	originalChain := firstRemote.chain(left.ChainID)
+	if relay.Handler == nil || relay.Handler.Auth == nil || relay.Handler.Auther != "" ||
+		!relay.HasAdmission(gost.TunnelRelayAllowlistName(relay.Name)) {
+		t.Fatalf("new Relay did not prebind a hot-updatable admission and static credentials: %+v", relay)
+	}
+	commandsBeforeSharing := exitRemote.commandCount()
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		exitRemote.rejectCommand(method+" /config/services/"+relay.Name, http.StatusServiceUnavailable)
+		firstRemote.rejectCommand(method+" /config/chains/"+left.ChainID, http.StatusServiceUnavailable)
+		firstRemote.rejectCommand(method+" /config/services/"+left.EntryRule.ServiceID, http.StatusServiceUnavailable)
+	}
+
+	// A failed unrestricted addition must restore the existing source restriction.
+	secondRemote.rejectCommand("POST /config/chains", http.StatusBadGateway)
 	_, err = tunnels.Create(&dto.CreateTunnelReq{Name: "failed path", EntryRuleID: secondEntry.ID, ExitRuleID: sharedExit.ID, AllowlistNodeIDs: []uint{}},
 		testAdmin, testIP, testAgent)
 	requireServiceError(t, err, bizerrors.ErrTunnelChainCreateFailed)
-	if relay := exitRemote.service(left.ServiceID); relay.Name == "" || firstRemote.chain(left.ChainID).Name == "" {
-		t.Fatal("rolling back a failed start removed the existing tunnel's Relay or chain")
-	}
-	if policy := exitRemote.policy(left.ServiceID); len(policy.Users) != 1 ||
-		policy.Users[0].Username != firstRemote.chain(left.ChainID).Hops[0].Nodes[0].Connector.Auth.Username {
-		t.Fatal("rolling back a failed start did not keep only the existing tunnel's Relay credentials")
-	}
-	secondRemote.mu.Lock()
-	secondRemote.reject = nil
-	secondRemote.mu.Unlock()
+	requireSharedRelaySources(t, exitRemote, relay.Name, true, first.IPv4)
+	secondRemote.rejectCommand("POST /config/chains", 0)
+
 	right, err := tunnels.Create(&dto.CreateTunnelReq{Name: "second path", EntryRuleID: secondEntry.ID, ExitRuleID: sharedExit.ID}, testAdmin, testIP, testAgent)
 	requireServiceError(t, err, nil)
 	left = loadSharedTunnel(t, tunnels, left.ID)
 	if left.ServiceID == "" || left.ServiceID != right.ServiceID || left.ChainID == "" || right.ChainID == "" || left.ChainID == right.ChainID {
 		t.Fatalf("expected one Relay and two independent chains, got %s %s and %s %s", left.ServiceID, left.ChainID, right.ServiceID, right.ChainID)
 	}
-	if relay := exitRemote.service(left.ServiceID); relay.Addr != ":18443" || relay.Handler == nil || relay.Handler.Type != "relay" {
-		t.Fatalf("shared Relay = %+v", relay)
-	}
-	var users []string
 	for _, link := range []struct {
 		tunnel *model.GostTunnel
 		remote *lifecycleNode
 	}{{left, firstRemote}, {right, secondRemote}} {
+		requireRunningTunnelRelay(t, link.tunnel, link.remote, "198.51.100.21:18443")
 		chain := link.remote.chain(link.tunnel.ChainID)
-		addr, ok := chain.TunnelRelayAddress()
-		if !ok || addr != "198.51.100.21:18443" {
-			t.Fatalf("chain %s connects to %q", link.tunnel.ChainID, addr)
-		}
 		credentials := chain.Hops[0].Nodes[0].Connector.Auth
-		policy := exitRemote.policy(left.ServiceID)
-		if credentials == nil || !slices.ContainsFunc(policy.Users, func(user nodegrpc.RelayAuthUser) bool {
-			return user.Username == credentials.Username && user.Password == credentials.Password
-		}) {
-			t.Fatalf("chain %s is missing its Relay authentication policy", link.tunnel.ChainID)
+		if credentials == nil || *credentials != *relay.Handler.Auth {
+			t.Fatalf("chain %s did not reuse the live Relay credentials", link.tunnel.ChainID)
 		}
-		users = append(users, credentials.Username)
 	}
-	if users[0] == users[1] {
-		t.Fatal("independent tunnels use the same Relay credentials")
-	}
-
-	requireServiceError(t, tunnels.Stop(left.ID, testAdmin, testIP, testAgent), nil)
-	left, right = loadSharedTunnel(t, tunnels, left.ID), loadSharedTunnel(t, tunnels, right.ID)
-	if left.Status != model.TunnelStatusStopped || left.EntryRule.Status != model.RuleStatusStopped ||
-		right.Status != model.TunnelStatusRunning || right.EntryRule.Status != model.RuleStatusRunning ||
-		right.ExitRule.Status != model.RuleStatusRunning {
-		t.Fatalf("stopping one tunnel changed shared endpoint state: left %s/%s, right %s/%s/%s",
-			left.Status, left.EntryRule.Status, right.Status, right.EntryRule.Status, right.ExitRule.Status)
-	}
-	if firstRemote.chain(left.ChainID).Name != "" || secondRemote.chain(right.ChainID).Name == "" ||
-		exitRemote.service(right.ServiceID).Name == "" {
-		t.Fatal("stopping one tunnel removed another tunnel's resources or retained its own chain")
-	}
-	if policy := exitRemote.policy(right.ServiceID); len(policy.Users) != 1 || policy.Users[0].Username != users[1] {
-		t.Fatal("stopping one tunnel did not revoke only its Relay credentials")
+	requireSharedRelaySources(t, exitRemote, relay.Name, true, first.IPv4, second.IPv4)
+	requireUnchangedSharedRelay(t, exitRemote, relay, commandsBeforeSharing)
+	if !reflect.DeepEqual(firstRemote.chain(left.ChainID), originalChain) {
+		t.Fatal("adding a shared exit changed the existing entrance chain")
 	}
 
-	requireServiceError(t, tunnels.Start(left.ID, testAdmin, testIP, testAgent), nil)
-	left, right = loadSharedTunnel(t, tunnels, left.ID), loadSharedTunnel(t, tunnels, right.ID)
-	if left.Status != model.TunnelStatusRunning || left.ServiceID != right.ServiceID ||
-		right.Status != model.TunnelStatusRunning || secondRemote.chain(right.ChainID).Name == "" ||
-		len(exitRemote.policy(right.ServiceID).Users) != 2 {
-		t.Fatal("restarting the original tunnel failed to reuse the existing shared Relay")
-	}
-	_, err = NewRuleService(db).Update(sharedExit.ID, &dto.UpdateRuleReq{
-		Name: sharedExit.Name, Protocol: "tcp", ListenPort: 18444, Targets: []string{"new.test:443"},
-	}, testAdmin, testIP, testAgent)
-	requireServiceError(t, err, nil)
-	requireServiceError(t, tunnels.Stop(left.ID, testAdmin, testIP, testAgent), nil)
-	if relay := exitRemote.service(right.ServiceID); relay.Addr != ":18443" {
-		t.Fatalf("saving the endpoint changed the live Relay before tunnel startup: %+v", relay)
-	}
-	stopChain := "DELETE /config/chains/" + right.ChainID
-	rightRelay := right.ServiceID
-	secondRemote.rejectCommand(stopChain, http.StatusServiceUnavailable)
-	requireServiceError(t, tunnels.Start(left.ID, testAdmin, testIP, testAgent), bizerrors.ErrTunnelEndpointRestart)
-	right = loadSharedTunnel(t, tunnels, right.ID)
-	requireRunningTunnelRelay(t, right, secondRemote, "198.51.100.21:18443")
-	if listener := secondRemote.service(right.EntryRule.ServiceID); listener.Addr != ":18002" || exitRemote.service(rightRelay).Addr != ":18443" {
-		t.Fatalf("an incomplete stop did not restore the peer's old listener and Relay: %+v", listener)
-	}
-	if saved := loadSharedTunnel(t, tunnels, left.ID); saved.Status != model.TunnelStatusStopped {
-		t.Fatalf("startup continued after a peer failed to stop: %s", saved.Status)
-	}
-	// Recovery keeps the former peer's Relay name, but must use the surviving entry's sources.
-	recoveredRelay := exitRemote.service(rightRelay)
-	admission := exitRemote.admission(recoveredRelay.Admission)
-	if admission.Name != gost.TunnelRelayAllowlistName(rightRelay) || !admission.Whitelist ||
-		!slices.Equal(admission.Matchers, []string{second.IPv4}) {
-		t.Fatalf("recovered Relay retained the former peer's admission: %+v", admission)
-	}
-	left = loadSharedTunnel(t, tunnels, left.ID)
-	// The recovered single-user Relay must remain managed when its entry address changes.
-	second.IPv4 = "192.0.2.13"
-	cfg := gost.GostConfig{Services: []gost.ServiceConfig{recoveredRelay}, Admissions: []gost.AdmissionConfig{admission}}
+	// Periodic reconciliation must retain all members rather than only the last tunnel.
+	first.IPv4, second.IPv4 = "192.0.2.21", "192.0.2.22"
+	requireServiceError(t, db.Model(&first).Update("ipv4", first.IPv4).Error, nil)
+	requireServiceError(t, db.Model(&second).Update("ipv4", second.IPv4).Error, nil)
+	cfg := gost.GostConfig{Services: []gost.ServiceConfig{relay}, Admissions: []gost.AdmissionConfig{exitRemote.admission(gost.TunnelRelayAllowlistName(relay.Name))}}
 	_, err = tunnels.allowlist.syncRelays(utils.GetGostClient(&exit), &cfg, exit.ID,
 		[]model.GostTunnel{*left, *right}, sourceNodes{first.ID: &first, second.ID: &second})
 	requireServiceError(t, err, nil)
-	if updated := exitRemote.admission(recoveredRelay.Admission); !slices.Equal(updated.Matchers, []string{second.IPv4}) {
-		t.Fatalf("recovered Relay admission was not reconciled: %+v", updated)
-	}
-	secondRemote.rejectCommand(stopChain, 0)
+	requireSharedRelaySources(t, exitRemote, relay.Name, true, first.IPv4, second.IPv4)
 
-	requireServiceError(t, tunnels.Start(left.ID, testAdmin, testIP, testAgent), nil)
-	left, right = loadSharedTunnel(t, tunnels, left.ID), loadSharedTunnel(t, tunnels, right.ID)
-	if left.ServiceID != right.ServiceID || left.ExitRule.AppliedEndpoint != nil || right.ExitRule.AppliedEndpoint != nil {
-		t.Fatal("starting a stopped tunnel did not apply the pending endpoint change to its running peer")
+	// Removing the original owner leaves its Relay identity and the surviving chain intact.
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		firstRemote.rejectCommand(method+" /config/chains/"+left.ChainID, 0)
+		firstRemote.rejectCommand(method+" /config/services/"+left.EntryRule.ServiceID, 0)
+		secondRemote.rejectCommand(method+" /config/chains/"+right.ChainID, http.StatusServiceUnavailable)
+		secondRemote.rejectCommand(method+" /config/services/"+right.EntryRule.ServiceID, http.StatusServiceUnavailable)
 	}
-	for _, link := range []struct {
-		tunnel *model.GostTunnel
-		remote *lifecycleNode
-	}{{left, firstRemote}, {right, secondRemote}} {
-		requireRunningTunnelRelay(t, link.tunnel, link.remote, "198.51.100.21:18444")
-	}
-	if relay := exitRemote.service(right.ServiceID); relay.Addr != ":18444" || len(exitRemote.policy(right.ServiceID).Users) != 2 {
-		t.Fatalf("restarted Relay did not use its edited listener and both credentials: %+v", relay)
-	}
-
-	requireServiceError(t, tunnels.Stop(left.ID, testAdmin, testIP, testAgent), nil)
-	requireServiceError(t, tunnels.Stop(right.ID, testAdmin, testIP, testAgent), nil)
+	secondChain := secondRemote.chain(right.ChainID)
+	requireServiceError(t, tunnels.Delete(left.ID, testAdmin, testIP, testAgent), nil)
 	right = loadSharedTunnel(t, tunnels, right.ID)
-	if right.ExitRule.Status != model.RuleStatusStopped || exitRemote.service(left.ServiceID).Name != "" ||
-		len(exitRemote.policy(left.ServiceID).Users) != 0 {
-		t.Fatal("stopping the last tunnel did not remove its shared Relay")
+	requireRunningTunnelRelay(t, right, secondRemote, "198.51.100.21:18443")
+	if right.ServiceID != relay.Name || !reflect.DeepEqual(secondRemote.chain(right.ChainID), secondChain) {
+		t.Fatal("deleting the Relay owner changed the surviving tunnel")
+	}
+	requireSharedRelaySources(t, exitRemote, relay.Name, true, second.IPv4)
+	requireUnchangedSharedRelay(t, exitRemote, relay, commandsBeforeSharing)
+
+	// A repaired sole survivor must keep using credentials owned by the live Relay.
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		secondRemote.rejectCommand(method+" /config/chains/"+right.ChainID, 0)
+		secondRemote.rejectCommand(method+" /config/services/"+right.EntryRule.ServiceID, 0)
+	}
+	requireServiceError(t, tunnels.startEndpointTunnelRuntime(right), nil)
+	if credentials := secondRemote.chain(right.ChainID).Hops[0].Nodes[0].Connector.Auth; credentials == nil || *credentials != *relay.Handler.Auth {
+		t.Fatalf("sole survivor repair lost the shared Relay credentials: %+v", credentials)
+	}
+	requireUnchangedSharedRelay(t, exitRemote, relay, commandsBeforeSharing)
+
+	exitRemote.rejectCommand("DELETE /config/services/"+relay.Name, 0)
+	requireServiceError(t, tunnels.Stop(right.ID, testAdmin, testIP, testAgent), nil)
+	if exitRemote.service(relay.Name).Name != "" {
+		t.Fatal("stopping the last tunnel left its Relay running")
 	}
 }
 
-func TestCreatingTunnelAppliesPendingSharedEndpointChange(t *testing.T) {
-	t.Run("starts the new tunnel", func(t *testing.T) {
-		testCreatingTunnelAppliesPendingSharedEndpointChange(t, false)
-	})
-	t.Run("recovers existing tunnels if the new tunnel fails", func(t *testing.T) {
-		testCreatingTunnelAppliesPendingSharedEndpointChange(t, true)
-	})
+func TestCreatingTunnelKeepsPendingSharedExitChange(t *testing.T) {
+	for _, failFirstStart := range []bool{false, true} {
+		name := "starts the new tunnel"
+		if failFirstStart {
+			name = "rolls back a failed new tunnel"
+		}
+		t.Run(name, func(t *testing.T) {
+			testCreatingTunnelKeepsPendingSharedExitChange(t, failFirstStart)
+		})
+	}
 }
 
-func testCreatingTunnelAppliesPendingSharedEndpointChange(t *testing.T, failFirstStart bool) {
+func testCreatingTunnelKeepsPendingSharedExitChange(t *testing.T, failFirstStart bool) {
 	t.Helper()
 	db := newServiceTestDB(t)
 	loadServiceConfig(t, "report:\n  listen: 127.0.0.1:39001\n")
@@ -217,54 +176,214 @@ func testCreatingTunnelAppliesPendingSharedEndpointChange(t *testing.T, failFirs
 
 	rules := NewRuleService(db)
 	_, err := rules.Update(sharedExit.ID, &dto.UpdateRuleReq{
-		Name: sharedExit.Name, Protocol: "tcp", ListenPort: 18444, Targets: []string{"new.test:443"},
+		Name: sharedExit.Name, Protocol: "tls", ListenPort: 18444, Targets: []string{"new.test:443"},
 	}, testAdmin, testIP, testAgent)
 	requireServiceError(t, err, nil)
 	_, err = rules.Update(entries[0].ID, &dto.UpdateRuleReq{
 		Name: entries[0].Name, Protocol: "tcp", ListenPort: 18005,
 	}, testAdmin, testIP, testAgent)
 	requireServiceError(t, err, nil)
+	relay := exitRemote.service(first.ServiceID)
+	commandsBeforeSharing := exitRemote.commandCount()
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		exitRemote.rejectCommand(method+" /config/services/"+relay.Name, http.StatusServiceUnavailable)
+		for _, tunnel := range []*model.GostTunnel{first, second, other} {
+			entryRemote.rejectCommand(method+" /config/chains/"+tunnel.ChainID, http.StatusServiceUnavailable)
+		}
+	}
 
-	const newRelayAddress = "198.51.100.21:18444"
+	const liveRelayAddress = "198.51.100.21:18443"
 	if failFirstStart {
-		const chainCommand = "POST /config/chains"
-		newEntryRemote.rejectCommand(chainCommand, http.StatusBadGateway)
+		newEntryRemote.rejectCommand("POST /config/chains", http.StatusBadGateway)
 		_, err := tunnels.Create(&dto.CreateTunnelReq{
 			Name: "new path", EntryRuleID: addedEntry.ID, ExitRuleID: sharedExit.ID, AllowlistNodeIDs: []uint{},
 		}, testAdmin, testIP, testAgent)
 		requireServiceError(t, err, bizerrors.ErrTunnelChainCreateFailed)
-		for _, id := range []uint{first.ID, second.ID} {
-			requireRunningTunnelRelay(t, loadSharedTunnel(t, tunnels, id), entryRemote, newRelayAddress)
-		}
-		relay := loadSharedTunnel(t, tunnels, first.ID).ServiceID
-		if exitRemote.service(relay).Addr != ":18444" || len(exitRemote.policy(relay).Users) != 2 {
-			t.Fatal("a failed new tunnel changed the restarted peers' shared Relay")
-		}
-		newEntryRemote.rejectCommand(chainCommand, 0)
+		newEntryRemote.rejectCommand("POST /config/chains", 0)
 	}
 
 	added := startSharedTunnel(t, tunnels, "new path", addedEntry.ID, sharedExit.ID)
-	requireRunningTunnelRelay(t, added, newEntryRemote, newRelayAddress)
+	requireRunningTunnelRelay(t, added, newEntryRemote, liveRelayAddress)
+	if chain := newEntryRemote.chain(added.ChainID); chain.Hops[0].Nodes[0].Dialer.Type != "tcp" {
+		t.Fatalf("new chain used the pending protocol instead of the live Relay: %+v", chain)
+	}
 	for _, id := range []uint{first.ID, second.ID} {
 		tunnel := loadSharedTunnel(t, tunnels, id)
-		requireRunningTunnelRelay(t, tunnel, entryRemote, newRelayAddress)
-		if tunnel.ServiceID != added.ServiceID || tunnel.ExitRule.AppliedEndpoint != nil {
-			t.Fatalf("tunnel %d did not share the updated Relay", id)
+		requireRunningTunnelRelay(t, tunnel, entryRemote, liveRelayAddress)
+		if tunnel.ServiceID != added.ServiceID || tunnel.ExitRule.AppliedEndpoint == nil || tunnel.ExitRule.ListenPort != 18443 {
+			t.Fatalf("tunnel %d lost the pending exit configuration", id)
 		}
 	}
-	relay := exitRemote.service(added.ServiceID)
-	if relay.Addr != ":18444" || len(exitRemote.policy(added.ServiceID).Users) != 3 {
-		t.Fatalf("updated Relay did not bind the new listener or retain its active users: %+v", relay)
+	var savedExit model.GostRule
+	requireServiceError(t, db.First(&savedExit, sharedExit.ID).Error, nil)
+	if savedExit.AppliedEndpoint == nil || savedExit.Protocol != "tls" || savedExit.ListenPort != 18444 {
+		t.Fatalf("sharing cleared the saved exit changes: %+v", savedExit)
 	}
+	requireUnchangedSharedRelay(t, exitRemote, relay, commandsBeforeSharing)
 	other = loadSharedTunnel(t, tunnels, other.ID)
 	requireRunningTunnelRelay(t, other, entryRemote, "198.51.100.21:18445")
-	if listener := entryRemote.service(other.EntryRule.ServiceID); listener.Addr != ":18005" || other.EntryRule.AppliedEndpoint != nil {
-		t.Fatalf("creating through the shared exit did not also apply its peer's edited shared entry: %+v", listener)
+	if listener := entryRemote.service(other.EntryRule.ServiceID); listener.Addr != ":18001" || other.EntryRule.AppliedEndpoint == nil {
+		t.Fatalf("sharing an exit applied an unrelated pending entry change: %+v", listener)
 	}
 	if saved := loadSharedTunnel(t, tunnels, stopped.ID); saved.Status != model.TunnelStatusStopped ||
 		entryRemote.chain(stopped.ChainID).Name != "" {
 		t.Fatal("adding a tunnel restarted a peer that had already been stopped")
 	}
+}
+
+func requireSharedRelaySources(t *testing.T, remote *sharedRelayTestNode, name string, whitelist bool, sources ...string) {
+	t.Helper()
+	admission := remote.admission(gost.TunnelRelayAllowlistName(name))
+	slices.Sort(sources)
+	if admission.Name == "" || admission.Whitelist != whitelist || !slices.Equal(admission.Matchers, sources) {
+		t.Fatalf("shared Relay source admission = %+v, want whitelist %t and %v", admission, whitelist, sources)
+	}
+}
+
+func requireUnchangedSharedRelay(t *testing.T, remote *sharedRelayTestNode, original gost.ServiceConfig, since int) {
+	t.Helper()
+	if current := remote.service(original.Name); !reflect.DeepEqual(current, original) {
+		t.Fatalf("sharing changed the live Relay: before %+v, after %+v", original, current)
+	}
+	remote.mu.Lock()
+	defer remote.mu.Unlock()
+	for _, command := range remote.commands[since:] {
+		if command == "PUT /config/services/"+original.Name || command == "DELETE /config/services/"+original.Name {
+			t.Fatalf("sharing reloaded the live Relay with %s", command)
+		}
+	}
+}
+
+func TestSharingLegacyRelayWithoutAdmissionDoesNotReloadIt(t *testing.T) {
+	for _, restricted := range []bool{false, true} {
+		name := "unrestricted"
+		if restricted {
+			name = "requires a source restriction"
+		}
+		t.Run(name, func(t *testing.T) {
+			db := newServiceTestDB(t)
+			loadServiceConfig(t, "report:\n  listen: 127.0.0.1:39001\n")
+			firstRemote, secondRemote := &lifecycleNode{t: t}, &lifecycleNode{t: t}
+			exitRemote := &sharedRelayTestNode{lifecycleNode: lifecycleNode{t: t}, policies: make(map[string]nodegrpc.RelayAuthConfig)}
+			first, second, exit := startServiceTestNode(t, firstRemote), startServiceTestNode(t, secondRemote), startServiceTestNode(t, exitRemote)
+			first.Name, second.Name, exit.Name, exit.Address = "first", "second", "exit", "198.51.100.21"
+			second.IPv4 = "192.0.2.12"
+			saveServiceFixtures(t, db, &first, &second, &exit)
+			leftEntry := model.GostRule{Name: "first source", NodeID: &first.ID, Role: model.EndpointRoleEntry, Protocol: model.RuleProtocolTCP, ListenPort: 18001}
+			rightEntry := model.GostRule{Name: "second source", NodeID: &second.ID, Role: model.EndpointRoleEntry, Protocol: model.RuleProtocolTCP, ListenPort: 18002}
+			sharedExit := model.GostRule{Name: "exit", NodeID: &exit.ID, Role: model.EndpointRoleExit, Protocol: "tcp", ListenPort: 18443, Targets: []string{"app.test:443"}}
+			saveServiceFixtures(t, db, &leftEntry, &rightEntry, &sharedExit)
+			tunnels := NewTunnelService(db)
+			leftReq := &dto.CreateTunnelReq{Name: "existing", EntryRuleID: leftEntry.ID, ExitRuleID: sharedExit.ID, AllowlistNodeIDs: []uint{}}
+			if restricted {
+				leftReq.AllowlistNodeIDs = nil
+			}
+			left, err := tunnels.Create(leftReq, testAdmin, testIP, testAgent)
+			requireServiceError(t, err, nil)
+			relay := exitRemote.service(left.ServiceID)
+			// Model a listener created before the panel prebound an admission resource.
+			relay.Admission, relay.Admissions = "", nil
+			data, err := json.Marshal(relay)
+			requireServiceError(t, err, nil)
+			exitRemote.mu.Lock()
+			exitRemote.resources["/config/services/"+relay.Name] = data
+			delete(exitRemote.resources, "/config/admissions/"+gost.TunnelRelayAllowlistName(relay.Name))
+			exitRemote.mu.Unlock()
+			before := exitRemote.commandCount()
+			for _, method := range []string{http.MethodPut, http.MethodDelete} {
+				exitRemote.rejectCommand(method+" /config/services/"+relay.Name, http.StatusServiceUnavailable)
+				firstRemote.rejectCommand(method+" /config/chains/"+left.ChainID, http.StatusServiceUnavailable)
+			}
+			req := &dto.CreateTunnelReq{Name: "added", EntryRuleID: rightEntry.ID, ExitRuleID: sharedExit.ID, AllowlistNodeIDs: []uint{}}
+			if restricted {
+				req.AllowlistNodeIDs = nil
+			}
+			added, err := tunnels.Create(req, testAdmin, testIP, testAgent)
+			if restricted {
+				if err == nil {
+					t.Fatal("source restrictions were silently accepted without a bound admission")
+				}
+			} else {
+				requireServiceError(t, err, nil)
+				requireRunningTunnelRelay(t, added, secondRemote, "198.51.100.21:18443")
+			}
+			requireRunningTunnelRelay(t, loadSharedTunnel(t, tunnels, left.ID), firstRemote, "198.51.100.21:18443")
+			requireUnchangedSharedRelay(t, exitRemote, relay, before)
+		})
+	}
+}
+
+func TestSharingExistingAutherRelayKeepsItsDynamicPolicy(t *testing.T) {
+	db := newServiceTestDB(t)
+	loadServiceConfig(t, "report:\n  listen: 127.0.0.1:39001\n")
+	firstRemote, secondRemote := &lifecycleNode{t: t}, &lifecycleNode{t: t}
+	exitRemote := &sharedRelayTestNode{lifecycleNode: lifecycleNode{t: t}, policies: make(map[string]nodegrpc.RelayAuthConfig)}
+	first, second, exit := startServiceTestNode(t, firstRemote), startServiceTestNode(t, secondRemote), startServiceTestNode(t, exitRemote)
+	first.Name, second.Name, exit.Name, exit.Address = "first", "second", "exit", "198.51.100.21"
+	first.IPv4, second.IPv4 = "192.0.2.11", "192.0.2.12"
+	saveServiceFixtures(t, db, &first, &second, &exit)
+	leftEntry := model.GostRule{Name: "first source", NodeID: &first.ID, Role: model.EndpointRoleEntry, Protocol: model.RuleProtocolTCP, ListenPort: 18001}
+	rightEntry := model.GostRule{Name: "second source", NodeID: &second.ID, Role: model.EndpointRoleEntry, Protocol: model.RuleProtocolTCP, ListenPort: 18002}
+	sharedExit := model.GostRule{Name: "exit", NodeID: &exit.ID, Role: model.EndpointRoleExit, Protocol: "tcp", ListenPort: 18443, Targets: []string{"app.test:443"}}
+	saveServiceFixtures(t, db, &leftEntry, &rightEntry, &sharedExit)
+	tunnels := NewTunnelService(db)
+	left, err := tunnels.Create(&dto.CreateTunnelReq{Name: "existing", EntryRuleID: leftEntry.ID, ExitRuleID: sharedExit.ID}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
+	relay := exitRemote.service(left.ServiceID)
+	relay.Handler.Auth, relay.Handler.Auther = nil, relay.Name
+	relay.Admission, relay.Admissions = "", nil
+	data, err := json.Marshal(relay)
+	requireServiceError(t, err, nil)
+	exitRemote.mu.Lock()
+	exitRemote.resources["/config/services/"+relay.Name] = data
+	exitRemote.mu.Unlock()
+	before := exitRemote.commandCount()
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		exitRemote.rejectCommand(method+" /config/services/"+relay.Name, http.StatusServiceUnavailable)
+	}
+	right, err := tunnels.Create(&dto.CreateTunnelReq{Name: "added", EntryRuleID: rightEntry.ID, ExitRuleID: sharedExit.ID}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
+	for _, link := range []struct {
+		tunnel *model.GostTunnel
+		remote *lifecycleNode
+	}{{left, firstRemote}, {right, secondRemote}} {
+		credentials := link.remote.chain(link.tunnel.ChainID).Hops[0].Nodes[0].Connector.Auth
+		if credentials == nil || !slices.ContainsFunc(exitRemote.policy(relay.Name).Users, func(user nodegrpc.RelayAuthUser) bool {
+			return user.Username == credentials.Username && user.Password == credentials.Password && user.RestrictSources
+		}) {
+			t.Fatalf("legacy Auther lost credentials for tunnel %d", link.tunnel.ID)
+		}
+	}
+	requireUnchangedSharedRelay(t, exitRemote, relay, before)
+	firstChain, secondChain := firstRemote.chain(left.ChainID), secondRemote.chain(right.ChainID)
+	firstAuth, secondAuth := firstChain.Hops[0].Nodes[0].Connector.Auth, secondChain.Hops[0].Nodes[0].Connector.Auth
+	if firstAuth == nil || secondAuth == nil || *firstAuth == *secondAuth {
+		t.Fatal("legacy Auther fixture did not retain independent credentials")
+	}
+	// Gost may lose the listener while the daemon still owns the original Auther policy.
+	exitRemote.mu.Lock()
+	delete(exitRemote.resources, "/config/services/"+relay.Name)
+	exitRemote.resources["/config/authers/"+relay.Name] = json.RawMessage(`{"name":"` + relay.Name + `","plugin":{"type":"grpc","addr":"127.0.0.1:39001"}}`)
+	exitRemote.mu.Unlock()
+	requireServiceError(t, tunnels.startEndpointTunnelRuntime(right), nil)
+	if recovered := exitRemote.service(relay.Name); recovered.Handler == nil || recovered.Handler.Auther != relay.Name || recovered.Handler.Auth != nil {
+		t.Fatalf("recovering the missing legacy Relay replaced its Auther with static credentials: %+v", recovered)
+	}
+	if !reflect.DeepEqual(firstRemote.chain(left.ChainID), firstChain) || !reflect.DeepEqual(secondRemote.chain(right.ChainID), secondChain) {
+		t.Fatal("recovering the missing Auther Relay changed an existing tunnel's credentials")
+	}
+	if users := exitRemote.policy(relay.Name).Users; len(users) != 2 || !slices.ContainsFunc(users, func(user nodegrpc.RelayAuthUser) bool {
+		return user.Username == firstAuth.Username && user.Password == firstAuth.Password
+	}) || !slices.ContainsFunc(users, func(user nodegrpc.RelayAuthUser) bool {
+		return user.Username == secondAuth.Username && user.Password == secondAuth.Password
+	}) {
+		t.Fatalf("recovering the missing Auther Relay lost independent credentials: %+v", users)
+	}
+	requireServiceError(t, tunnels.Stop(left.ID, testAdmin, testIP, testAgent), nil)
+	if users := exitRemote.policy(relay.Name).Users; len(users) != 1 || users[0].Username != relayServiceName(right.ID) {
+		t.Fatalf("legacy Auther did not revoke the removed tunnel: %+v", users)
+	}
+	requireUnchangedSharedRelay(t, exitRemote, relay, before)
 }
 
 func requireRunningTunnelRelay(t *testing.T, tunnel *model.GostTunnel, remote *lifecycleNode, address string) {
@@ -329,7 +448,18 @@ func TestSharedExitRetainsItsDomainBypassUntilLastTunnelStops(t *testing.T) {
 	tunnels := NewTunnelService(db)
 
 	firstPath := startSharedTunnel(t, tunnels, "first path", firstEntry.ID, sharedExit.ID)
+	originalTarget := false
+	_, err := NewRuleService(db).Update(sharedExit.ID, &dto.UpdateRuleReq{
+		Name: sharedExit.Name, Protocol: "tcp", ListenPort: sharedExit.ListenPort, UseOriginalTarget: &originalTarget,
+		Targets: []string{"fixed.test:443"}, ManualDomains: []string{},
+	}, testAdmin, testIP, testAgent)
+	requireServiceError(t, err, nil)
+	policyName := relayPolicyName(firstPath.ServiceID)
+	exitRemote.rejectCommand("PUT /config/bypasses/"+policyName, http.StatusServiceUnavailable)
+	beforeSharing := exitRemote.commandCount()
+	originalRelay := exitRemote.service(firstPath.ServiceID)
 	secondPath := startSharedTunnel(t, tunnels, "second path", secondEntry.ID, sharedExit.ID)
+	requireUnchangedSharedRelay(t, exitRemote, originalRelay, beforeSharing)
 	relay := firstPath.ServiceID
 	policy := relayPolicyName(relay)
 	if relay == "" || secondPath.ServiceID != relay {
@@ -389,6 +519,13 @@ func TestSharedExitRetainsItsDomainBypassUntilLastTunnelStops(t *testing.T) {
 type sharedRelayTestNode struct {
 	lifecycleNode
 	policies map[string]nodegrpc.RelayAuthConfig
+	commands []string
+}
+
+func (n *sharedRelayTestNode) commandCount() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.commands)
 }
 
 func (n *sharedRelayTestNode) policy(service string) nodegrpc.RelayAuthConfig {
@@ -398,6 +535,9 @@ func (n *sharedRelayTestNode) policy(service string) nodegrpc.RelayAuthConfig {
 }
 
 func (n *sharedRelayTestNode) Execute(ctx context.Context, req *nodegrpc.CommandRequest) (*nodegrpc.CommandReply, error) {
+	n.mu.Lock()
+	n.commands = append(n.commands, req.GetMethod()+" "+req.GetPath())
+	n.mu.Unlock()
 	service, ok := strings.CutPrefix(req.GetPath(), nodegrpc.RelayAuthPathPrefix)
 	if !ok {
 		return n.lifecycleNode.Execute(ctx, req)

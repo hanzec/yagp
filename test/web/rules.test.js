@@ -666,7 +666,7 @@ describe('forwarding rule editor and actions', () => {
     expect(row(wrapper, 'Saved exit').find('[aria-label="启动 Saved exit"]').exists()).toBe(false)
     await wrapper.get('[aria-label="编辑 Saved exit"]').trigger('click')
     let dialog = editDialog(wrapper)
-    expect(dialog.text()).toContain('保存后，新建或启动使用此端点的隧道时，面板会自动重启受影响的运行中隧道以应用变更。')
+    expect(dialog.text()).toContain('共用出口继续使用已生效配置，关联链路全部停止后，下次启动时应用变更。')
     expect(selectField(dialog, 'node_id').props('disabled')).toBe(true)
     expect(selectField(dialog, 'role').props('disabled')).toBe(true)
     expect(selectField(dialog, 'listen_ip').get('input').element.disabled).toBe(false)
@@ -685,7 +685,7 @@ describe('forwarding rule editor and actions', () => {
       node_id: entryNode.id, name: exit.name, role: 'exit', protocol: 'kcp', listen_ip: entryNode.ipv4, listen_port: 9443, remark: '',
       use_clash_ruleset: false, targets: ['updated.example:8443'], strategy: 'rand', protocol_options: {}
     })
-    expect(ElMessage.success).toHaveBeenCalledWith('端点已保存。新建或启动使用此端点的隧道时，面板会自动重启受影响的运行中隧道以应用变更。重启期间连接可能短暂中断。')
+    expect(ElMessage.success).toHaveBeenCalledWith('端点已保存。共用出口继续使用已生效配置，关联链路全部停止后，下次启动时应用变更。新增连接仅更新来源 IP 白名单。')
     expect(stopRule).not.toHaveBeenCalled()
     expect(startRule).not.toHaveBeenCalled()
     await command(row(wrapper, 'Saved exit'), 'copy')
@@ -699,7 +699,7 @@ describe('forwarding rule editor and actions', () => {
     expect(field(dialog, 'listen_port').get('input').element.value).toBe('')
   })
 
-  it('edits a shared exit and explains the automatic restart of affected tunnels', async () => {
+  it('edits a shared exit and explains when its pending configuration takes effect', async () => {
     const stopped = { id: 8, status: 'stopped' }
     const running = { id: 9, status: 'running' }
     const exit = { ...relayRule, role: 'exit', name: 'Shared exit', linked_tunnel_status: 'stopped',
@@ -716,7 +716,7 @@ describe('forwarding rule editor and actions', () => {
     expect(row(wrapper, idleExit.name).text()).toContain('关联 2 条隧道')
     await activeRow.get('[aria-label="编辑 Shared exit"]').trigger('click')
     const editor = editDialog(wrapper)
-    expect(editor.text()).toContain('面板会自动重启受影响的运行中隧道以应用变更。重启期间连接可能短暂中断。')
+    expect(editor.text()).toContain('共用出口继续使用已生效配置，关联链路全部停止后，下次启动时应用变更。')
     expect(selectField(editor, 'role').props('disabled')).toBe(true)
     expect(selectField(editor, 'listen_ip').get('input').element.disabled).toBe(false)
   })

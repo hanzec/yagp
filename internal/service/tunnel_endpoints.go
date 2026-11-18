@@ -105,6 +105,9 @@ func (s *TunnelService) setTunnelEndpoints(tunnel *model.GostTunnel, entryID, ex
 			if bound.EntryRuleID != nil && *bound.EntryRuleID == entryID && bound.ExitRuleID != nil && *bound.ExitRuleID == exitID {
 				return errors.ErrTunnelDuplicateEndpoints
 			}
+			if endpoint.ID == exit.ID && exit.Role == model.EndpointRoleExit && bound.Status == model.TunnelStatusRunning {
+				exit = exit.WithAppliedEndpoint()
+			}
 		}
 	}
 	tunnel.EntryRuleID, tunnel.ExitRuleID = &entryID, &exitID
@@ -235,6 +238,16 @@ func validateEndpointTunnelStart(t *model.GostTunnel) error {
 }
 
 func (s *TunnelService) startEndpointTunnelRuntime(t *model.GostTunnel) error {
+	if t.ExitRule != nil && t.ExitRule.Role == model.EndpointRoleExit {
+		peers, err := s.runningEndpointTunnels("exit_rule_id", t.ExitRule.ID, t.ID)
+		if err != nil {
+			return err
+		}
+		if len(peers) != 0 {
+			// Joining a live exit uses its applied settings; pending edits must not interrupt its users.
+			t.ExitRule = peers[0].ExitRule
+		}
+	}
 	if err := validateEndpointTunnelStart(t); err != nil {
 		return err
 	}
@@ -365,6 +378,60 @@ func (s *TunnelService) provisionEndpointRelay(t *model.GostTunnel, entryClient,
 	if len(peers) != 0 {
 		t.ServiceID, relay.Name = peers[0].ServiceID, peers[0].ServiceID
 	}
+	sharedAuth := false
+	if t.ExitRule.Role == model.EndpointRoleExit {
+		current, err := exitClient.Service(relay.Name)
+		if err != nil {
+			return err
+		}
+		if current != nil {
+			if current.Handler == nil || current.Handler.Type != "relay" {
+				return errors.ErrTunnelRelayCreateFailed
+			}
+			members := append(peers, t)
+			if current.Handler.Auther == current.Name {
+				if err := s.allowlist.writeSharedRelayPolicy(exitClient, current.Name, members, nil); err != nil {
+					return err
+				}
+			} else {
+				// Reuse the live exit's credentials without replacing its listener or existing chains.
+				auth = current.Handler.Auth
+				if auth != nil {
+					t.RelaySecret = auth.Password
+				}
+				if err := s.allowlist.writeRelaySources(exitClient, current, members); err != nil {
+					return err
+				}
+			}
+			return s.createEndpointRelayChain(t, entryClient, host, auth, options)
+		}
+		if len(peers) != 0 || t.Status == model.TunnelStatusRunning {
+			sharedAuth, err = exitClient.RelayAuthConfigured(relay.Name)
+			if err != nil {
+				return err
+			}
+		}
+		if sharedAuth {
+			// The daemon can retain a legacy multi-user policy after Gost loses its listener.
+			address, err := exitClient.ObserverAddress()
+			if err != nil {
+				return err
+			}
+			if err := exitClient.EnsureRelayAuther(relay.Name, address, exitClient.ObserverToken()); err != nil {
+				return err
+			}
+			relay.Handler.Auth, relay.Handler.Auther = nil, relay.Name
+			if err := s.allowlist.writeSharedRelayPolicy(exitClient, relay.Name, append(peers, t), nil); err != nil {
+				return err
+			}
+		} else {
+			auth.Username = relay.Name
+			if len(peers) != 0 {
+				auth.Password = peers[0].RelaySecret
+				t.RelaySecret = auth.Password
+			}
+		}
+	}
 	source := endpointTargetRule(t)
 	relay.Bypass, err = NewRuleService(s.tunnelRepo.DB).prepareTransparentBypass(exitClient, relayPolicyName(relay.Name), &source)
 	if err != nil {
@@ -376,14 +443,16 @@ func (s *TunnelService) provisionEndpointRelay(t *model.GostTunnel, entryClient,
 		}
 		relay.Bypasses = []string{gost.TunnelProbeBypassName}
 	}
-	if len(peers) != 0 {
-		if err := s.configureSharedRelay(exitClient, relay, append(peers, t)); err != nil {
+	if t.ExitRule.Role == model.EndpointRoleExit && !sharedAuth {
+		// Prebind unrestricted exits too, so adding members only updates the admission resource.
+		relay.Admission = gost.TunnelRelayAllowlistName(relay.Name)
+		if err := s.allowlist.writeRelaySources(exitClient, relay, append(peers, t)); err != nil {
 			return err
 		}
-		return s.createEndpointRelayChain(t, entryClient, host, auth, options)
-	}
-	if err := s.allowlist.prepareRelay(exitClient, relay, t); err != nil {
-		return err
+	} else if !sharedAuth {
+		if err := s.allowlist.prepareRelay(exitClient, relay, t); err != nil {
+			return err
+		}
 	}
 	created, err := createServiceWithTrafficQuota(s.nodeRepo, exitClient, *t.ExitNode, relay)
 	if err != nil {
@@ -392,7 +461,7 @@ func (s *TunnelService) provisionEndpointRelay(t *model.GostTunnel, entryClient,
 		}
 		return errors.ErrTunnelRelayCreateFailed
 	}
-	if !created {
+	if !created && !sharedAuth {
 		if _, err := exitClient.SetRelayAllowlist(relay.Name, relay.Admission != ""); err != nil {
 			return err
 		}
@@ -432,9 +501,9 @@ func (s *TunnelService) commitEndpointTunnel(t *model.GostTunnel, entryClient, e
 		if err := rules.UpdateRuntime(t.ExitRule.ID, t.ServiceID, model.RuleStatusRunning); err != nil {
 			return err
 		}
-		return tx.Model(t).Select("ServiceID", "ChainID", "Protocol", "ProtocolOptions", "RelayPort", "Status").Updates(&model.GostTunnel{
+		return tx.Model(t).Select("ServiceID", "ChainID", "RelaySecret", "Protocol", "ProtocolOptions", "RelayPort", "Status").Updates(&model.GostTunnel{
 			ServiceID: t.ServiceID, ChainID: t.ChainID, Protocol: t.Protocol, ProtocolOptions: t.ProtocolOptions,
-			RelayPort: t.RelayPort, Status: model.TunnelStatusRunning,
+			RelaySecret: t.RelaySecret, RelayPort: t.RelayPort, Status: model.TunnelStatusRunning,
 		}).Error
 	}); err != nil {
 		return err

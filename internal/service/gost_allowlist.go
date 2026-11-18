@@ -160,6 +160,65 @@ func relaySourceIDs(tunnel *model.GostTunnel) []uint {
 	return tunnel.AllowlistNodeIDs
 }
 
+func (s *GostAllowlistService) exitAdmission(name string, tunnels []*model.GostTunnel, nodes sourceNodes, previous *gost.AdmissionConfig) (*gost.AdmissionConfig, error) {
+	if nodes == nil {
+		var ids []uint
+		for _, tunnel := range tunnels {
+			ids = append(ids, relaySourceIDs(tunnel)...)
+		}
+		slices.Sort(ids)
+		var err error
+		nodes, err = s.sourceNodes(context.Background(), slices.Compact(ids))
+		if err != nil {
+			return nil, err
+		}
+	}
+	admission := &gost.AdmissionConfig{Name: gost.TunnelRelayAllowlistName(name), Whitelist: true, Matchers: []string{}}
+	known, missing := false, false
+	for _, tunnel := range tunnels {
+		ids := relaySourceIDs(tunnel)
+		if len(ids) == 0 {
+			admission.Whitelist = false
+			admission.Matchers = []string{}
+			return admission, nil
+		}
+		addresses := nodes.addresses(ids, tunnel.AutoAllowlist)
+		if tunnel.AutoAllowlist && len(addresses) == 0 {
+			missing = true
+			continue
+		}
+		known = true
+		admission.Matchers = append(admission.Matchers, publicRelayMatchers(addresses)...)
+	}
+	if missing && previous != nil {
+		if !known {
+			admission.Whitelist = previous.Whitelist
+		}
+		admission.Matchers = append(admission.Matchers, publicRelayMatchers(previous.Matchers)...)
+	} else if !known {
+		// Credentials protect a newly created exit while its entry has not reported an address.
+		admission.Whitelist = false
+	}
+	slices.Sort(admission.Matchers)
+	admission.Matchers = slices.Compact(admission.Matchers)
+	return admission, nil
+}
+
+func (s *GostAllowlistService) writeRelaySources(client *gost.Client, relay *gost.ServiceConfig, tunnels []*model.GostTunnel) error {
+	desired, err := s.exitAdmission(relay.Name, tunnels, nil, nil)
+	if err != nil {
+		return err
+	}
+	if !relay.HasAdmission(desired.Name) {
+		if desired.Whitelist {
+			return bizerrors.New(10242, "出口 Relay 尚未绑定 IP 白名单，无法在不重载服务的情况下启用来源限制", http.StatusConflict)
+		}
+		return nil
+	}
+	_, err = client.SetAdmission(*desired)
+	return err
+}
+
 func (s *GostAllowlistService) syncRelays(client *gost.Client, current *gost.GostConfig, nodeID uint, tunnels []model.GostTunnel, nodes sourceNodes) (bool, error) {
 	managed := make(map[string]model.GostTunnel)
 	shared := make(map[string][]*model.GostTunnel)
@@ -181,6 +240,29 @@ func (s *GostAllowlistService) syncRelays(client *gost.Client, current *gost.Gos
 			if users := shared[relay.Name]; len(users) != 0 {
 				syncError = errors.Join(syncError, s.writeSharedRelayPolicy(client, relay.Name, users, nodes))
 			}
+			continue
+		}
+		if users := shared[relay.Name]; len(users) != 0 && users[0].ExitRule != nil && users[0].ExitRule.Role == model.EndpointRoleExit {
+			name := gost.TunnelRelayAllowlistName(relay.Name)
+			if !relay.HasAdmission(name) {
+				// Older unbound listeners are left intact until their normal stop/start.
+				continue
+			}
+			var previous *gost.AdmissionConfig
+			for i := range current.Admissions {
+				if current.Admissions[i].Name == name {
+					previous = &current.Admissions[i]
+					break
+				}
+			}
+			desired, err := s.exitAdmission(relay.Name, users, nodes, previous)
+			if err != nil {
+				syncError = errors.Join(syncError, err)
+				continue
+			}
+			updated, err := client.EnsureAdmission(*desired, current.Admissions)
+			changed = changed || updated
+			syncError = errors.Join(syncError, err)
 			continue
 		}
 		tunnel, managedRelay := managed[relay.Name]

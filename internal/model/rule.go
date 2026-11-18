@@ -82,7 +82,7 @@ type GostRule struct {
 	Status            RuleStatus `gorm:"size:20;default:stopped" json:"status"` // 状态
 	ServiceID         string     `gorm:"size:100" json:"service_id"`            // Gost 服务 ID
 	// Retain listener and routing settings until the last tunnel using them stops.
-	AppliedEndpoint *EndpointConfig `gorm:"type:text;serializer:json" json:"-"`
+	AppliedEndpoint *EndpointConfig `gorm:"type:text;serializer:json" json:"applied_endpoint,omitempty"`
 
 	// 流量监控配置
 	ObserverID string `gorm:"size:100" json:"observer_id"` // 观察器 ID
