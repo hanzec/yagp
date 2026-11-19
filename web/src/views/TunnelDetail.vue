@@ -21,48 +21,45 @@
     <template v-if="tunnel">
       <section class="ops-panel ops-panel-body tunnel-overview" aria-labelledby="tunnel-overview-title">
         <header class="ops-panel-header">
-          <div class="tunnel-section-heading">
+          <div class="tunnel-identity">
             <h2 id="tunnel-overview-title" class="ops-section-title">
               <el-icon aria-hidden="true"><Connection /></el-icon> 隧道拓扑
             </h2>
-            <span v-if="network" class="tunnel-network-count ops-muted">
-              隧道 #{{ network.id }} · {{ network.nodeIds.length }} 个节点 · {{ network.tunnels.length }} 条链路
-            </span>
+            <span class="ops-muted ops-mono">#{{ tunnel.id }}</span>
+            <span class="ops-status" :class="'is-' + tunnelState.tone">{{ tunnelState.label }}</span>
           </div>
-          <label v-if="network && network.tunnels.length > 1" class="tunnel-link-picker">
-            查看链路
-            <select aria-label="查看链路" :value="tunnel.id" @change="selectLink($event.target.value)">
-              <option v-for="link in network.tunnels" :key="link.id" :value="link.id">{{ link.name }} · #{{ link.id }}</option>
-            </select>
-          </label>
         </header>
-        <div v-if="topologyError" class="tunnel-feedback" role="alert">
-          <span>{{ network ? '拓扑更新失败，当前显示上次获取的链路清单。' : '无法加载隧道拓扑。' }}</span>
-          <el-button :loading="topologyLoading" @click="loadInventory()">重试</el-button>
+        <div class="tunnel-node-pair" aria-label="转发方向" role="group">
+          <dl class="ops-inset">
+            <dt>入口节点</dt>
+            <dd>{{ tunnel.entry_node?.name || '节点 #' + tunnel.entry_node_id }}</dd>
+          </dl>
+          <el-icon aria-hidden="true"><Right /></el-icon>
+          <dl class="ops-inset">
+            <dt>出口节点</dt>
+            <dd>{{ tunnel.exit_node?.name || '节点 #' + tunnel.exit_node_id }}</dd>
+          </dl>
         </div>
-        <TunnelTopology v-if="network" :tunnels="network.tunnels" :selected-id="tunnel.id" @select="selectLink" />
-        <div v-else-if="topologyLoading" class="tunnel-placeholder" role="status">正在加载隧道拓扑…</div>
+        <p v-if="tunnel.remark" class="tunnel-remark"><span class="ops-muted">备注</span> {{ tunnel.remark }}</p>
       </section>
 
-      <section class="ops-panel ops-panel-body tunnel-link-details" aria-labelledby="tunnel-link-title">
+      <section class="ops-panel ops-panel-body tunnel-endpoints" aria-labelledby="tunnel-endpoints-title">
         <header class="ops-panel-header">
           <div class="tunnel-identity">
-            <h2 id="tunnel-link-title" class="ops-section-title">当前链路详情</h2>
-            <span class="ops-status" :class="'is-' + tunnelState.tone">{{ tunnelState.label }}</span>
-            <span class="ops-muted ops-mono">#{{ tunnel.id }}</span>
+            <h2 id="tunnel-endpoints-title" class="ops-section-title">端点配置</h2>
+            <span v-if="connections.length > 1" class="ops-muted">{{ connections.length }} 组端点</span>
           </div>
         </header>
-        <dl class="ops-panel-details tunnel-metadata">
-          <div><dt>入口节点</dt><dd>{{ tunnel.entry_node?.name || '节点 #' + tunnel.entry_node_id }}</dd>
-            <dd v-if="entryDetail" class="ops-muted">{{ entryDetail }}</dd>
+        <dl v-for="connection in connections" :key="connection.id" class="ops-panel-details tunnel-metadata ops-inset">
+          <div v-if="connection.entry_rule">
+            <dt>入口端点</dt>
+            <dd>{{ connection.entry_rule.name }}</dd>
+            <dd class="ops-muted ops-mono">{{ formatEndpoint(connection.entry_rule.listen_ip, connection.entry_rule.listen_port) }}</dd>
           </div>
-          <div><dt>出口节点</dt><dd>{{ tunnel.exit_node?.name || '节点 #' + tunnel.exit_node_id }}</dd>
-            <dd v-if="tunnel.exit_rule?.name || tunnel.exit_node?.address" class="ops-muted">{{ tunnel.exit_rule?.name || tunnel.exit_node.address }}</dd>
-          </div>
-          <div><dt>Relay 监听</dt><dd class="ops-mono">{{ relayProtocol || '—' }} <template v-if="relayPort">· {{ formatEndpoint(relayListenIP, relayPort) }}</template></dd></div>
-          <div v-if="connectEndpoint"><dt>入口连接的 Relay 地址</dt><dd class="ops-mono">{{ connectEndpoint }}</dd></div>
+          <div v-if="connection.exit_rule"><dt>出口端点</dt><dd>{{ connection.exit_rule.name }}</dd></div>
+          <div><dt>Relay 监听</dt><dd class="ops-mono">{{ connection.protocol || '—' }} <template v-if="connection.port">· {{ formatEndpoint(connection.listenIP, connection.port) }}</template></dd></div>
+          <div v-if="connection.connectEndpoint"><dt>入口连接的 Relay 地址</dt><dd class="ops-mono">{{ connection.connectEndpoint }}</dd></div>
         </dl>
-        <p v-if="tunnel.remark" class="tunnel-remark"><span class="ops-muted">备注</span> {{ tunnel.remark }}</p>
       </section>
 
       <section class="ops-panel ops-panel-body tunnel-monitor" aria-labelledby="tunnel-monitor-title" :aria-busy="metricsLoading">
@@ -71,9 +68,8 @@
             <h2 id="tunnel-monitor-title" class="ops-section-title">
               <el-icon aria-hidden="true"><TrendCharts /></el-icon> 链路质量
             </h2>
-            <span class="tunnel-monitor-link ops-muted">{{ tunnel.name }} · #{{ tunnel.id }}</span>
             <p v-if="metrics" class="tunnel-caption">
-              运行时每 {{ metrics.interval_seconds }} 秒探测一次
+              {{ connections.length > 1 ? '汇总全部端点的探测结果 · ' : '' }}运行时每 {{ metrics.interval_seconds }} 秒探测一次
               <template v-if="latestProbe"> · 最近探测 {{ latestProbe }}</template>
             </p>
           </div>
@@ -109,13 +105,11 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Connection, TrendCharts } from '@element-plus/icons-vue'
+import { Connection, Right, TrendCharts } from '@element-plus/icons-vue'
 import { getTunnel, getTunnelMetrics } from '@/api/tunnel'
 import TunnelLatencyChart from '@/components/TunnelLatencyChart.vue'
-import TunnelTopology from '@/components/TunnelTopology.vue'
 import { formatEndpoint, mappedConnectEndpoint } from '@/utils/node-address-mapping'
 import { tunnelExitConfig } from '@/utils/rule-state'
-import { groupTunnels, useTunnelInventory } from '@/utils/tunnel-groups'
 
 defineProps({ headingTarget: { type: Object, default: null } })
 
@@ -130,16 +124,6 @@ const ranges = [
 ]
 const range = ref('24h')
 const tunnel = ref(null)
-const { items: inventory, total: inventoryTotal, loading: topologyLoading, loadError: topologyError, fetchData: loadInventory } = useTunnelInventory()
-const network = computed(() => {
-  if (inventoryTotal.value === null || !tunnel.value) return null
-  const current = tunnel.value
-  const rows = inventory.value.slice()
-  const index = rows.findIndex(row => row.id === current.id)
-  if (index === -1) rows.push(current)
-  else rows[index] = current
-  return groupTunnels(rows).find(group => group.tunnels.some(row => row.id === current.id))
-})
 const metrics = ref(null)
 const tunnelError = ref('')
 const tunnelMissing = ref(false)
@@ -155,25 +139,25 @@ const states = {
   error: { label: '异常', tone: 'danger' }
 }
 const tunnelState = computed(() => states[tunnel.value?.status] || { label: '未知', tone: 'muted' })
-const exitConfig = computed(() => tunnelExitConfig(tunnel.value))
-const relayProtocol = computed(() => (exitConfig.value?.role === 'exit' ? exitConfig.value.protocol : tunnel.value.protocol)?.toUpperCase())
-const relayPort = computed(() => exitConfig.value?.listen_port || tunnel.value.relay_port)
-const relayListenIP = computed(() => exitConfig.value?.listen_ip)
-const connectEndpoint = computed(() => {
-  const node = tunnel.value.exit_node
-  const host = relayListenIP.value || node?.address
-  const port = relayPort.value
-  return mappedConnectEndpoint(node, relayListenIP.value, port) || (host && port ? formatEndpoint(host, port) : '')
+const connections = computed(() => {
+  if (!tunnel.value) return []
+  return (tunnel.value.connections || [tunnel.value]).map(connection => {
+    const exit = tunnelExitConfig(connection)
+    const node = tunnel.value.exit_node
+    const listenIP = exit?.listen_ip
+    const port = exit?.listen_port || connection.relay_port
+    const host = listenIP || node?.address
+    return {
+      id: connection.id,
+      entry_rule: connection.entry_rule,
+      exit_rule: connection.exit_rule,
+      protocol: (exit?.role === 'exit' ? exit.protocol : connection.protocol)?.toUpperCase(),
+      listenIP,
+      port,
+      connectEndpoint: mappedConnectEndpoint(node, listenIP, port) || (host && port ? formatEndpoint(host, port) : '')
+    }
+  })
 })
-
-const entryDetail = computed(() => {
-  const rule = tunnel.value.entry_rule
-  return rule ? `${rule.name} · ${formatEndpoint(rule.listen_ip, rule.listen_port)}` : tunnel.value.entry_node?.address
-})
-
-function selectLink(id) {
-  if (String(id) !== route.params.id) router.push({ name: 'TunnelDetail', params: { id } })
-}
 
 const numberFormat = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 })
 const clockFormat = new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -203,6 +187,10 @@ async function loadTunnel() {
   try {
     const { data } = await getTunnel(route.params.id, request.signal)
     if (request.signal.aborted) return
+    if (String(data.id) !== route.params.id) {
+      await router.replace({ name: 'TunnelDetail', params: { id: data.id } })
+      return
+    }
     tunnel.value = data
     tunnelError.value = ''
     tunnelMissing.value = false
@@ -239,7 +227,7 @@ async function loadMetrics() {
 watch(() => route.params.id, () => {
   tunnelRequest?.abort()
   tunnelRequest = null
-  tunnel.value = inventory.value.find(row => String(row.id) === route.params.id) || null
+  tunnel.value = null
   tunnelError.value = ''
   tunnelMissing.value = false
   loadTunnel()
@@ -254,10 +242,8 @@ watch([() => route.params.id, range], ([id], [previousId]) => {
 }, { immediate: true })
 
 onMounted(() => {
-  loadInventory()
   refreshTimer = setInterval(() => {
     if (document.hidden || tunnelMissing.value) return
-    loadInventory(true)
     loadTunnel()
     loadMetrics()
   }, 60000)
@@ -278,14 +264,15 @@ onUnmounted(() => {
 .tunnel-back { min-height: 44px; color: var(--ops-text); text-decoration: none; }
 .tunnel-back:hover { color: var(--ops-accent); text-decoration: underline; }
 .tunnel-detail-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.tunnel-section-heading, .tunnel-identity, .tunnel-link-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
-.tunnel-overview, .tunnel-link-details, .tunnel-monitor { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ops-section-gap); }
-.tunnel-network-count { padding: 3px 10px; border: 1px solid var(--ops-border); border-radius: var(--ops-radius-inset); background: var(--ops-inset); }
-.tunnel-link-picker, .tunnel-monitor-link, .tunnel-network-count { min-width: 0; font-size: var(--ops-text-sm); }
-.tunnel-monitor-link { display: block; margin-top: 4px; overflow-wrap: anywhere; }
-.tunnel-link-picker select { min-height: 44px; min-width: 0; max-width: 100%; padding: 0 10px; border: 1px solid var(--ops-accent-line); border-radius: var(--ops-radius-inset); background: var(--ops-inset); color: var(--ops-accent); font: inherit; }
-.tunnel-metadata { grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); }
-.tunnel-metadata > div { padding: 12px; border: 1px solid var(--ops-border); border-radius: var(--ops-radius-inset); background: var(--ops-inset); }
+.tunnel-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.tunnel-overview, .tunnel-endpoints, .tunnel-monitor { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ops-section-gap); }
+.tunnel-node-pair { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; }
+.tunnel-node-pair dl { margin: 0; padding: 12px; overflow-wrap: anywhere; }
+.tunnel-node-pair dt { color: var(--ops-muted); font-size: var(--ops-text-sm); }
+.tunnel-node-pair dd { margin: 4px 0 0; font-weight: var(--ops-weight-semibold); }
+.tunnel-node-pair > .el-icon { color: var(--ops-accent); }
+.tunnel-metadata { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); padding: 12px; }
+.tunnel-metadata dd { overflow-wrap: anywhere; }
 .tunnel-metadata dd.ops-muted { font-size: var(--ops-text-sm); }
 .tunnel-remark { overflow-wrap: anywhere; }
 .tunnel-remark span { margin-inline-end: 8px; }

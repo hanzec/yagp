@@ -6,6 +6,7 @@ import (
 
 	"yagp/internal/errors"
 	"yagp/internal/model"
+	"yagp/internal/repository"
 
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -18,6 +19,7 @@ func TestTunnelMetricsStreamsOrderedSamplesWithoutLoadingRelations(t *testing.T)
 	saveServiceFixtures(t, db, &entry, &exit)
 	tunnel := model.GostTunnel{Name: "monitored", EntryNodeID: entry.ID, ExitNodeID: exit.ID}
 	saveServiceFixtures(t, db, &tunnel)
+	requireServiceError(t, repository.MigrateTunnelGroups(db), nil)
 
 	now := time.Now().Unix()
 	var samples []model.TunnelProbeSample

@@ -33,6 +33,7 @@ func TestDashboardSummariesPreserveCountsWithFiveQueries(t *testing.T) {
 		{Name: "error", Status: model.NodeStatusError},
 		{Name: "deleted", Status: model.NodeStatusOnline},
 	}
+	saveServiceFixtures(t, db, &nodes)
 	rules := []model.GostRule{
 		{Name: "running forward", Type: model.RuleTypeForward, Status: model.RuleStatusRunning},
 		{Name: "stopped forward", Type: model.RuleTypeForward, Status: model.RuleStatusStopped},
@@ -41,13 +42,14 @@ func TestDashboardSummariesPreserveCountsWithFiveQueries(t *testing.T) {
 		{Name: "deleted", Type: model.RuleTypeForward, Status: model.RuleStatusRunning},
 	}
 	tunnels := []model.GostTunnel{
-		{Name: "running", Status: model.TunnelStatusRunning},
-		{Name: "stopped", Status: model.TunnelStatusStopped},
-		{Name: "error", Status: model.TunnelStatusError},
-		{Name: "deleted", Status: model.TunnelStatusRunning},
+		{Name: "running", EntryNodeID: nodes[0].ID, ExitNodeID: nodes[1].ID, Status: model.TunnelStatusRunning},
+		{Name: "parallel", EntryNodeID: nodes[0].ID, ExitNodeID: nodes[1].ID, Status: model.TunnelStatusRunning},
+		{Name: "stopped", EntryNodeID: nodes[1].ID, ExitNodeID: nodes[0].ID, Status: model.TunnelStatusStopped},
+		{Name: "error", EntryNodeID: nodes[0].ID, ExitNodeID: nodes[2].ID, Status: model.TunnelStatusError},
+		{Name: "deleted", EntryNodeID: nodes[1].ID, ExitNodeID: nodes[2].ID, Status: model.TunnelStatusRunning},
 	}
-	saveServiceFixtures(t, db, &nodes, &rules, &tunnels)
-	for _, row := range []any{&nodes[3], &rules[4], &tunnels[3]} {
+	saveServiceFixtures(t, db, &rules, &tunnels)
+	for _, row := range []any{&nodes[3], &rules[4], &tunnels[4]} {
 		requireServiceError(t, db.Delete(row).Error, nil)
 	}
 	// Preserve the existing API's non-running/non-online buckets, including errors.

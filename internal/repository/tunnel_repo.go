@@ -91,12 +91,6 @@ func (r *TunnelRepository) UpdateStatus(id uint, status model.TunnelStatus) erro
 	return r.UpdateField(&model.GostTunnel{}, id, "status", status)
 }
 
-func (r *TunnelRepository) Exists(ctx context.Context, id uint) (bool, error) {
-	var count int64
-	err := r.DB.WithContext(ctx).Model(&model.GostTunnel{}).Where("id = ?", id).Count(&count).Error
-	return count != 0, err
-}
-
 // FindByNodeID 查找节点相关的隧道
 func (r *TunnelRepository) FindByNodeID(nodeID uint) ([]model.GostTunnel, error) {
 	var tunnels []model.GostTunnel

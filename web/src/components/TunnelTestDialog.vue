@@ -41,7 +41,7 @@
             </el-icon>
             <div>
               <h3>{{ resultStatus.title }}</h3>
-              <p v-if="result.success" class="tunnel-test-latency ops-muted">往返耗时 <strong class="ops-mono">{{ result.latency_ms }} ms</strong></p>
+              <p v-if="result.success" class="tunnel-test-latency ops-muted">{{ tunnel.connections?.length > 1 ? '平均往返耗时' : '往返耗时' }} <strong class="ops-mono">{{ result.latency_ms }} ms</strong></p>
               <template v-else>
                 <p v-if="stageLabels[result.failure_stage]" class="tunnel-test-stage">失败环节 · {{ stageLabels[result.failure_stage] }}</p>
                 <p v-if="failureMessage" class="ops-muted">{{ failureMessage }}</p>
@@ -79,7 +79,7 @@
         <ul role="list">
           <li v-for="check in result.diagnostics" :key="check.stage" :class="checkStatuses[check.status]?.tone">
             <div class="tunnel-test-check-heading">
-              <strong>{{ stageLabels[check.stage] || '其他检查' }}</strong>
+              <strong>{{ check.label || stageLabels[check.stage] || '其他检查' }}</strong>
               <span class="ops-status" :class="checkStatuses[check.status]?.tone || 'is-muted'">
                 {{ checkStatuses[check.status]?.label || '未知' }}
               </span>

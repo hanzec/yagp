@@ -1,4 +1,4 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises } from '@vue/test-utils'
 import { ElDropdownItem, ElForm, ElMessage, ElMessageBox, ElOption, ElSelect } from 'element-plus'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
@@ -7,7 +7,6 @@ import { getRoutingNodes } from '@/api/node'
 import { getGostRulesets } from '@/api/system'
 import { getRuleList } from '@/api/rule'
 import { createTunnel, deleteTunnel, getTunnelList, startTunnel, stopTunnel, testTunnel, updateTunnel } from '@/api/tunnel'
-import { connectedGroups, groupTunnels } from '@/utils/tunnel-groups'
 import { button, changePage, choose, command, field, mountInventory as mountInventoryView, result, row, select } from './inventory-fixtures'
 
 vi.mock('@/api/node', () => ({ getRoutingNodes: vi.fn() }))
@@ -21,11 +20,12 @@ vi.mock('@/api/tunnel', () => ({
 const ingress = { id: 4, name: '入口 A', addresses: ['192.0.2.1', '192.0.2.2', '2001:db8::1'] }
 const legacyNode = { id: 5, name: '旧版节点', addresses: [], ipv4: '198.51.100.3' }
 const egress = { id: 9, name: '出口 B' }
+const officeExit = { id: 10, name: '办公室出口' }
 const source = { id: 21, name: 'Web A', node: ingress, node_id: ingress.id, protocol: 'tcp', listen_ip: '127.0.0.1', listen_port: 443, status: 'stopped', use_clash_ruleset: true }
 const destination = { id: 22, name: 'Relay B', node: egress, node_id: egress.id, protocol: 'udp', listen_ip: '', listen_port: 9553, status: 'stopped', targets: [] }
 const relaySource = { ...source, id: 31, name: 'Office A', status: 'running', linked_tunnel_id: 12 }
-const relayDestination = { ...destination, id: 32, name: 'Office B', protocol: 'tcp', listen_port: 65535, status: 'running', linked_tunnel_id: 12 }
-const mediaSource = { ...source, id: 41, linked_tunnel_id: 13 }
+const relayDestination = { ...destination, id: 32, node: officeExit, node_id: officeExit.id, name: 'Office B', protocol: 'tcp', listen_port: 65535, status: 'running', linked_tunnel_id: 12 }
+const mediaSource = { ...source, id: 41, node: legacyNode, node_id: legacyNode.id, linked_tunnel_id: 13 }
 const mediaDestination = { ...destination, id: 42, linked_tunnel_id: 13 }
 const entrances = [source, destination, relaySource, relayDestination, mediaSource, mediaDestination,
   { ...destination, id: 23, node: ingress, node_id: ingress.id },
@@ -33,18 +33,18 @@ const entrances = [source, destination, relaySource, relayDestination, mediaSour
   { ...source, id: 25, status: 'running' }, { ...source, id: 26, tunnel_id: 30 }]
 const relay = {
   id: 12, name: 'Office relay', status: 'running', protocol: 'tcp', relay_port: 65535,
-  entry_node: ingress, entry_node_id: ingress.id, exit_node: egress, exit_node_id: egress.id, remark: 'Private network',
+  entry_node: ingress, entry_node_id: ingress.id, exit_node: officeExit, exit_node_id: officeExit.id, remark: 'Private network',
   entry_rule_id: relaySource.id, entry_rule: relaySource, exit_rule_id: relayDestination.id, exit_rule: relayDestination,
   allowlist_node_ids: [ingress.id, 88]
 }
 const udpRelay = {
   id: 13, name: 'Media relay', status: 'stopped', protocol: 'udp', relay_port: 9553,
-  entry_node_id: ingress.id, exit_node_id: egress.id, entry_rule_id: mediaSource.id, exit_rule_id: mediaDestination.id,
+  entry_node_id: legacyNode.id, exit_node_id: egress.id, entry_rule_id: mediaSource.id, exit_rule_id: mediaDestination.id,
   entry_rule: mediaSource, exit_rule: mediaDestination,
   allowlist_node_ids: [egress.id]
 }
 const missingRelay = { id: 14, name: 'Unknown relay', entry_node_id: 31, exit_node_id: 32, relay_port: 8443 }
-const tunnels = [relay, udpRelay, { ...missingRelay, id: 15, name: 'Broken relay', status: 'error' }, missingRelay]
+const tunnels = [relay, udpRelay, { ...missingRelay, id: 15, entry_node_id: 33, name: 'Broken relay', status: 'error' }, missingRelay]
 const dialog = wrapper => wrapper.get('[role="dialog"]')
 const selectField = (wrapper, prop) => field(wrapper, prop).getComponent(ElSelect)
 async function createConnection(editor) {
@@ -53,7 +53,7 @@ async function createConnection(editor) {
     await next.trigger('click')
     await flushPromises()
   }
-  const submit = editor.findAll('button').find(item => item.text().trim() === '添加并启动')
+  const submit = editor.findAll('button').find(item => ['添加并启动', '添加连接'].includes(item.text().trim()))
   if (submit) {
     await submit.trigger('click')
     await flushPromises()
@@ -64,7 +64,7 @@ const mountInventory = (view) => mountInventoryView(view, [router])
 
 beforeEach(async () => {
   getGostRulesets.mockResolvedValue({ data: [{ id: 1, name: '旧 Clash 订阅' }, { id: 2, name: '工作域名' }] })
-  getRoutingNodes.mockResolvedValue([ingress, egress, legacyNode])
+  getRoutingNodes.mockResolvedValue([ingress, egress, legacyNode, officeExit])
   getRuleList.mockResolvedValue(result(entrances))
   getTunnelList.mockResolvedValue(result(tunnels, 32))
   for (const action of [createTunnel, updateTunnel, deleteTunnel, startTunnel, stopTunnel]) action.mockResolvedValue({})
@@ -78,121 +78,134 @@ beforeEach(async () => {
   await router.push('/tunnels')
 })
 
-describe('Connected tunnel networks', () => {
-  const link = (id, entry, exit, name = `Path ${id}`) => ({
+describe('Tunnel management by directed node pair', () => {
+  const link = (id, entry, exit, name = `Tunnel ${id}`) => ({
     id, name, status: 'running', protocol: 'tcp', relay_port: 8443, entry_node_id: entry, exit_node_id: exit
   })
 
-  it('merges shared entries, shared exits and end-to-start links transitively while keeping unrelated networks separate', () => {
-    const links = [link(8, 9, 10), link(1, 1, 2), link(2, 3, 4), link(4, 2, 3), link(5, 10, 9), link(6, 1, 5), link(7, 6, 4)]
-    const grouped = groupTunnels(links)
-    expect(grouped.map(group => group.tunnels.map(tunnel => tunnel.id))).toEqual([[8, 5], [1, 2, 4, 6, 7]])
-    expect(grouped[1].nodeIds).toEqual(['1', '2', '3', '4', '5', '6'])
-    const membership = groups => groups.map(group => group.tunnels.map(tunnel => tunnel.id).sort((a, b) => a - b)).sort((a, b) => a[0] - b[0])
-    expect(membership(groupTunnels([...links].reverse()))).toEqual(membership(grouped))
-    expect(links.map(tunnel => tunnel.id)).toEqual([8, 1, 2, 4, 5, 6, 7])
-    expect(groupTunnels([link(1, null, null), link(2, null, null)])).toHaveLength(2)
-    const independent = groupTunnels([link(1, 1, 2), link(2, 3, 4)])
-    expect(connectedGroups(independent, [2, 3]).map(group => group.id)).toEqual([1, 2])
-    expect(connectedGroups(independent, [1, 8]).map(group => group.id)).toEqual([1])
-    expect(connectedGroups(independent, [1, 4]).map(group => group.id)).toEqual([1, 2])
-    expect(connectedGroups(independent, [8, 9])).toEqual([])
+  it('shows a stable management ID and one set of actions for multiple endpoint connections', async () => {
+    const merged = {
+      ...link(92, 1, 2), name: 'Office to Tokyo',
+      connections: [link(113, 1, 2, 'First endpoint'), link(114, 1, 2, 'Second endpoint')]
+    }
+    const rows = [merged, link(2, 1, 3), link(3, 3, 2), link(4, 2, 1), link(5, 2, 3)]
+    getTunnelList.mockResolvedValue(result(rows))
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+
+    const managed = row(wrapper, merged.name)
+    expect(wrapper.findAll('.tunnel-list-row')).toHaveLength(5)
+    expect(wrapper.get('.inventory-pagination').text()).toContain('共 5 条隧道')
+    expect(managed.text()).toContain('#92')
+    expect(managed.text()).toContain('2 组端点')
+    expect(wrapper.text()).not.toMatch(/First endpoint|Second endpoint/)
+    expect(managed.findAll('button').map(item => item.text().trim())).toEqual(['停止', '测试', '更多'])
+    await button(managed, '停止').trigger('click')
+    await flushPromises()
+    expect(stopTunnel).toHaveBeenCalledExactlyOnceWith(92)
+
+    await command(managed, 'edit')
+    const editor = dialog(wrapper)
+    expect(editor.findAllComponents(ElSelect)).toHaveLength(0)
+    await field(editor, 'name').get('input').setValue('Renamed')
+    await button(editor, '保存更改').trigger('click')
+    await flushPromises()
+    expect(updateTunnel).toHaveBeenCalledExactlyOnceWith(92, { name: 'Renamed', remark: '' })
+
+    await command(managed, 'delete')
+    expect(deleteTunnel).toHaveBeenCalledExactlyOnceWith(92)
+    await managed.get('.tunnel-route-cell').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/tunnels/92')
   })
 
-  it('loads the complete inventory before grouping a connection found on a later API page', async () => {
-    const firstPage = Array.from({ length: 100 }, (_, index) => link(index + 1, 1, 2))
-    getTunnelList.mockResolvedValueOnce(result(firstPage, 101)).mockResolvedValueOnce(result([link(101, 2, 3)], 101))
+  it('previews only an exact ordered pair, including a tunnel on a later API page', async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => link(index + 1, 200 + index, 300 + index))
+    firstPage[0] = link(1, egress.id, ingress.id)
+    const existing = link(101, ingress.id, egress.id, 'Tokyo relay')
+    getTunnelList.mockResolvedValueOnce(result(firstPage, 101)).mockResolvedValueOnce(result([existing], 101))
+    const entry = { ...source, role: 'entry', use_clash_ruleset: false }
+    const exit = { ...destination, role: 'exit', targets: ['app.test:443'] }
+    const otherExit = { ...exit, id: 71, node_id: officeExit.id, node: officeExit }
+    getRuleList.mockResolvedValue(result([entry, exit, otherExit]))
     const wrapper = mountInventory(Tunnels)
     await flushPromises()
     expect(getTunnelList.mock.calls).toEqual([[{ page: 1, pageSize: 100 }], [{ page: 2, pageSize: 100 }]])
-    expect(wrapper.findAll('.tunnel-group')).toHaveLength(1)
-    expect(wrapper.get('.tunnel-group-header').text()).toContain('3 个节点 · 101 条链路')
-    expect(row(wrapper, 'Path 101').exists()).toBe(true)
-    expect(wrapper.get('.inventory-pagination').text()).toContain('共 1 个隧道 · 101 条链路')
+    expect(wrapper.get('.inventory-pagination').text()).toContain('共 101 条隧道')
+
+    await button(wrapper, '添加隧道').trigger('click')
+    await flushPromises()
+    const editor = dialog(wrapper)
+    await choose(selectField(editor, 'entry_rule_id'), entry.id)
+    await choose(selectField(editor, 'exit_rule_id'), otherExit.id)
+    expect(editor.find('.tunnel-group-preview').exists()).toBe(false)
+    await choose(selectField(editor, 'exit_rule_id'), exit.id)
+    expect(editor.get('.tunnel-group-preview').text()).toContain('加入 Tokyo relay · #101')
+    expect(editor.find('[for="name"]').exists()).toBe(false)
+    await button(editor, '下一步').trigger('click')
+    await flushPromises()
+    expect(createTunnel).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(editor.get('#tunnel-review-title').element)
+    expect(editor.get('.tunnel-review-route').text()).toContain(ingress.name)
+    expect(editor.get('.tunnel-review-route').text()).toContain(egress.name)
+    await button(editor, '添加连接').trigger('click')
+    await flushPromises()
+    expect(createTunnel).toHaveBeenCalledExactlyOnceWith({ name: 'Tokyo relay', entry_rule_id: entry.id, exit_rule_id: exit.id, remark: '' })
   })
 
-  it('pages by entire networks and keeps all related links when a member matches the filter', async () => {
-    const links = Array.from({ length: 11 }, (_, index) => link(index + 1, index + 100, index + 200))
-    links.push({ ...link(20, 100, 300, 'Matching stopped path'), status: 'stopped' })
+  it('limits the add connection menu to the tunnel’s entry and exit nodes', async () => {
+    const existing = link(101, ingress.id, egress.id, 'Tokyo relay')
+    const entry = { ...source, role: 'entry' }
+    const exit = { ...destination, role: 'exit', targets: ['app.test:443'] }
+    getTunnelList.mockResolvedValue(result([existing]))
+    getRuleList.mockResolvedValue(result([
+      entry, exit, { ...entry, id: 81, node_id: officeExit.id }, { ...exit, id: 82, node_id: officeExit.id }
+    ]))
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+    await command(row(wrapper, existing.name), 'connect')
+    const editor = dialog(wrapper)
+    expect(editor.attributes('aria-label')).toBe('向隧道 #101 添加连接')
+    expect(selectField(editor, 'entry_rule_id').findAllComponents(ElOption).map(option => option.props('value'))).toEqual([entry.id])
+    expect(selectField(editor, 'exit_rule_id').findAllComponents(ElOption).map(option => option.props('value'))).toEqual([exit.id])
+  })
+
+  it('previews merging a stopped tunnel into the existing ID after changing its nodes', async () => {
+    const entry = { ...source, role: 'entry' }
+    const exit = { ...destination, id: 83, role: 'exit', node_id: officeExit.id, node: officeExit, targets: ['app.test:443'] }
+    getRuleList.mockResolvedValue(result([entry, exit, mediaSource, mediaDestination]))
+    updateTunnel.mockResolvedValueOnce({ data: relay })
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+    await command(row(wrapper, udpRelay.name), 'edit')
+    const editor = dialog(wrapper)
+    await choose(selectField(editor, 'entry_rule_id'), entry.id)
+    await choose(selectField(editor, 'exit_rule_id'), exit.id)
+    expect(editor.get('.tunnel-group-preview').text()).toContain('保存后并入 Office relay · #12')
+    await button(editor, '保存更改').trigger('click')
+    await flushPromises()
+    expect(updateTunnel).toHaveBeenCalledExactlyOnceWith(udpRelay.id, {
+      name: relay.name, remark: relay.remark, entry_rule_id: entry.id, exit_rule_id: exit.id
+    })
+    expect(ElMessage.success).toHaveBeenCalledWith('隧道已合并至 #12')
+  })
+
+  it('pages and filters the tunnels individually when they share an entry or exit node', async () => {
+    const links = Array.from({ length: 11 }, (_, index) => link(index + 1, 100, index + 200))
+    links.push({ ...link(30, 300, 200, 'Matching stopped tunnel'), status: 'stopped' })
     getTunnelList.mockResolvedValue(result(links))
     const wrapper = mountInventory(Tunnels)
     await flushPromises()
-    expect(wrapper.findAll('.tunnel-group')).toHaveLength(10)
+    expect(wrapper.findAll('.tunnel-list-row')).toHaveLength(10)
     const requests = getTunnelList.mock.calls.length
     await changePage(wrapper, 2)
-    expect(wrapper.findAll('.tunnel-group')).toHaveLength(1)
+    expect(wrapper.findAll('.tunnel-list-row')).toHaveLength(2)
     expect(getTunnelList).toHaveBeenCalledTimes(requests)
     await wrapper.get('#tunnel-keyword').setValue('Matching stopped')
     await wrapper.get('form[aria-label="筛选隧道"]').trigger('submit')
     await flushPromises()
-    expect(wrapper.findAll('.tunnel-group')).toHaveLength(1)
-    expect(row(wrapper, 'Path 1').exists()).toBe(true)
-    expect(row(wrapper, 'Matching stopped path').exists()).toBe(true)
-    expect(wrapper.get('.inventory-pagination').text()).toContain('共 1 个隧道 · 2 条链路')
-  })
-
-  it('splits a network after deleting its bridge and sends no changes for the remaining links', async () => {
-    const left = link(1, 1, 2), right = link(2, 3, 4), bridge = link(3, 2, 3)
-    getTunnelList.mockResolvedValueOnce(result([left, right, bridge])).mockResolvedValue(result([left, right]))
-    const wrapper = mountInventory(Tunnels)
-    await flushPromises()
-    expect(wrapper.findAll('.tunnel-group')).toHaveLength(1)
-    await command(row(wrapper, bridge.name), 'delete')
-    expect(deleteTunnel).toHaveBeenCalledExactlyOnceWith(bridge.id)
-    expect(wrapper.findAll('.tunnel-group')).toHaveLength(2)
-    expect(updateTunnel).not.toHaveBeenCalled()
-    expect(startTunnel).not.toHaveBeenCalled()
-    expect(stopTunnel).not.toHaveBeenCalled()
-  })
-
-  it('previews joining and merging networks, reviews the endpoints, and creates only at final confirmation', async () => {
-    const first = link(12, 1, 2), second = link(13, 3, 4)
-    const entry = { ...source, role: 'entry', node_id: 2, node: { id: 2, name: 'Shared source' } }
-    const exit = { ...destination, role: 'exit', node_id: 3, node: { id: 3, name: 'Shared exit' }, targets: ['app.test:443'] }
-    const newExit = { ...exit, id: 71, node_id: 8, node: { id: 8, name: 'New exit' } }
-    getTunnelList.mockResolvedValue(result([first, second]))
-    getRuleList.mockResolvedValue(result([entry, exit, newExit]))
-    const wrapper = mountInventory(Tunnels)
-    await flushPromises()
-    await wrapper.get('[aria-label="向隧道 #12 添加连接"]').trigger('click')
-    await flushPromises()
-    const editor = dialog(wrapper)
-    expect(selectField(editor, 'entry_rule_id').props('modelValue')).toBe(entry.id)
-    await field(editor, 'name').get('input').setValue('Bridge')
-    await choose(selectField(editor, 'exit_rule_id'), newExit.id)
-    expect(editor.get('.tunnel-group-preview').text()).toContain('加入隧道 #12')
-    await choose(selectField(editor, 'exit_rule_id'), exit.id)
-    expect(editor.get('.tunnel-group-preview').text()).toContain('合并 2 个隧道')
-    expect(editor.get('.tunnel-group-preview').text()).toContain('#12、#13')
-    await button(editor, '下一步').trigger('click')
-    await flushPromises()
-    expect(createTunnel).not.toHaveBeenCalled()
-    expect(editor.get('[aria-current="step"]').text()).toContain('确认并启动')
-    expect(document.activeElement).toBe(editor.get('#tunnel-review-title').element)
-    expect(editor.get('.tunnel-review-route').text()).toContain('Shared source')
-    expect(editor.get('.tunnel-review-route').text()).toContain('Shared exit')
-    await button(editor, '上一步').trigger('click')
-    expect(selectField(editor, 'exit_rule_id').props('modelValue')).toBe(exit.id)
-    await createConnection(editor)
-    expect(createTunnel).toHaveBeenCalledExactlyOnceWith({ name: 'Bridge', entry_rule_id: entry.id, exit_rule_id: exit.id, remark: '' })
-    expect(updateTunnel).not.toHaveBeenCalled()
-  })
-
-  it('filters by a shared physical node and counts it once across entry and exit roles', async () => {
-    const links = [link(1, 1, 2), link(2, 2, 3), link(3, 1, 4), link(4, 8, 9)]
-    getTunnelList.mockResolvedValue(result(links))
-    getRoutingNodes.mockResolvedValue([{ id: 2, name: '跨角色节点' }])
-    const wrapper = mountInventory(Tunnels)
-    await flushPromises()
-    expect(wrapper.findAll('.tunnel-group')).toHaveLength(2)
-    await choose(select(wrapper, 'tunnel-node'), 2)
-    expect(wrapper.findAll('.tunnel-group')).toHaveLength(1)
-    expect(wrapper.get('.tunnel-group-header').text()).toContain('4 个节点 · 3 条链路')
-    expect(wrapper.findAll('.tunnel-node-chip')).toHaveLength(4)
-    expect(row(wrapper, 'Path 1').exists()).toBe(true)
-    expect(row(wrapper, 'Path 2').exists()).toBe(true)
-    expect(row(wrapper, 'Path 3').exists()).toBe(true)
-    expect(wrapper.text()).not.toContain('Path 4')
+    expect(wrapper.findAll('.tunnel-list-row')).toHaveLength(1)
+    expect(row(wrapper, 'Matching stopped tunnel').exists()).toBe(true)
   })
 
   it('shows the live exit snapshot while saved transport and targets wait for their final user to stop', async () => {
@@ -221,16 +234,16 @@ describe('Connected tunnel networks', () => {
     expect(editor.text()).toContain('保留已有服务和链路配置')
   })
 
-  it('retains a complete previous network and blocks creation if a later inventory page fails', async () => {
+  it('retains the last complete inventory and blocks creation if a later inventory page fails', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const wrapper = mountInventory(Tunnels)
     await flushPromises()
     const firstPage = Array.from({ length: 100 }, (_, index) => link(index + 100, 1000, 2000))
     getTunnelList.mockResolvedValueOnce(result(firstPage, 101)).mockRejectedValueOnce(new Error('page two offline'))
     await vi.advanceTimersByTimeAsync(5000)
-    expect(wrapper.findAll('.tunnel-group')).toHaveLength(2)
+    expect(wrapper.findAll('.tunnel-list-row')).toHaveLength(4)
     expect(row(wrapper, relay.name).exists()).toBe(true)
-    expect(wrapper.text()).not.toContain('Path 100')
+    expect(wrapper.text()).not.toContain('Tunnel 100')
     await button(wrapper, '添加隧道').trigger('click')
     await flushPromises()
     expect(button(dialog(wrapper), '下一步').element.disabled).toBe(true)
@@ -316,17 +329,6 @@ describe('Relay tunnel inventory', () => {
     expect(router.currentRoute.value.params.id).toBe(String(relay.id))
   })
 
-  it('opens the connected network from its group heading', async () => {
-    const wrapper = mount(Tunnels, { global: { plugins: [router] } })
-    await flushPromises()
-
-    const group = wrapper.get('[data-group-id="12"]')
-    expect(group.findAll('.tunnel-list-row')).toHaveLength(2)
-    await group.get('a[aria-label="查看隧道 #12 的拓扑"]').trigger('click')
-    await flushPromises()
-    expect(router.currentRoute.value.path).toBe('/tunnels/12')
-  })
-
   it('opens a focused tunnel row with Enter', async () => {
     const wrapper = mountInventory(Tunnels)
     await flushPromises()
@@ -371,7 +373,7 @@ describe('Relay tunnel inventory', () => {
     expect(getTunnelList).toHaveBeenCalledTimes(1)
     list.reject(new Error('tunnels offline'))
     await flushPromises()
-    expect(wrapper.text()).toContain('无法加载链路清单')
+    expect(wrapper.text()).toContain('无法加载隧道清单')
     expect(wrapper.text()).toContain('无法加载节点选项')
     await vi.advanceTimersByTimeAsync(5000)
     expect(getTunnelList).toHaveBeenCalledTimes(1)
@@ -391,9 +393,9 @@ describe('Relay tunnel inventory', () => {
 
     await button(wrapper, '重新加载').trigger('click')
     await flushPromises()
-    expect(wrapper.findAll('.metric-strip-value').map(item => item.text())).toEqual(['2', '1', '1', '1'])
+    expect(wrapper.findAll('.metric-strip-value').map(item => item.text())).toEqual(['4', '1', '1', '1'])
     expect(row(wrapper, 'Office relay').text()).toContain('Private network')
-    expect(row(wrapper, 'Office relay').text()).toContain('出口 B')
+    expect(row(wrapper, 'Office relay').text()).toContain('办公室出口')
     expect(row(wrapper, 'Office relay').text()).toContain('Office A')
     expect(row(wrapper, 'Office relay').text()).toContain('Office B')
     expect(row(wrapper, 'Office relay').text()).toContain('TCP')
@@ -414,8 +416,8 @@ describe('Relay tunnel inventory', () => {
     await wrapper.get('form[aria-label="筛选隧道"]').trigger('submit')
     await flushPromises()
     expect(getTunnelList).toHaveBeenLastCalledWith({ page: 1, pageSize: 100 })
-    expect(wrapper.findAll('.tunnel-group')).toHaveLength(1)
-    expect(row(wrapper, udpRelay.name).exists()).toBe(true)
+    expect(wrapper.findAll('.tunnel-list-row')).toHaveLength(1)
+    expect(row(wrapper, relay.name).exists()).toBe(true)
     getTunnelList.mockResolvedValueOnce({ data: {} })
     await wrapper.get('#tunnel-keyword').setValue('missing')
     await wrapper.get('form[aria-label="筛选隧道"]').trigger('submit')
@@ -631,7 +633,7 @@ describe('Relay tunnel configuration', () => {
     await createConnection(editor)
     await flushPromises()
 
-    expect(wrapper.getComponent(ElForm).emitted('validate')).toContainEqual(['exit_rule_id', false, '这组源端点和目的端点已建立隧道'])
+    expect(wrapper.getComponent(ElForm).emitted('validate')).toContainEqual(['exit_rule_id', false, '这组端点已连接'])
     expect(createTunnel).not.toHaveBeenCalled()
   })
 
@@ -1014,7 +1016,7 @@ describe('Relay tunnel configuration', () => {
     await choose(selectField(editor, 'exit_rule_id'), exit.id)
     await createConnection(editor)
     await flushPromises()
-    expect(createTunnel).toHaveBeenCalledExactlyOnceWith({ name: 'Automatic source', entry_rule_id: alternative.id, exit_rule_id: exit.id, remark: '' })
+    expect(createTunnel).toHaveBeenCalledExactlyOnceWith({ name: udpRelay.name, entry_rule_id: alternative.id, exit_rule_id: exit.id, remark: '' })
   })
 
   it('allows creating an automatic allowlist before the entry has reported a source IP', async () => {
@@ -1041,16 +1043,16 @@ describe('Relay tunnel configuration', () => {
 
   it('previews automatic allowlists while editing and lets the backend follow a changed entry', async () => {
     const automatic = { ...udpRelay, auto_allowlist: true }
-    const alternative = { ...source, id: 73, node_id: legacyNode.id, node: legacyNode }
+    const alternative = { ...source, id: 73 }
     getRuleList.mockResolvedValue(result([...entrances, alternative]))
     getTunnelList.mockResolvedValue(result([automatic]))
     const wrapper = mountInventory(Tunnels)
     await flushPromises()
     await command(row(wrapper, automatic.name), 'edit')
     const editor = dialog(wrapper)
-    expect(editor.get('.tunnel-allowlist-preview').findAll('code').map(item => item.text())).toEqual(ingress.addresses)
-    await choose(selectField(editor, 'entry_rule_id'), alternative.id)
     expect(editor.get('.tunnel-allowlist-preview').findAll('code').map(item => item.text())).toEqual([legacyNode.ipv4])
+    await choose(selectField(editor, 'entry_rule_id'), alternative.id)
+    expect(editor.get('.tunnel-allowlist-preview').findAll('code').map(item => item.text())).toEqual(ingress.addresses)
     await choose(selectField(editor, 'use_original_target'), false)
     await editor.get('input[aria-label="目标地址 1"]').setValue('app.example:443')
     await button(editor, '保存更改').trigger('click')
@@ -1086,7 +1088,7 @@ describe('Relay tunnel configuration', () => {
     const popup = dialog(wrapper)
     expect(popup.text()).toContain(relay.name)
     expect(popup.text()).toContain(ingress.name)
-    expect(popup.text()).toContain(egress.name)
+    expect(popup.text()).toContain(officeExit.name)
     expect(testTunnel).not.toHaveBeenCalled()
     const start = button(popup, '开始测试')
     await start.trigger('click')

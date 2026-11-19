@@ -95,6 +95,7 @@ func TestEndpointTunnelHTTPAcceptsAndValidatesSelectedTransport(t *testing.T) {
 	if err := f.db.Create(&tunnel).Error; err != nil {
 		t.Fatal(err)
 	}
+	f.migrateTunnelGroups(t)
 	path := fmt.Sprintf("/tunnels/%d", tunnel.ID)
 	body := fmt.Sprintf(`{"name":"selected TLS","entry_rule_id":%d,"exit_rule_id":%d,"protocol":"tls"}`, source.ID, destination.ID)
 	updated := handlerData[model.GostTunnel](t, f.request(t, "PUT", path, body, 200))

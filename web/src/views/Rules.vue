@@ -82,7 +82,7 @@
                   <span class="ops-mono">#{{ row.id }}</span>
                   <span>{{ endpointRoles[row.role] || '未指定' }}</span>
                   <span v-if="row.tunnel_role">{{ row.tunnel_role === 'entry' ? '隧道源端' : '隧道目的端' }}</span>
-                  <span v-if="row.linked_tunnels?.length > 1">关联 {{ row.linked_tunnels.length }} 条隧道</span>
+                  <span v-if="row.linked_tunnels?.length > 1">关联 {{ row.linked_tunnels.length }} 条连接</span>
                 </span>
               </th>
               <td class="rule-path" role="cell" data-label="所在节点">
