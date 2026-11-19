@@ -29,7 +29,8 @@
             <span class="ops-status" :class="'is-' + tunnelState.tone">{{ tunnelState.label }}</span>
           </div>
         </header>
-        <div class="tunnel-node-pair" aria-label="转发方向" role="group">
+        <TunnelTopology v-if="paths.length > 1" :tunnels="paths" />
+        <div v-else class="tunnel-node-pair" aria-label="转发方向" role="group">
           <dl class="ops-inset">
             <dt>入口节点</dt>
             <dd>{{ tunnel.entry_node?.name || '节点 #' + tunnel.entry_node_id }}</dd>
@@ -50,16 +51,19 @@
             <span v-if="connections.length > 1" class="ops-muted">{{ connections.length }} 组端点</span>
           </div>
         </header>
-        <dl v-for="connection in connections" :key="connection.id" class="ops-panel-details tunnel-metadata ops-inset">
-          <div v-if="connection.entry_rule">
-            <dt>入口端点</dt>
-            <dd>{{ connection.entry_rule.name }}</dd>
-            <dd class="ops-muted ops-mono">{{ formatEndpoint(connection.entry_rule.listen_ip, connection.entry_rule.listen_port) }}</dd>
-          </div>
-          <div v-if="connection.exit_rule"><dt>出口端点</dt><dd>{{ connection.exit_rule.name }}</dd></div>
-          <div><dt>Relay 监听</dt><dd class="ops-mono">{{ connection.protocol || '—' }} <template v-if="connection.port">· {{ formatEndpoint(connection.listenIP, connection.port) }}</template></dd></div>
-          <div v-if="connection.connectEndpoint"><dt>入口连接的 Relay 地址</dt><dd class="ops-mono">{{ connection.connectEndpoint }}</dd></div>
-        </dl>
+        <div v-for="connection in connections" :key="connection.id" class="tunnel-endpoint-details ops-inset">
+          <h3 v-if="paths.length > 1">{{ connection.direction }}</h3>
+          <dl class="ops-panel-details tunnel-metadata">
+            <div v-if="connection.entry_rule">
+              <dt>入口端点</dt>
+              <dd>{{ connection.entry_rule.name }}</dd>
+              <dd class="ops-muted ops-mono">{{ formatEndpoint(connection.entry_rule.listen_ip, connection.entry_rule.listen_port) }}</dd>
+            </div>
+            <div v-if="connection.exit_rule"><dt>出口端点</dt><dd>{{ connection.exit_rule.name }}</dd></div>
+            <div><dt>Relay 监听</dt><dd class="ops-mono">{{ connection.protocol || '—' }} <template v-if="connection.port">· {{ formatEndpoint(connection.listenIP, connection.port) }}</template></dd></div>
+            <div v-if="connection.connectEndpoint"><dt>入口连接的 Relay 地址</dt><dd class="ops-mono">{{ connection.connectEndpoint }}</dd></div>
+          </dl>
+        </div>
       </section>
 
       <section class="ops-panel ops-panel-body tunnel-monitor" aria-labelledby="tunnel-monitor-title" :aria-busy="metricsLoading">
@@ -108,8 +112,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { Connection, Right, TrendCharts } from '@element-plus/icons-vue'
 import { getTunnel, getTunnelMetrics } from '@/api/tunnel'
 import TunnelLatencyChart from '@/components/TunnelLatencyChart.vue'
+import TunnelTopology from '@/components/TunnelTopology.vue'
 import { formatEndpoint, mappedConnectEndpoint } from '@/utils/node-address-mapping'
 import { tunnelExitConfig } from '@/utils/rule-state'
+import { connectionsOf, tunnelPaths } from '@/utils/tunnel-inventory'
 
 defineProps({ headingTarget: { type: Object, default: null } })
 
@@ -139,22 +145,27 @@ const states = {
   error: { label: '异常', tone: 'danger' }
 }
 const tunnelState = computed(() => states[tunnel.value?.status] || { label: '未知', tone: 'muted' })
+const paths = computed(() => tunnel.value ? tunnelPaths(tunnel.value) : [])
 const connections = computed(() => {
   if (!tunnel.value) return []
-  return (tunnel.value.connections || [tunnel.value]).map(connection => {
+  return connectionsOf(tunnel.value).map(connection => {
     const exit = tunnelExitConfig(connection)
-    const node = tunnel.value.exit_node
+    const entryNode = connection.entry_node ||
+      (!connection.entry_node_id || connection.entry_node_id === tunnel.value.entry_node_id ? tunnel.value.entry_node : null)
+    const exitNode = connection.exit_node ||
+      (!connection.exit_node_id || connection.exit_node_id === tunnel.value.exit_node_id ? tunnel.value.exit_node : null)
     const listenIP = exit?.listen_ip
     const port = exit?.listen_port || connection.relay_port
-    const host = listenIP || node?.address
+    const host = listenIP || exitNode?.address
     return {
       id: connection.id,
+      direction: `${entryNode?.name || '节点 #' + connection.entry_node_id} → ${exitNode?.name || '节点 #' + connection.exit_node_id}`,
       entry_rule: connection.entry_rule,
       exit_rule: connection.exit_rule,
       protocol: (exit?.role === 'exit' ? exit.protocol : connection.protocol)?.toUpperCase(),
       listenIP,
       port,
-      connectEndpoint: mappedConnectEndpoint(node, listenIP, port) || (host && port ? formatEndpoint(host, port) : '')
+      connectEndpoint: mappedConnectEndpoint(exitNode, listenIP, port) || (host && port ? formatEndpoint(host, port) : '')
     }
   })
 })
@@ -271,7 +282,9 @@ onUnmounted(() => {
 .tunnel-node-pair dt { color: var(--ops-muted); font-size: var(--ops-text-sm); }
 .tunnel-node-pair dd { margin: 4px 0 0; font-weight: var(--ops-weight-semibold); }
 .tunnel-node-pair > .el-icon { color: var(--ops-accent); }
-.tunnel-metadata { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); padding: 12px; }
+.tunnel-endpoint-details { padding: 12px; }
+.tunnel-endpoint-details h3 { margin: 0 0 10px; font-size: var(--ops-text-base); overflow-wrap: anywhere; }
+.tunnel-metadata { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
 .tunnel-metadata dd { overflow-wrap: anywhere; }
 .tunnel-metadata dd.ops-muted { font-size: var(--ops-text-sm); }
 .tunnel-remark { overflow-wrap: anywhere; }

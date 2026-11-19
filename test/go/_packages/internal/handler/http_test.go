@@ -397,7 +397,7 @@ func TestTunnelHTTPAllowlistIsIndependentAndEditableWhileRunning(t *testing.T) {
 	if !slices.Equal(first.AllowlistNodeIDs, []uint{entry.ID}) {
 		t.Fatalf("created allowlist = %v", first.AllowlistNodeIDs)
 	}
-	body = fmt.Sprintf(`{"name":"second","entry_node_id":%d,"exit_node_id":%d,"protocol":"tcp","relay_port":8444}`, exit.ID, entry.ID)
+	body = fmt.Sprintf(`{"name":"second","entry_node_id":%d,"exit_node_id":%d,"protocol":"tcp","relay_port":8444}`, entry.ID, noIP.ID)
 	second := handlerData[model.GostTunnel](t, f.request(t, "POST", "/tunnels", body, 200))
 	secondPath := fmt.Sprintf("/tunnels/%d", second.ID)
 	if second.AllowlistNodeIDs == nil || len(second.AllowlistNodeIDs) != 0 {

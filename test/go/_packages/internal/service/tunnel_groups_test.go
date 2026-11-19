@@ -14,19 +14,21 @@ import (
 func TestTunnelGroupControlsEveryConnection(t *testing.T) {
 	db := newServiceTestDB(t)
 	loadServiceConfig(t, "report:\n  listen: 127.0.0.1:39001\n")
-	entryRemote, exitRemote := &lifecycleNode{t: t}, &lifecycleNode{t: t}
+	entryRemote, exitRemote, middleRemote := &lifecycleNode{t: t}, &lifecycleNode{t: t}, &lifecycleNode{t: t}
 	entry, exit := startServiceTestNode(t, entryRemote), startServiceTestNode(t, exitRemote)
-	entry.Name, exit.Name = "A", "B"
-	saveServiceFixtures(t, db, &entry, &exit)
+	middle := startServiceTestNode(t, middleRemote)
+	entry.Name, exit.Name, middle.Name = "A", "B", "C"
+	saveServiceFixtures(t, db, &entry, &exit, &middle)
+	remotes := map[uint]*lifecycleNode{entry.ID: entryRemote, exit.ID: exitRemote, middle.ID: middleRemote}
 	svc := NewTunnelService(db)
-	newConnection := func(index int) dto.CreateTunnelReq {
+	newConnection := func(index int, entryID, exitID uint) dto.CreateTunnelReq {
 		t.Helper()
-		source := model.GostRule{Name: fmt.Sprintf("entry %d", index), NodeID: &entry.ID, Role: model.EndpointRoleEntry, ListenPort: 12000 + index}
-		destination := model.GostRule{Name: fmt.Sprintf("exit %d", index), NodeID: &exit.ID, Role: model.EndpointRoleExit, ListenPort: 13000 + index, Targets: []string{"origin.test:443"}}
+		source := model.GostRule{Name: fmt.Sprintf("entry %d", index), NodeID: &entryID, Role: model.EndpointRoleEntry, ListenPort: 12000 + index}
+		destination := model.GostRule{Name: fmt.Sprintf("exit %d", index), NodeID: &exitID, Role: model.EndpointRoleExit, ListenPort: 13000 + index, Targets: []string{"origin.test:443"}}
 		saveServiceFixtures(t, db, &source, &destination)
-		return dto.CreateTunnelReq{Name: "A to B", EntryRuleID: source.ID, ExitRuleID: destination.ID, AllowlistNodeIDs: []uint{}}
+		return dto.CreateTunnelReq{Name: "Loop", EntryRuleID: source.ID, ExitRuleID: destination.ID, AllowlistNodeIDs: []uint{}}
 	}
-	firstRequest, secondRequest := newConnection(1), newConnection(2)
+	firstRequest, secondRequest := newConnection(1, entry.ID, middle.ID), newConnection(2, middle.ID, exit.ID)
 	first, err := svc.CreateGroup(&firstRequest, testAdmin, testIP, testAgent)
 	requireServiceError(t, err, nil)
 	secondRequest.Name = "discarded connection name"
@@ -46,8 +48,8 @@ func TestTunnelGroupControlsEveryConnection(t *testing.T) {
 			t.Fatalf("group is %s with %d connections, want %s with %d", group.Status, len(group.Connections), want, count)
 		}
 		for _, connection := range group.Connections {
-			hasChain := connection.ChainID != "" && entryRemote.chain(connection.ChainID).Name != ""
-			hasRelay := connection.ServiceID != "" && exitRemote.service(connection.ServiceID).Name != ""
+			hasChain := connection.ChainID != "" && remotes[connection.EntryNodeID].chain(connection.ChainID).Name != ""
+			hasRelay := connection.ServiceID != "" && remotes[connection.ExitNodeID].service(connection.ServiceID).Name != ""
 			if connection.Status != want || hasChain != (want == model.TunnelStatusRunning) || hasRelay != hasChain {
 				t.Fatalf("connection %d: status %s, chain exists %t, relay exists %t", connection.ID, connection.Status, hasChain, hasRelay)
 			}
@@ -57,7 +59,7 @@ func TestTunnelGroupControlsEveryConnection(t *testing.T) {
 	checkConnections(model.TunnelStatusRunning, 2)
 	requireServiceError(t, svc.StopGroup(first.ID, testAdmin, testIP, testAgent), nil)
 	checkConnections(model.TunnelStatusStopped, 2)
-	thirdRequest := newConnection(3)
+	thirdRequest := newConnection(3, exit.ID, entry.ID)
 	_, err = svc.CreateGroup(&thirdRequest, testAdmin, testIP, testAgent)
 	requireServiceError(t, err, nil)
 	checkConnections(model.TunnelStatusStopped, 3)
@@ -65,9 +67,9 @@ func TestTunnelGroupControlsEveryConnection(t *testing.T) {
 	running := checkConnections(model.TunnelStatusRunning, 3)
 
 	chainPath := "DELETE /config/chains/" + running.Connections[1].ChainID
-	entryRemote.mu.Lock()
-	entryRemote.reject = map[string]int{chainPath: http.StatusBadGateway}
-	entryRemote.mu.Unlock()
+	middleRemote.mu.Lock()
+	middleRemote.reject = map[string]int{chainPath: http.StatusBadGateway}
+	middleRemote.mu.Unlock()
 	if err := svc.StopGroup(first.ID, testAdmin, testIP, testAgent); err == nil {
 		t.Fatal("failed cleanup was reported as a successful stop")
 	}
@@ -76,9 +78,9 @@ func TestTunnelGroupControlsEveryConnection(t *testing.T) {
 	if partial.Status != model.TunnelStatusError || partial.Connections[0].Status != model.TunnelStatusStopped {
 		t.Fatalf("partially stopped group has incorrect status: %+v", partial)
 	}
-	entryRemote.mu.Lock()
-	delete(entryRemote.reject, chainPath)
-	entryRemote.mu.Unlock()
+	middleRemote.mu.Lock()
+	delete(middleRemote.reject, chainPath)
+	middleRemote.mu.Unlock()
 	requireServiceError(t, svc.StopGroup(first.ID, testAdmin, testIP, testAgent), nil)
 	checkConnections(model.TunnelStatusStopped, 3)
 

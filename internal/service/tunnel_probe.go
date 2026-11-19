@@ -138,6 +138,9 @@ func tunnelConnectionLabel(connection *model.GostTunnel) string {
 	if connection.EntryRule != nil && connection.ExitRule != nil {
 		return connection.EntryRule.Name + " → " + connection.ExitRule.Name
 	}
+	if connection.EntryNode != nil && connection.ExitNode != nil {
+		return fmt.Sprintf("%s → %s · Relay %d", connection.EntryNode.Name, connection.ExitNode.Name, connection.RelayPort)
+	}
 	return fmt.Sprintf("Relay 端口 %d", connection.RelayPort)
 }
 

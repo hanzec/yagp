@@ -83,7 +83,11 @@
               </td>
               <td class="tunnel-route-cell" role="cell">
                 <span class="inventory-cell-label" aria-hidden="true">转发路径</span>
-                <div class="tunnel-route">
+                <div v-if="pathsByID[tunnel.id].length > 1" class="tunnel-paths">
+                  <span v-for="path in pathsByID[tunnel.id].slice(0, 3)" :key="path.id">{{ nodeName(path, 'entry') }} → {{ nodeName(path, 'exit') }}</span>
+                  <span v-if="pathsByID[tunnel.id].length > 3" class="ops-muted">共 {{ pathsByID[tunnel.id].length }} 条路径</span>
+                </div>
+                <div v-else class="tunnel-route">
                   <span>
                     <span class="tunnel-route-label">入口</span>
                     {{ nodeName(tunnel, 'entry') }}
@@ -193,7 +197,7 @@
       <p v-else class="tunnel-dialog-hint ops-muted">
         <template v-if="isEdit">共用出口沿用正在运行的配置。出口编辑会在关联链路全部停止后、下次启动时应用。</template>
         <template v-else-if="!entryOptionsLoading && (!sourceOptions.length || !destinationOptions.length)">源端或目的端缺少可用端点。</template>
-        <template v-else>选择入口和出口。连接会归入同一对节点的隧道。</template>
+        <template v-else>选择入口和出口。首尾相接或入口与出口都相同的连接归入同一隧道。</template>
         <RouterLink to="/rules" class="tunnel-link" @click="dialogVisible = false">前往端点管理</RouterLink>
       </p>
       <el-form ref="formRef" :model="form" :rules="formRules" label-position="top" :disabled="submitLoading" @submit.prevent="submitDialog">
@@ -227,10 +231,10 @@
               </span>
             </span>
           </el-form-item>
-          <el-form-item v-if="!matchingPair" label="隧道名称" prop="name" class="inventory-form-wide">
+          <el-form-item v-if="!targetTunnel" label="隧道名称" prop="name" class="inventory-form-wide">
             <el-input v-model="form.name" placeholder="例如 办公室到香港出口" />
           </el-form-item>
-          <div v-if="matchingPair" class="tunnel-group-preview inventory-form-wide" role="status" aria-live="polite" aria-atomic="true">
+          <div v-if="targetTunnel" class="tunnel-group-preview inventory-form-wide" role="status" aria-live="polite" aria-atomic="true">
             <el-icon aria-hidden="true"><Connection /></el-icon>
             <strong>{{ groupPreviewTitle }}</strong>
           </div>
@@ -242,7 +246,7 @@
             <el-icon aria-hidden="true"><Right /></el-icon>
             <div><span class="ops-muted">出口</span><strong>{{ exitEntrance?.name }}</strong><span>{{ exitEntrance?.node?.name || '节点 #' + exitEntrance?.node_id }}</span></div>
           </div>
-          <p v-if="joiningTunnel" class="tunnel-form-hint ops-muted">{{ joiningTunnel.status === 'running' ? '连接将在该隧道中启动。' : '连接会随该隧道一起启动。' }}</p>
+          <p v-if="joiningTunnel" class="tunnel-form-hint ops-muted">{{ connectedTunnels.every(tunnel => tunnel.status === 'running') ? '连接将在该隧道中启动。' : '连接会随该隧道一起启动。' }}</p>
           <p v-if="exitEntrance?.role === 'exit' && connections.some(connection => connection.exit_rule_id === form.exit_rule_id && connection.status === 'running')" class="tunnel-form-hint ops-muted">共用出口仅更新来源 IP 白名单，保留已有服务和链路配置。</p>
         </section>
         <div v-show="isEdit || createStep === 2" class="inventory-form-grid">
@@ -304,7 +308,7 @@
               </el-form-item>
             </div>
           </section>
-          <el-form-item v-if="!matchingPair" label="备注" prop="remark" class="inventory-form-wide">
+          <el-form-item v-if="!targetTunnel" label="备注" prop="remark" class="inventory-form-wide">
             <el-input v-model="form.remark" type="textarea" :rows="2" placeholder="可记录隧道用途" />
           </el-form-item>
         </div>
@@ -342,7 +346,7 @@ import { computed, nextTick, ref, reactive, watch, onMounted, onBeforeUnmount } 
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { appliedRuleConfig, hasTunnelBindings, needsStop, tunnelExitConfig } from '@/utils/rule-state'
-import { useTunnelInventory } from '@/utils/tunnel-inventory'
+import { connectionMatches, connectionsOf, tunnelPaths, useTunnelInventory } from '@/utils/tunnel-inventory'
 import InventoryToolbar from '@/components/InventoryToolbar.vue'
 import PanelDialog from '@/components/PanelDialog.vue'
 import TunnelTestDialog from '@/components/TunnelTestDialog.vue'
@@ -382,9 +386,9 @@ const searchStatus = ref('')
 const appliedFilters = ref({ keyword: '', node_id: '', status: '' })
 const { items: tunnelList, total: loadedTotal, loading, loadError, fetchData } = useTunnelInventory()
 const filtered = computed(() => Boolean(appliedFilters.value.keyword.trim() || appliedFilters.value.node_id || appliedFilters.value.status))
-const connectionsOf = tunnel => tunnel.connections || [tunnel]
 const connectionCount = tunnel => connectionsOf(tunnel).length
 const connections = computed(() => tunnelList.value.flatMap(connectionsOf))
+const pathsByID = computed(() => Object.fromEntries(tunnelList.value.map(tunnel => [tunnel.id, tunnelPaths(tunnel)])))
 const nodeName = (tunnel, role) => {
   const id = tunnel[role + '_node_id']
   return tunnel[role + '_node']?.name || nodeList.value.find(node => node.id === id)?.name || '节点 #' + id
@@ -392,11 +396,13 @@ const nodeName = (tunnel, role) => {
 const matchingTunnels = computed(() => {
   const { keyword, node_id, status } = appliedFilters.value
   const query = keyword.trim().toLocaleLowerCase()
-  return tunnelList.value.filter(tunnel =>
-    (!node_id || [tunnel.entry_node_id, tunnel.exit_node_id].includes(node_id)) &&
-    (!status || tunnel.status === status) &&
-    (!query || [tunnel.name, tunnel.remark, String(tunnel.id), '#' + tunnel.id,
-      nodeName(tunnel, 'entry'), nodeName(tunnel, 'exit')].some(value => value?.toLocaleLowerCase().includes(query))))
+  return tunnelList.value.filter(tunnel => {
+    const paths = pathsByID.value[tunnel.id]
+    return (!node_id || paths.some(path => path.entry_node_id === node_id || path.exit_node_id === node_id)) &&
+      (!status || tunnel.status === status) &&
+      (!query || [tunnel.name, tunnel.remark, String(tunnel.id), '#' + tunnel.id,
+        ...paths.flatMap(path => [nodeName(path, 'entry'), nodeName(path, 'exit')])].some(value => value?.toLocaleLowerCase().includes(query)))
+  })
 })
 const total = computed(() => loadedTotal.value === null ? null : matchingTunnels.value.length)
 const pagedTunnels = computed(() => matchingTunnels.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
@@ -443,14 +449,19 @@ const exitHasPendingChanges = computed(() => !!exitEntrance.value?.applied_endpo
   connections.value.some(connection => connection.exit_rule_id === form.exit_rule_id && connection.status === 'running'))
 const selectedExitConfig = computed(() => exitHasPendingChanges.value
   ? appliedRuleConfig(exitEntrance.value) : exitEntrance.value)
-const matchingPair = computed(() => {
-  if (!entryEntrance.value || !exitEntrance.value) return null
-  return tunnelList.value.find(tunnel => tunnel.id !== editId.value &&
-    tunnel.entry_node_id === entryEntrance.value.node_id && tunnel.exit_node_id === exitEntrance.value.node_id)
+const connectedTunnels = computed(() => {
+  if (!entryEntrance.value || !exitEntrance.value) return []
+  return tunnelList.value.filter(tunnel => tunnel.id !== editId.value && connectionsOf(tunnel).some(connection =>
+    connectionMatches(connection, entryEntrance.value.node_id, exitEntrance.value.node_id))).sort((a, b) => a.id - b.id)
 })
-const joiningTunnel = computed(() => isEdit.value ? null : matchingPair.value)
-const groupPreviewTitle = computed(() => matchingPair.value
-  ? `${isEdit.value ? '保存后并入' : '加入'} ${matchingPair.value.name} · #${matchingPair.value.id}` : '确认新隧道')
+const targetTunnel = computed(() => connectedTunnels.value[0])
+const joiningTunnel = computed(() => isEdit.value ? null : targetTunnel.value)
+const groupPreviewTitle = computed(() => {
+  if (!targetTunnel.value) return '确认新隧道'
+  const target = `${targetTunnel.value.name} · #${targetTunnel.value.id}`
+  if (connectedTunnels.value.length > 1) return `合并至 ${target}`
+  return `${isEdit.value ? '保存后并入' : '加入'} ${target}`
+})
 const legacyEntryNode = ref(null)
 const legacyExitNode = ref(null)
 const allowlistAuto = ref(true)
@@ -486,11 +497,9 @@ const availableEntrances = computed(() => entryList.value.filter(rule => {
   }
   return !rule.tunnel_id && !needsStop(rule)
 }))
-const sourceOptions = computed(() => availableEntrances.value.filter(rule => (!rule.role || rule.role === 'entry') &&
-  (!connectTo.value || rule.node_id === connectTo.value.entry_node_id)))
+const sourceOptions = computed(() => availableEntrances.value.filter(rule => !rule.role || rule.role === 'entry'))
 const destinationOptions = computed(() => availableEntrances.value.filter(rule =>
-  (!rule.role || rule.role === 'exit') && (!connectTo.value || rule.node_id === connectTo.value.exit_node_id) &&
-  !['0.0.0.0', '::', '::1'].includes(rule.listen_ip) && !rule.listen_ip?.startsWith('127.')))
+  (!rule.role || rule.role === 'exit') && !['0.0.0.0', '::', '::1'].includes(rule.listen_ip) && !rule.listen_ip?.startsWith('127.')))
 const selectedUsesOriginalTarget = computed(() => exitOwnsTargets.value ? exitRouting.value.use_original_target : form.use_original_target)
 const targetModeError = () => {
   if (!entryEntrance.value || !exitEntrance.value) return
@@ -506,6 +515,9 @@ const validateEndpointPair = (_rule, _value, callback) => {
   const entry = entryEntrance.value
   const exit = exitEntrance.value
   if (!entry || !exit) return callback()
+  if (connectTo.value && !connectedTunnels.value.some(tunnel => tunnel.id === connectTo.value.id)) {
+    return callback(new Error('请选择能接入此隧道的端点'))
+  }
   const entryBindings = entry.linked_tunnels?.map(tunnel => tunnel.id) ?? [entry.linked_tunnel_id]
   const exitBindings = exit.linked_tunnels?.map(tunnel => tunnel.id) ?? [exit.linked_tunnel_id]
   const duplicate = entryBindings.some(id => id && id !== editId.value && exitBindings.includes(id))
@@ -646,8 +658,8 @@ const handleSubmit = async () => {
   submitLoading.value = true
   try {
     const { entry_rule_id, exit_rule_id, protocol, relay_port } = form
-    const name = matchingPair.value?.name ?? form.name
-    const remark = matchingPair.value?.remark ?? form.remark
+    const name = targetTunnel.value?.name ?? form.name
+    const remark = targetTunnel.value?.remark ?? form.remark
     if (!await formRef.value.validate().catch(() => false)) {
       submitLoading.value = false
       if (!isEdit.value && (!name.trim() || !entry_rule_id || !exit_rule_id)) createStep.value = 1
@@ -810,6 +822,7 @@ onBeforeUnmount(() => clearInterval(refreshTimer))
 .tunnel-list-row:focus-visible { background: var(--ops-raised); outline-offset: -2px; }
 .tunnel-list-row .inventory-actions-cell { cursor: default; }
 .tunnel-route { display: flex; align-items: center; gap: 8px; }
+.tunnel-paths { display: grid; gap: 4px; overflow-wrap: anywhere; }
 .tunnel-route-label { display: block; color: var(--ops-muted); font-size: var(--ops-text-xs); margin-bottom: 2px; }
 .tunnel-route-arrow { color: var(--ops-accent); flex: none; }
 .tunnel-dialog-error { margin: 0 0 12px; }

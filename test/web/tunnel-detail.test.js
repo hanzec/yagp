@@ -152,6 +152,23 @@ describe('Tunnel detail monitoring', () => {
 
 
 describe('Managed tunnel details', () => {
+  it('shows a cycle as one read-only topology and one set of monitoring data', async () => {
+    const nodes = [{ id: 1, name: 'A' }, { id: 2, name: 'B' }, { id: 3, name: 'C' }]
+    const path = (id, entry, exit) => ({ id, status: 'running', protocol: 'tcp', relay_port: 8443,
+      entry_node_id: entry, exit_node_id: exit, entry_node: nodes[entry - 1], exit_node: nodes[exit - 1] })
+    getTunnel.mockResolvedValue({ data: {
+      ...tunnel, connections: [path(70, 1, 3), path(71, 3, 2), path(72, 2, 1), path(73, 1, 3)]
+    } })
+    const wrapper = await mountDetail()
+    const diagram = wrapper.get('[data-testid="tunnel-topology"]')
+    expect(diagram.findAll('[data-node-id]')).toHaveLength(3)
+    expect(diagram.findAll('.network-connections li').map(item => item.text())).toEqual(['A → C', 'C → B', 'B → A'])
+    expect(diagram.findAll('.network-edge[tabindex], .network-edge[role="button"]')).toHaveLength(0)
+    expect(wrapper.get('.tunnel-overview .ops-mono').text()).toBe('#7')
+    expect(wrapper.findAll('.latency-plot')).toHaveLength(1)
+    expect(getTunnelMetrics).toHaveBeenCalledExactlyOnceWith('7', '24h', expect.any(AbortSignal))
+  })
+
   it('shows a single node pair and chart, with all endpoint configurations visible together', async () => {
     const group = {
       ...tunnel,

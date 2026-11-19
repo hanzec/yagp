@@ -43,8 +43,11 @@ func tunnelGroupView(group *model.TunnelGroup) *TunnelGroupView {
 		EntryNodeID: group.EntryNodeID, ExitNodeID: group.ExitNodeID, CreatedAt: group.CreatedAt, UpdatedAt: group.UpdatedAt,
 		Connections: group.Connections,
 	}
-	if len(group.Connections) > 0 {
-		view.EntryNode, view.ExitNode = group.Connections[0].EntryNode, group.Connections[0].ExitNode
+	for _, connection := range group.Connections {
+		if connection.ID == group.ID {
+			view.EntryNode, view.ExitNode = connection.EntryNode, connection.ExitNode
+			break
+		}
 	}
 	if len(group.Connections) == 1 {
 		view.GostTunnel = &group.Connections[0]
@@ -72,7 +75,9 @@ func (s *TunnelService) ListGroups(req *dto.TunnelListReq) ([]*TunnelGroupView, 
 	req.SetDefaults()
 	conditions := make(map[string]any)
 	if req.NodeID > 0 {
-		conditions["tunnel_groups.entry_node_id = ? OR tunnel_groups.exit_node_id = ?"] = []any{req.NodeID, req.NodeID}
+		connections := s.tunnelRepo.DB.Model(&model.GostTunnel{}).Select("group_id").
+			Where("entry_node_id = ? OR exit_node_id = ?", req.NodeID, req.NodeID)
+		conditions["tunnel_groups.id IN (?)"] = connections
 	}
 	if req.Status != "" {
 		conditions["state.status = ?"] = req.Status
@@ -110,24 +115,28 @@ func (s *TunnelService) createGroupConnection(req *dto.CreateTunnelReq, user, ip
 	if err != nil {
 		return nil, nil, err
 	}
-	group, err := s.tunnelRepo.FindGroupByPair(connection.EntryNodeID, connection.ExitNodeID)
-	if err != nil && !stderrors.Is(err, gorm.ErrRecordNotFound) {
+	matches, err := s.tunnelRepo.MatchingGroups(connection.EntryNodeID, connection.ExitNodeID, 0)
+	if err != nil {
 		return nil, nil, err
 	}
-	newGroup := group.ID == 0
-	start := group.Status == model.TunnelStatusRunning || (newGroup && connection.EntryRuleID != nil)
+	newGroup := len(matches) == 0
+	start := !newGroup || connection.EntryRuleID != nil
+	for _, existing := range matches {
+		start = start && existing.Status == model.TunnelStatusRunning
+	}
 	if start {
 		if err := endpointNodesOnline(connection); err != nil {
 			return nil, nil, err
 		}
 	}
-	if err := s.tunnelRepo.AddGroupConnection(group, connection); err != nil {
+	group, err := s.tunnelRepo.AddGroupConnection(connection, matches)
+	if err != nil {
 		return nil, nil, err
 	}
 	if start {
 		if err := s.startConnection(connection); err != nil {
-			// Keep the connection when remote cleanup is still pending.
-			if connection.Status == model.TunnelStatusError ||
+			// A merged tunnel keeps its connecting path for retry. Also retain pending remote cleanup.
+			if len(matches) > 1 || connection.Status == model.TunnelStatusError ||
 				(connection.EntryRuleID == nil && (connection.ServiceID != "" || connection.ChainID != "")) {
 				return nil, nil, err
 			}
@@ -177,16 +186,17 @@ func (s *TunnelService) UpdateGroup(id uint, req *dto.UpdateTunnelReq, user, ip,
 			return nil, err
 		}
 		if group.EntryNodeID != connection.EntryNodeID || group.ExitNodeID != connection.ExitNodeID {
-			target, err := s.tunnelRepo.FindGroupByPair(connection.EntryNodeID, connection.ExitNodeID)
-			if err == nil {
-				if err := s.tunnelRepo.MergeGroup(group, connection, req.AllowlistNodeIDs != nil); err != nil {
+			matches, err := s.tunnelRepo.MatchingGroups(connection.EntryNodeID, connection.ExitNodeID, group.ID)
+			if err != nil {
+				return nil, err
+			}
+			if len(matches) != 0 {
+				if err := s.tunnelRepo.MergeGroup(group, connection, req.AllowlistNodeIDs != nil, matches); err != nil {
 					return nil, err
 				}
+				target := &matches[0]
 				s.recordGroupAction(target, model.ActionUpdate, "合并隧道", user, ip, agent)
 				return s.GetGroup(target.ID)
-			}
-			if !stderrors.Is(err, gorm.ErrRecordNotFound) {
-				return nil, err
 			}
 			group.EntryNodeID, group.ExitNodeID = connection.EntryNodeID, connection.ExitNodeID
 		}

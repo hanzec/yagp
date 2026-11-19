@@ -78,26 +78,28 @@ beforeEach(async () => {
   await router.push('/tunnels')
 })
 
-describe('Tunnel management by directed node pair', () => {
+describe('Tunnel management by connected paths', () => {
   const link = (id, entry, exit, name = `Tunnel ${id}`) => ({
     id, name, status: 'running', protocol: 'tcp', relay_port: 8443, entry_node_id: entry, exit_node_id: exit
   })
 
-  it('shows a stable management ID and one set of actions for multiple endpoint connections', async () => {
+  it('shows one set of actions for a full loop under its stable management ID', async () => {
     const merged = {
-      ...link(92, 1, 2), name: 'Office to Tokyo',
-      connections: [link(113, 1, 2, 'First endpoint'), link(114, 1, 2, 'Second endpoint')]
+      ...link(92, 1, 3), name: 'Office to Tokyo',
+      connections: [link(113, 1, 3, 'First endpoint'), link(114, 3, 2, 'Second endpoint'), link(115, 2, 1)]
     }
-    const rows = [merged, link(2, 1, 3), link(3, 3, 2), link(4, 2, 1), link(5, 2, 3)]
+    const rows = [merged, link(2, 5, 6)]
     getTunnelList.mockResolvedValue(result(rows))
+    getRoutingNodes.mockResolvedValue([{ id: 1, name: 'A' }, { id: 2, name: 'B' }, { id: 3, name: 'C' }])
     const wrapper = mountInventory(Tunnels)
     await flushPromises()
 
     const managed = row(wrapper, merged.name)
-    expect(wrapper.findAll('.tunnel-list-row')).toHaveLength(5)
-    expect(wrapper.get('.inventory-pagination').text()).toContain('共 5 条隧道')
+    expect(wrapper.findAll('.tunnel-list-row')).toHaveLength(2)
+    expect(wrapper.get('.inventory-pagination').text()).toContain('共 2 条隧道')
     expect(managed.text()).toContain('#92')
-    expect(managed.text()).toContain('2 组端点')
+    expect(managed.text()).toContain('3 组端点')
+    expect(managed.findAll('.tunnel-paths span').map(path => path.text())).toEqual(['A → C', 'C → B', 'B → A'])
     expect(wrapper.text()).not.toMatch(/First endpoint|Second endpoint/)
     expect(managed.findAll('button').map(item => item.text().trim())).toEqual(['停止', '测试', '更多'])
     await button(managed, '停止').trigger('click')
@@ -119,9 +121,9 @@ describe('Tunnel management by directed node pair', () => {
     expect(router.currentRoute.value.path).toBe('/tunnels/92')
   })
 
-  it('previews only an exact ordered pair, including a tunnel on a later API page', async () => {
+  it('previews the matching pair even when its tunnel is on a later API page', async () => {
     const firstPage = Array.from({ length: 100 }, (_, index) => link(index + 1, 200 + index, 300 + index))
-    firstPage[0] = link(1, egress.id, ingress.id)
+    firstPage[0] = link(1, ingress.id, 55)
     const existing = link(101, ingress.id, egress.id, 'Tokyo relay')
     getTunnelList.mockResolvedValueOnce(result(firstPage, 101)).mockResolvedValueOnce(result([existing], 101))
     const entry = { ...source, role: 'entry', use_clash_ruleset: false }
@@ -153,21 +155,49 @@ describe('Tunnel management by directed node pair', () => {
     expect(createTunnel).toHaveBeenCalledExactlyOnceWith({ name: 'Tokyo relay', entry_rule_id: entry.id, exit_rule_id: exit.id, remark: '' })
   })
 
-  it('limits the add connection menu to the tunnel’s entry and exit nodes', async () => {
+  it('accepts an onward path and rejects endpoints that cannot join the selected tunnel', async () => {
     const existing = link(101, ingress.id, egress.id, 'Tokyo relay')
     const entry = { ...source, role: 'entry' }
     const exit = { ...destination, role: 'exit', targets: ['app.test:443'] }
     getTunnelList.mockResolvedValue(result([existing]))
-    getRuleList.mockResolvedValue(result([
-      entry, exit, { ...entry, id: 81, node_id: officeExit.id }, { ...exit, id: 82, node_id: officeExit.id }
-    ]))
+    const onwardEntry = { ...entry, id: 81, node: egress, node_id: egress.id }
+    const onwardExit = { ...exit, id: 82, node: officeExit, node_id: officeExit.id }
+    getRuleList.mockResolvedValue(result([entry, exit, onwardEntry, onwardExit]))
     const wrapper = mountInventory(Tunnels)
     await flushPromises()
     await command(row(wrapper, existing.name), 'connect')
     const editor = dialog(wrapper)
     expect(editor.attributes('aria-label')).toBe('向隧道 #101 添加连接')
-    expect(selectField(editor, 'entry_rule_id').findAllComponents(ElOption).map(option => option.props('value'))).toEqual([entry.id])
-    expect(selectField(editor, 'exit_rule_id').findAllComponents(ElOption).map(option => option.props('value'))).toEqual([exit.id])
+    await field(editor, 'name').get('input').setValue('Alternate path')
+    await choose(selectField(editor, 'entry_rule_id'), entry.id)
+    await choose(selectField(editor, 'exit_rule_id'), onwardExit.id)
+    await button(editor, '下一步').trigger('click')
+    expect(editor.find('.tunnel-create-review').exists()).toBe(false)
+    expect(wrapper.getComponent(ElForm).emitted('validate')).toContainEqual(['exit_rule_id', false, '请选择能接入此隧道的端点'])
+
+    await choose(selectField(editor, 'entry_rule_id'), onwardEntry.id)
+    expect(editor.get('.tunnel-group-preview').text()).toContain('加入 Tokyo relay · #101')
+    await createConnection(editor)
+    expect(createTunnel).toHaveBeenCalledExactlyOnceWith({ name: 'Tokyo relay', entry_rule_id: onwardEntry.id, exit_rule_id: onwardExit.id, remark: '' })
+  })
+
+  it('previews a new bridge merging two managed tunnels under the oldest ID', async () => {
+    const first = link(7, 1, ingress.id, 'First tunnel')
+    const second = link(9, egress.id, 2, 'Second tunnel')
+    const entry = { ...source, role: 'entry' }
+    const exit = { ...destination, role: 'exit', targets: ['app.test:443'] }
+    getTunnelList.mockResolvedValue(result([second, first]))
+    getRuleList.mockResolvedValue(result([entry, exit]))
+    const wrapper = mountInventory(Tunnels)
+    await flushPromises()
+    await button(wrapper, '添加隧道').trigger('click')
+    await flushPromises()
+    const editor = dialog(wrapper)
+    await choose(selectField(editor, 'entry_rule_id'), entry.id)
+    await choose(selectField(editor, 'exit_rule_id'), exit.id)
+    expect(editor.get('.tunnel-group-preview').text()).toContain('合并至 First tunnel · #7')
+    await createConnection(editor)
+    expect(createTunnel).toHaveBeenCalledExactlyOnceWith({ name: 'First tunnel', entry_rule_id: entry.id, exit_rule_id: exit.id, remark: '' })
   })
 
   it('previews merging a stopped tunnel into the existing ID after changing its nodes', async () => {
