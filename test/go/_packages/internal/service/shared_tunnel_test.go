@@ -61,6 +61,8 @@ func TestEndpointTunnelsShareAnExitRelay(t *testing.T) {
 	requireSharedRelaySources(t, exitRemote, relay.Name, true, first.IPv4)
 	secondRemote.rejectCommand("POST /config/chains", 0)
 
+	// Sharing must preserve the live source when a surviving entry temporarily has no snapshot.
+	requireServiceError(t, db.Model(&model.GostNode{}).Where("id = ?", first.ID).Update("ipv4", "").Error, nil)
 	right, err := tunnels.Create(&dto.CreateTunnelReq{Name: "second path", EntryRuleID: secondEntry.ID, ExitRuleID: sharedExit.ID}, testAdmin, testIP, testAgent)
 	requireServiceError(t, err, nil)
 	left = loadSharedTunnel(t, tunnels, left.ID)
@@ -101,6 +103,7 @@ func TestEndpointTunnelsShareAnExitRelay(t *testing.T) {
 		secondRemote.rejectCommand(method+" /config/chains/"+right.ChainID, http.StatusServiceUnavailable)
 		secondRemote.rejectCommand(method+" /config/services/"+right.EntryRule.ServiceID, http.StatusServiceUnavailable)
 	}
+	requireServiceError(t, db.Model(&model.GostNode{}).Where("id = ?", second.ID).Update("ipv4", "").Error, nil)
 	secondChain := secondRemote.chain(right.ChainID)
 	requireServiceError(t, tunnels.Delete(left.ID, testAdmin, testIP, testAgent), nil)
 	right = loadSharedTunnel(t, tunnels, right.ID)
@@ -108,6 +111,10 @@ func TestEndpointTunnelsShareAnExitRelay(t *testing.T) {
 	if right.ServiceID != relay.Name || !reflect.DeepEqual(secondRemote.chain(right.ChainID), secondChain) {
 		t.Fatal("deleting the Relay owner changed the surviving tunnel")
 	}
+	// With no per-member snapshot, keep the combined policy until the survivor reports again.
+	requireSharedRelaySources(t, exitRemote, relay.Name, true, first.IPv4, second.IPv4)
+	requireServiceError(t, db.Model(&second).Update("ipv4", second.IPv4).Error, nil)
+	requireServiceError(t, tunnels.allowlist.writeRelaySources(utils.GetGostClient(&exit), &relay, []*model.GostTunnel{right}), nil)
 	requireSharedRelaySources(t, exitRemote, relay.Name, true, second.IPv4)
 	requireUnchangedSharedRelay(t, exitRemote, relay, commandsBeforeSharing)
 
