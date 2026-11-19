@@ -103,7 +103,6 @@ describe('panel API contracts', () => {
 
 describe('panel request errors', () => {
   it.each([
-    [401, undefined, '请重新打开面板并通过 Authentik 登录'],
     [403, '此操作需要管理员权限', '此操作需要管理员权限'],
     [403, undefined, '拒绝访问'],
     [404, undefined, '请求地址不存在'],
@@ -115,6 +114,14 @@ describe('panel request errors', () => {
       status ? { status, data: serverMessage ? { message: serverMessage } : undefined } : undefined)))
     await expect(getUserInfo()).rejects.toThrow('transport failure')
     expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith(message)
+  })
+
+  it('shows the SMTP authentication error from a test email request', async () => {
+    adapter.mockImplementation(config => Promise.reject(new AxiosError('SMTP failure', undefined, config, undefined, {
+      status: 401, data: { code: 10405, message: 'SMTP认证失败' }
+    })))
+    await expect(system.sendTestEmail({})).rejects.toThrow('SMTP failure')
+    expect(ElMessage.error).toHaveBeenCalledExactlyOnceWith('SMTP认证失败')
   })
 
   it('rejects business errors, preserving the message and handling an absent message', async () => {
