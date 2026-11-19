@@ -18,6 +18,7 @@ import (
 	"yagp/internal/buildinfo"
 	"yagp/internal/config"
 	"yagp/internal/model"
+	"yagp/internal/repository"
 	"yagp/internal/router"
 	"yagp/internal/service"
 	"yagp/pkg/geoip"
@@ -203,6 +204,7 @@ func autoMigrate(db *gorm.DB) error {
 		&model.GostRule{},
 		&model.ExitRelayHistory{},
 		&model.GostTunnel{},
+		&model.TunnelGroup{},
 		&model.TunnelProbeSample{},
 		&model.GostRuleset{},
 		&model.OperationLog{},
@@ -214,7 +216,10 @@ func autoMigrate(db *gorm.DB) error {
 	if err := migrateTunnelAllowlists(db); err != nil {
 		return err
 	}
-	return migrateTunnelEndpointRoles(db)
+	if err := migrateTunnelEndpointRoles(db); err != nil {
+		return err
+	}
+	return repository.MigrateTunnelGroups(db)
 }
 
 func migrateTunnelAllowlists(db *gorm.DB) error {

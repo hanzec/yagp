@@ -15,19 +15,6 @@ const shared = {
   ...tunnel, id: 8, name: '备用入口链路', entry_node_id: 3,
   entry_node: { id: 3, name: '上海入口', address: '192.0.2.3' }
 }
-const transitive = {
-  ...shared, id: 9, name: '上海到新加坡', exit_node_id: 4,
-  exit_node: { id: 4, name: '新加坡出口', address: '198.51.100.8' }
-}
-const onward = { ...tunnel, id: 15, name: '东京到大阪', entry_node_id: 2, entry_node: tunnel.exit_node,
-  exit_node_id: 8, exit_node: { id: 8, name: '大阪出口' } }
-const parallel = { ...tunnel, id: 11, name: '同节点另一端点' }
-const unrelated = {
-  ...tunnel, id: 10, name: '独立欧洲链路', entry_node_id: 5, exit_node_id: 6,
-  entry_node: { id: 5, name: '柏林入口', address: '192.0.2.5' },
-  exit_node: { id: 6, name: '巴黎出口', address: '198.51.100.6' }
-}
-const inventory = rows => ({ data: { list: rows, total: rows.length } })
 const latest = '2026-11-16T01:03:00Z'
 const metrics = {
   from: '2026-11-16T01:00:00Z', to: latest, interval_seconds: 60, bucket_seconds: 60,
@@ -53,7 +40,6 @@ enableAutoUnmount(afterEach)
 beforeEach(() => {
   vi.resetAllMocks()
   getTunnel.mockResolvedValue({ data: tunnel })
-  getTunnelList.mockResolvedValue(inventory([tunnel]))
   getTunnelMetrics.mockResolvedValue({ data: metrics })
 })
 
@@ -77,7 +63,7 @@ describe('Tunnel detail monitoring', () => {
     expect(getTunnelMetrics).toHaveBeenCalledWith('7', '24h', expect.any(AbortSignal))
     const overviewHeader = wrapper.get('.tunnel-overview > header')
     expect(overviewHeader.get('h2').text()).toBe('隧道拓扑')
-    const identity = wrapper.get('.tunnel-link-details .tunnel-identity')
+    const identity = wrapper.get('.tunnel-overview .tunnel-identity')
     expect(identity.get('.ops-status').text()).toBe('运行中')
     expect(identity.get('.ops-mono').text()).toBe('#7')
     expect(wrapper.text()).toContain('香港入口')
@@ -165,143 +151,70 @@ describe('Tunnel detail monitoring', () => {
 })
 
 
-describe('Tunnel detail connected topology', () => {
-  it('shows the selected running links applied Relay protocol and mapped connection address', async () => {
-    const selected = {
-      ...shared,
-      exit_node: { ...shared.exit_node, address_mappings: [
+describe('Managed tunnel details', () => {
+  it('shows a cycle as one read-only topology and one set of monitoring data', async () => {
+    const nodes = [{ id: 1, name: 'A' }, { id: 2, name: 'B' }, { id: 3, name: 'C' }]
+    const path = (id, entry, exit) => ({ id, status: 'running', protocol: 'tcp', relay_port: 8443,
+      entry_node_id: entry, exit_node_id: exit, entry_node: nodes[entry - 1], exit_node: nodes[exit - 1] })
+    getTunnel.mockResolvedValue({ data: {
+      ...tunnel, connections: [path(70, 1, 3), path(71, 3, 2), path(72, 2, 1), path(73, 1, 3)]
+    } })
+    const wrapper = await mountDetail()
+    const diagram = wrapper.get('[data-testid="tunnel-topology"]')
+    expect(diagram.findAll('[data-node-id]')).toHaveLength(3)
+    expect(diagram.findAll('.network-connections li').map(item => item.text())).toEqual(['A → C', 'C → B', 'B → A'])
+    expect(diagram.findAll('.network-edge[tabindex], .network-edge[role="button"]')).toHaveLength(0)
+    expect(wrapper.get('.tunnel-overview .ops-mono').text()).toBe('#7')
+    expect(wrapper.findAll('.latency-plot')).toHaveLength(1)
+    expect(getTunnelMetrics).toHaveBeenCalledExactlyOnceWith('7', '24h', expect.any(AbortSignal))
+  })
+
+  it('shows a single node pair and chart, with all endpoint configurations visible together', async () => {
+    const group = {
+      ...tunnel,
+      exit_node: { ...tunnel.exit_node, address_mappings: [
         { listen_ip: '10.10.0.7', connect_ip: '198.51.100.77' },
         { listen_ip: '10.10.0.8', connect_ip: '203.0.113.88' }
       ] },
-      exit_rule: {
-        id: 42, role: 'exit', name: '待应用出口', protocol: 'quic', listen_ip: '10.10.0.8', listen_port: 9443,
-        applied_endpoint: { Protocol: 'wss', ListenIP: '10.10.0.7', ListenPort: 8443 }
-      }
+      connections: [
+        { id: 70, status: 'running', entry_rule: { id: 42, name: '网站入口', listen_port: 8888 },
+          exit_rule: { id: 43, role: 'exit', name: '网站出口', protocol: 'quic', listen_ip: '10.10.0.8',
+            listen_port: 9443, applied_endpoint: { Protocol: 'wss', ListenIP: '10.10.0.7', ListenPort: 8443 } } },
+        { id: 71, status: 'running', entry_rule: { id: 44, name: '仓库入口', listen_port: 9888 },
+          exit_rule: { id: 45, role: 'exit', name: '仓库出口', protocol: 'mtls', listen_ip: '10.10.0.8', listen_port: 10001 } }
+      ]
     }
-    // The current detail replaces the inventory copy before the graph and selection are derived.
-    getTunnelList.mockResolvedValue(inventory([tunnel, {
-      ...selected, exit_rule: { ...selected.exit_rule, applied_endpoint: undefined }
-    }]))
-    getTunnel.mockResolvedValue({ data: selected })
-    const wrapper = await mountDetail(8)
-    expect(wrapper.get('select[aria-label="查看链路"]').element.value).toBe('8')
-    const fields = wrapper.findAll('.tunnel-metadata > div')
-    const relay = fields.find(field => field.get('dt').text() === 'Relay 监听')
-    const connection = fields.find(field => field.get('dt').text() === '入口连接的 Relay 地址')
-    expect(relay.get('dd').text()).toBe('WSS · 10.10.0.7:8443')
-    expect(connection.get('dd').text()).toBe('198.51.100.77:8443')
-    expect(wrapper.get('.tunnel-metadata').text()).not.toContain('QUIC')
-    expect(wrapper.get('.tunnel-metadata').text()).not.toContain('203.0.113.88:9443')
-    expect(wrapper.get('.tunnel-monitor').text()).toContain(selected.name)
-    expect(getTunnelMetrics).toHaveBeenCalledWith('8', '24h', expect.any(AbortSignal))
-  })
-
-  it('draws shared entries, shared exits, and an onward link in a single connected network', async () => {
-    getTunnelList.mockResolvedValue(inventory([unrelated, shared, tunnel, transitive, parallel, onward]))
+    getTunnel.mockResolvedValue({ data: group })
     const wrapper = await mountDetail()
-    const topology = wrapper.getComponent({ name: 'TunnelTopology' })
-    expect(topology.props('tunnels').map(link => link.id).sort((a, b) => a - b)).toEqual([7, 8, 9, 11, 15])
-    expect(String(topology.props('selectedId'))).toBe('7')
-    expect(topology.findAll('[data-node-id]').map(node => node.attributes('data-node-id')).sort()).toEqual(['1', '2', '3', '4', '8'])
-    expect(topology.findAll('[data-link-id]').map(link => link.attributes('data-link-id')).sort()).toEqual(['11', '15', '7', '8', '9'])
-    expect(topology.get('[data-link-id="7"]').classes()).toContain('is-selected')
-    expect(topology.text()).not.toContain(unrelated.name)
-    expect(topology.get('[data-link-id="15"]').attributes('aria-label')).toContain(onward.name)
-    const selector = wrapper.get('select[aria-label="查看链路"]')
-    expect(selector.findAll('option').map(option => option.element.value).sort()).toEqual(['11', '15', '7', '8', '9'])
-    expect(wrapper.get('.tunnel-monitor').text()).toContain(tunnel.name)
-  })
-
-  it('waits for every inventory page before drawing the connected network', async () => {
-    const firstPage = Array.from({ length: 100 }, (_, index) => ({
-      ...unrelated, id: index + 1000, entry_node_id: index * 2 + 100, exit_node_id: index * 2 + 101
-    }))
-    const lastPage = Promise.withResolvers()
-    getTunnelList.mockImplementation(({ page }) => page === 1
-      ? Promise.resolve({ data: { list: firstPage, total: 103 } }) : lastPage.promise)
-    const wrapper = await mountDetail()
-    expect(getTunnelList).toHaveBeenNthCalledWith(1, { page: 1, pageSize: 100 })
-    expect(getTunnelList).toHaveBeenNthCalledWith(2, { page: 2, pageSize: 100 })
-    expect(wrapper.findComponent({ name: 'TunnelTopology' }).exists()).toBe(false)
-    expect(wrapper.find('.tunnel-metrics').exists()).toBe(true)
-    lastPage.resolve({ data: { list: [shared, transitive, tunnel], total: 103 } })
-    await flushPromises()
-    const topology = wrapper.getComponent({ name: 'TunnelTopology' })
-    expect(topology.props('tunnels').map(link => link.id).sort((a, b) => a - b)).toEqual([7, 8, 9])
-    expect(topology.findAll('[data-node-id]')).toHaveLength(4)
-    expect(getTunnelList).toHaveBeenCalledTimes(2)
-  })
-
-  it('keeps both parallel links and the reversed link together when opening the return path', async () => {
-    const reverse = {
-      ...tunnel, id: 12, name: '东京至香港', entry_node_id: tunnel.exit_node_id, exit_node_id: tunnel.entry_node_id,
-      entry_node: tunnel.exit_node, exit_node: tunnel.entry_node
-    }
-    const links = [tunnel, parallel, reverse]
-    getTunnelList.mockResolvedValue(inventory(links))
-    getTunnel.mockImplementation(id => Promise.resolve({ data: links.find(link => String(link.id) === String(id)) }))
-    const wrapper = await mountDetail()
-    const graph = wrapper.get('[data-testid="tunnel-topology"]')
-    expect(graph.findAll('[data-node-id]')).toHaveLength(2)
-    const edges = graph.findAll('[data-link-id]')
-    const lines = edges.map(edge => edge.get('path[marker-end]'))
-    expect(new Set(lines.map(line => line.attributes('d'))).size).toBe(3)
-    await wrapper.vm.$router.push('/tunnels/12')
-    await flushPromises()
-    expect(graph.findAll('[data-node-id]')).toHaveLength(2)
-    expect(graph.get('[data-link-id="12"]').attributes('aria-pressed')).toBe('true')
-  })
-
-  it('opens direct member URLs and switches per-link metrics without reloading the network', async () => {
-    const rows = [tunnel, shared, transitive, unrelated]
-    getTunnelList.mockResolvedValue(inventory(rows))
-    getTunnel.mockImplementation(id => Promise.resolve({ data: rows.find(link => String(link.id) === String(id)) }))
-    getTunnelMetrics.mockImplementation(id => Promise.resolve({ data: {
-      ...metrics, summary: { ...metrics.summary, latest_latency_ms: Number(id) * 10 }
-    } }))
-    const wrapper = await mountDetail(8)
-    const router = wrapper.vm.$router
-    expect(getTunnel).toHaveBeenCalledWith('8', expect.any(AbortSignal))
-    expect(getTunnelMetrics).toHaveBeenCalledWith('8', '24h', expect.any(AbortSignal))
-    expect(wrapper.get('select[aria-label="查看链路"]').element.value).toBe('8')
-    expect(wrapper.get('.tunnel-monitor').text()).toContain(shared.name)
-    expect(wrapper.get('.tunnel-metrics').text()).toContain('80 ms')
-    await wrapper.get('select[aria-label="查看链路"]').setValue('9')
-    await flushPromises()
-    expect(router.currentRoute.value.params.id).toBe('9')
-    expect(getTunnel).toHaveBeenLastCalledWith('9', expect.any(AbortSignal))
-    expect(getTunnelMetrics).toHaveBeenLastCalledWith('9', '24h', expect.any(AbortSignal))
-    expect(wrapper.get('.tunnel-monitor').text()).toContain(transitive.name)
-    expect(wrapper.get('.tunnel-metrics').text()).toContain('90 ms')
-    expect(String(wrapper.getComponent({ name: 'TunnelTopology' }).props('selectedId'))).toBe('9')
-    expect(getTunnelList).toHaveBeenCalledTimes(1)
-
-    await router.push('/tunnels/10')
-    await flushPromises()
-    expect(wrapper.getComponent({ name: 'TunnelTopology' }).props('tunnels').map(link => link.id)).toEqual([10])
+    const direction = wrapper.get('[aria-label="转发方向"]')
+    expect(direction.findAll('dd').map(item => item.text())).toEqual(['香港入口', '东京出口'])
+    expect(wrapper.get('.tunnel-overview .ops-mono').text()).toBe('#7')
+    const [first, second] = wrapper.findAll('.tunnel-metadata')
+    expect(first.text()).toContain('网站入口')
+    expect(first.text()).toContain('WSS · 10.10.0.7:8443')
+    expect(first.text()).toContain('198.51.100.77:8443')
+    expect(first.text()).not.toContain('QUIC')
+    expect(second.text()).toContain('仓库入口')
+    expect(second.text()).toContain('MTLS · 10.10.0.8:10001')
+    expect(second.text()).toContain('203.0.113.88:10001')
     expect(wrapper.find('select[aria-label="查看链路"]').exists()).toBe(false)
-    expect(wrapper.get('.tunnel-monitor').text()).toContain(unrelated.name)
-    expect(wrapper.get('.tunnel-metrics').text()).toContain('100 ms')
-    expect(getTunnelList).toHaveBeenCalledTimes(1)
+    expect(wrapper.findAll('.latency-plot')).toHaveLength(1)
+    expect(wrapper.get('.tunnel-caption').text()).toContain('汇总全部端点的探测结果')
+    expect(getTunnelList).not.toHaveBeenCalled()
+    expect(getTunnelMetrics).toHaveBeenCalledExactlyOnceWith('7', '24h', expect.any(AbortSignal))
   })
 
-  it('selects an existing link from the graph without changing its configuration', async () => {
-    const rows = [tunnel, shared, transitive]
-    getTunnelList.mockResolvedValue(inventory(rows))
-    getTunnel.mockImplementation(id => Promise.resolve({ data: rows.find(link => String(link.id) === String(id)) }))
-    const wrapper = await mountDetail()
-    await wrapper.get('[data-link-id="8"]').trigger('keydown', { key: 'Enter' })
-    await flushPromises()
-    expect(wrapper.vm.$router.currentRoute.value.params.id).toBe('8')
-    expect(wrapper.get('select[aria-label="查看链路"]').element.value).toBe('8')
-    expect(getTunnelMetrics).toHaveBeenLastCalledWith('8', '24h', expect.any(AbortSignal))
-    expect(getTunnelList).toHaveBeenCalledTimes(1)
+  it('opens an old connection URL at the managed tunnel ID', async () => {
+    const wrapper = await mountDetail(70)
+    expect(wrapper.vm.$router.currentRoute.value.params.id).toBe('7')
+    expect(getTunnel).toHaveBeenNthCalledWith(1, '70', expect.any(AbortSignal))
+    expect(getTunnelMetrics).toHaveBeenLastCalledWith('7', '24h', expect.any(AbortSignal))
+    expect(wrapper.get('.tunnel-overview .ops-mono').text()).toBe('#7')
   })
 
-  it('ignores an old member response after navigating to a different link', async () => {
+  it('ignores an old response after navigating to a different pair', async () => {
     const pendingTunnel = Promise.withResolvers()
     const pendingMetrics = Promise.withResolvers()
-    getTunnelList.mockResolvedValue(inventory([tunnel, shared]))
     getTunnel.mockReturnValueOnce(pendingTunnel.promise).mockResolvedValueOnce({ data: shared })
     getTunnelMetrics.mockReturnValueOnce(pendingMetrics.promise).mockResolvedValueOnce({ data: {
       ...metrics, summary: { ...metrics.summary, latest_latency_ms: 88 }
@@ -319,28 +232,7 @@ describe('Tunnel detail connected topology', () => {
     pendingMetrics.resolve({ data: metrics })
     await flushPromises()
     expect(wrapper.get('.tunnel-detail-name').text()).toBe(shared.name)
+    expect(wrapper.get('.tunnel-overview .ops-mono').text()).toBe('#8')
     expect(wrapper.get('.tunnel-metrics').text()).toContain('88 ms')
-    expect(String(wrapper.getComponent({ name: 'TunnelTopology' }).props('selectedId'))).toBe('8')
-  })
-
-  it('keeps metrics usable when the topology fails and retries only the network request', async () => {
-    getTunnelList.mockRejectedValueOnce(new Error('inventory unavailable')).mockResolvedValue(inventory([tunnel, shared]))
-    const wrapper = await mountDetail()
-    const graphError = wrapper.findAll('[role="alert"]').find(alert => alert.text().includes('拓扑'))
-    expect(graphError).toBeDefined()
-    expect(wrapper.findComponent({ name: 'TunnelTopology' }).exists()).toBe(false)
-    expect(wrapper.get('.tunnel-metrics').text()).toContain('50.00 %')
-    await wrapper.get('[aria-label="统计时间范围"] button[aria-pressed="false"]').trigger('click')
-    await flushPromises()
-    expect(getTunnelMetrics).toHaveBeenLastCalledWith('7', '1h', expect.any(AbortSignal))
-    const metricsRequests = getTunnelMetrics.mock.calls.length
-    await graphError.get('button').trigger('click')
-    await flushPromises()
-    expect(wrapper.getComponent({ name: 'TunnelTopology' }).props('tunnels').map(link => link.id).sort()).toEqual([7, 8])
-    expect(wrapper.findAll('[role="alert"]').some(alert => alert.text().includes('拓扑'))).toBe(false)
-    expect(getTunnelList).toHaveBeenCalledTimes(2)
-    expect(getTunnel).toHaveBeenCalledTimes(1)
-    expect(getTunnelMetrics).toHaveBeenCalledTimes(metricsRequests)
-    expect(wrapper.find('.tunnel-metrics').exists()).toBe(true)
   })
 })

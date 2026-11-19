@@ -40,7 +40,7 @@ type TunnelSummary struct {
 
 func (r *TunnelRepository) Summary() (TunnelSummary, error) {
 	var summary TunnelSummary
-	err := r.DB.Model(&model.GostTunnel{}).Select(`COUNT(*) AS total,
+	err := r.DB.Table("(?) AS state", r.groupStates()).Select(`COUNT(*) AS total,
 		COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) AS running`, model.TunnelStatusRunning).
 		Scan(&summary).Error
 	return summary, err

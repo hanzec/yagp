@@ -353,6 +353,7 @@ func TestNodeHTTPKeepsRelayTrafficOnOriginalNodeWhenExitMoves(t *testing.T) {
 		t.Helper()
 		tunnel := model.GostTunnel{Name: "link", EntryNodeID: entry, ExitNodeID: nodeID, ExitRuleID: &exit.ID}
 		mustSucceed(tunnels.Create(&tunnel))
+		f.migrateTunnelGroups(t)
 		return tunnel.ID
 	}
 	removeTunnel := func(tunnelID uint) {

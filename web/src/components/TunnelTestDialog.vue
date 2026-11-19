@@ -13,7 +13,10 @@
           <el-icon aria-hidden="true"><Connection /></el-icon>
           {{ tunnel.name }}
         </h3>
-        <div class="tunnel-test-endpoints">
+        <ul v-if="paths.length > 1" class="tunnel-test-paths">
+          <li v-for="path in paths" :key="path.id">{{ path.entry_node?.name || '节点 #' + path.entry_node_id }} → {{ path.exit_node?.name || '节点 #' + path.exit_node_id }}</li>
+        </ul>
+        <div v-else class="tunnel-test-endpoints">
           <dl>
             <dt>源端</dt>
             <dd>{{ tunnel.entry_node?.name || '节点 #' + tunnel.entry_node_id }}</dd>
@@ -31,7 +34,7 @@
           <el-icon class="tunnel-test-result-icon is-loading" aria-hidden="true"><Loading /></el-icon>
           <div>
             <h3>正在测试隧道转发</h3>
-            <p class="ops-muted">正在检查两端状态和 Relay 数据往返。</p>
+            <p class="ops-muted">正在检查此隧道的 Relay 数据往返。</p>
           </div>
         </div>
         <div v-else-if="result" class="tunnel-test-result-card" :class="resultStatus.tone">
@@ -41,7 +44,7 @@
             </el-icon>
             <div>
               <h3>{{ resultStatus.title }}</h3>
-              <p v-if="result.success" class="tunnel-test-latency ops-muted">往返耗时 <strong class="ops-mono">{{ result.latency_ms }} ms</strong></p>
+              <p v-if="result.success" class="tunnel-test-latency ops-muted">{{ tunnel.connections?.length > 1 ? '平均往返耗时' : '往返耗时' }} <strong class="ops-mono">{{ result.latency_ms }} ms</strong></p>
               <template v-else>
                 <p v-if="stageLabels[result.failure_stage]" class="tunnel-test-stage">失败环节 · {{ stageLabels[result.failure_stage] }}</p>
                 <p v-if="failureMessage" class="ops-muted">{{ failureMessage }}</p>
@@ -79,7 +82,7 @@
         <ul role="list">
           <li v-for="check in result.diagnostics" :key="check.stage" :class="checkStatuses[check.status]?.tone">
             <div class="tunnel-test-check-heading">
-              <strong>{{ stageLabels[check.stage] || '其他检查' }}</strong>
+              <strong>{{ check.label || stageLabels[check.stage] || '其他检查' }}</strong>
               <span class="ops-status" :class="checkStatuses[check.status]?.tone || 'is-muted'">
                 {{ checkStatuses[check.status]?.label || '未知' }}
               </span>
@@ -109,6 +112,7 @@
 import { computed } from 'vue'
 import { ArrowDown, CircleCloseFilled, Connection, InfoFilled, Loading, RefreshRight, Right, SuccessFilled, VideoPlay, WarningFilled } from '@element-plus/icons-vue'
 import PanelDialog from '@/components/PanelDialog.vue'
+import { tunnelPaths } from '@/utils/tunnel-inventory'
 
 const visible = defineModel({ type: Boolean, required: true })
 const props = defineProps({
@@ -117,6 +121,7 @@ const props = defineProps({
   loading: { type: Boolean, default: false }
 })
 defineEmits(['run'])
+const paths = computed(() => props.tunnel ? tunnelPaths(props.tunnel) : [])
 
 const stageLabels = {
   tunnel: '隧道配置',
@@ -192,6 +197,7 @@ const checkCounts = computed(() => {
 .tunnel-test-endpoints dt { color: var(--ops-muted); font-size: var(--ops-text-sm); }
 .tunnel-test-endpoints dd { margin: 2px 0 0; font-weight: var(--ops-weight-semibold); }
 .tunnel-test-route-arrow { color: var(--ops-accent); }
+.tunnel-test-paths { margin: 0; padding: 12px 16px 12px 32px; border-top: 1px solid var(--ops-border); }
 
 .tunnel-test-result-card,
 .tunnel-test-result.is-pending,

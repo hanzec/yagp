@@ -61,6 +61,7 @@ func TestTunnelProbeHTTPUsesSavedChainAndNodeSessions(t *testing.T) {
 	if err := f.db.Create(&tunnel).Error; err != nil {
 		t.Fatal(err)
 	}
+	f.migrateTunnelGroups(t)
 
 	address, token := "127.0.0.1:43210", bytes.Repeat([]byte{0x7f}, 32)
 	startResult, probeResult := make(chan error, 1), make(chan error, 2)
@@ -341,6 +342,7 @@ func TestTunnelProbeHTTPValidatesSavedTunnel(t *testing.T) {
 	if err := f.db.Create(&tunnel).Error; err != nil {
 		t.Fatal(err)
 	}
+	f.migrateTunnelGroups(t)
 	f.request(t, http.MethodPost, "/tunnels/0/test", "", http.StatusBadRequest)
 	f.request(t, http.MethodPost, "/tunnels/999/test", "", http.StatusNotFound)
 	path := fmt.Sprintf("/tunnels/%d/test", tunnel.ID)
