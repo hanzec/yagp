@@ -432,7 +432,12 @@ func (s *TunnelService) provisionEndpointRelay(t *model.GostTunnel, entryClient,
 	if t.ExitRule.Role == model.EndpointRoleExit && !sharedAuth {
 		// Prebind unrestricted exits too, so adding members only updates the admission resource.
 		relay.Admission = gost.TunnelRelayAllowlistName(relay.Name)
-		if err := s.allowlist.writeRelaySources(exitClient, relay, append(peers, t)); err != nil {
+		// A new listener must not inherit a former entry's source snapshot.
+		desired, err := s.allowlist.exitAdmission(relay.Name, append(peers, t), nil, nil)
+		if err != nil {
+			return err
+		}
+		if _, err := exitClient.SetAdmission(*desired); err != nil {
 			return err
 		}
 	} else if !sharedAuth {

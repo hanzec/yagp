@@ -205,7 +205,19 @@ func (s *GostAllowlistService) exitAdmission(name string, tunnels []*model.GostT
 }
 
 func (s *GostAllowlistService) writeRelaySources(client *gost.Client, relay *gost.ServiceConfig, tunnels []*model.GostTunnel) error {
-	desired, err := s.exitAdmission(relay.Name, tunnels, nil, nil)
+	name := gost.TunnelRelayAllowlistName(relay.Name)
+	var previous *gost.AdmissionConfig
+	if relay.HasAdmission(name) {
+		var err error
+		previous, err = client.Admission(name)
+		if err != nil {
+			return err
+		}
+		if previous == nil {
+			return fmt.Errorf("live Relay %s is missing admission %s", relay.Name, name)
+		}
+	}
+	desired, err := s.exitAdmission(relay.Name, tunnels, nil, previous)
 	if err != nil {
 		return err
 	}
@@ -215,7 +227,7 @@ func (s *GostAllowlistService) writeRelaySources(client *gost.Client, relay *gos
 		}
 		return nil
 	}
-	_, err = client.SetAdmission(*desired)
+	_, err = client.EnsureAdmission(*desired, []gost.AdmissionConfig{*previous})
 	return err
 }
 

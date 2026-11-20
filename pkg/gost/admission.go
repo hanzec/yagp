@@ -24,18 +24,30 @@ func (s ServiceConfig) HasAdmission(name string) bool {
 	return s.Admission == name || slices.Contains(s.Admissions, name)
 }
 
+// Admission reads the live source policy without changing it.
+func (c *Client) Admission(name string) (*AdmissionConfig, error) {
+	raw, err := c.resource("/config/admissions/" + name)
+	if err != nil || len(raw) == 0 {
+		return nil, err
+	}
+	var admission AdmissionConfig
+	if err := json.Unmarshal(raw, &admission); err != nil {
+		return nil, err
+	}
+	if admission.Name != name {
+		return nil, fmt.Errorf("unexpected admission name %q, want %q", admission.Name, name)
+	}
+	return &admission, nil
+}
+
 func (c *Client) SetAdmission(desired AdmissionConfig) (bool, error) {
-	raw, err := c.resource("/config/admissions/" + desired.Name)
+	admission, err := c.Admission(desired.Name)
 	if err != nil {
 		return false, err
 	}
 	var current []AdmissionConfig
-	if len(raw) != 0 {
-		var admission AdmissionConfig
-		if err := json.Unmarshal(raw, &admission); err != nil {
-			return false, err
-		}
-		current = append(current, admission)
+	if admission != nil {
+		current = append(current, *admission)
 	}
 	return c.EnsureAdmission(desired, current)
 }
