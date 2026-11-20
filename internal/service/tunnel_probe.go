@@ -15,6 +15,7 @@ import (
 	"yagp/pkg/logger"
 	"yagp/pkg/nodegrpc"
 
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -40,6 +41,7 @@ type TunnelTestResult struct {
 
 type TunnelTestDiagnostic struct {
 	Stage   string `json:"stage"`
+	Label   string `json:"label,omitempty"`
 	Status  string `json:"status"`
 	Message string `json:"message"`
 }
@@ -61,12 +63,92 @@ func (r *TunnelTestResult) fail(stage, message, recommendation string) {
 	r.Recommendation = recommendation
 }
 
-// Test probes the saved relay chain using a temporary listener on the exit node.
-// A relay with a destination policy may reject the temporary target after authenticating.
 func (s *TunnelService) Test(ctx context.Context, id uint) (*TunnelTestResult, error) {
-	tunnel, err := s.GetByID(id)
+	group, err := s.findGroup(id, false)
 	if err != nil {
 		return nil, err
+	}
+	if len(group.Connections) == 1 {
+		return testTunnelConnection(ctx, &group.Connections[0])
+	}
+	if group.Status != model.TunnelStatusRunning {
+		result := &TunnelTestResult{}
+		result.fail("tunnel", "请启动隧道的全部连接后再测试。", "请在隧道管理中启动隧道。")
+		return result, errors.ErrTunnelNotRunning
+	}
+	return testTunnelGroup(ctx, group.Connections)
+}
+
+func testTunnelGroup(ctx context.Context, connections []model.GostTunnel) (*TunnelTestResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, tunnelTestTimeout+2*time.Second)
+	defer cancel()
+	type outcome struct {
+		result *TunnelTestResult
+		err    error
+	}
+	outcomes := make([]outcome, len(connections))
+	var probes errgroup.Group
+	probes.SetLimit(tunnelProbeConcurrency)
+	for i := range connections {
+		probes.Go(func() error {
+			outcomes[i].result, outcomes[i].err = testTunnelConnection(ctx, &connections[i])
+			return nil
+		})
+	}
+	_ = probes.Wait()
+
+	result := &TunnelTestResult{Success: true}
+	var failure error
+	var details *TunnelTestResult
+	var latencySum int64
+	for i, probe := range outcomes {
+		result.Success = result.Success && probe.result.Success
+		result.Partial = result.Partial || probe.result.Partial
+		latencySum += probe.result.LatencyMS
+		if probe.err != nil && failure == nil {
+			failure = probe.err
+			details = probe.result
+		} else if details == nil && probe.result.Partial {
+			details = probe.result
+		}
+		check := TunnelTestDiagnostic{
+			Stage: fmt.Sprintf("connection_%d", i+1), Label: tunnelConnectionLabel(&connections[i]),
+			Status: "passed", Message: fmt.Sprintf("Relay 往返耗时 %d ms。", probe.result.LatencyMS),
+		}
+		if probe.result.Partial {
+			check.Status, check.Message = "warning", "Relay 握手通过，数据往返待验证。"
+		} else if probe.err != nil {
+			check.Status, check.Message = "failed", probe.err.Error()
+		}
+		result.Diagnostics = append(result.Diagnostics, check)
+	}
+	result.Partial = result.Partial && failure == nil
+	if result.Success {
+		result.LatencyMS = latencySum / int64(len(connections))
+	}
+	if details != nil {
+		result.FailureStage = details.FailureStage
+		result.Recommendation = details.Recommendation
+		result.Diagnostics = append(result.Diagnostics, details.Diagnostics...)
+	}
+	return result, failure
+}
+
+func tunnelConnectionLabel(connection *model.GostTunnel) string {
+	if connection.EntryRule != nil && connection.ExitRule != nil {
+		return connection.EntryRule.Name + " → " + connection.ExitRule.Name
+	}
+	if connection.EntryNode != nil && connection.ExitNode != nil {
+		return fmt.Sprintf("%s → %s · Relay %d", connection.EntryNode.Name, connection.ExitNode.Name, connection.RelayPort)
+	}
+	return fmt.Sprintf("Relay 端口 %d", connection.RelayPort)
+}
+
+// A relay with a destination policy may reject the temporary target after authenticating.
+func testTunnelConnection(ctx context.Context, tunnel *model.GostTunnel) (*TunnelTestResult, error) {
+	id := tunnel.ID
+	if tunnel.Status == model.TunnelStatusRunning {
+		tunnel.EntryRule, tunnel.ExitRule = tunnel.EntryRule.WithAppliedEndpoint(), tunnel.ExitRule.WithAppliedEndpoint()
 	}
 	result := &TunnelTestResult{}
 	if err := result.checkTunnel(tunnel); err != nil {

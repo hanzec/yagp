@@ -158,7 +158,7 @@ describe('console routing and Authentik gate', () => {
     expect(wrapper.get('#node-link-7').text()).toBe('港深IX')
   })
 
-  it('updates the detail breadcrumb without moving focus when switching links, then returns to the list', async () => {
+  it('updates the detail breadcrumb for a second tunnel and returns to the list', async () => {
     vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
     const defaultResponse = adapter.getMockImplementation()
     const links = [
@@ -188,13 +188,10 @@ describe('console routing and Authentik gate', () => {
     expect(back.attributes('href')).toBe('#/tunnels')
     expect(wrapper.find('main nav[aria-label="隧道详情导航"]').exists()).toBe(false)
 
-    const picker = wrapper.get('select[aria-label="查看链路"]')
-    picker.element.focus()
-    await picker.setValue('8')
+    await router.push('/tunnels/8')
     await flushPromises()
     expect(router.currentRoute.value.path).toBe('/tunnels/8')
     expect(breadcrumb.get('[aria-current="page"]').text()).toBe('港沪隧道')
-    expect(document.activeElement).toBe(picker.element)
 
     await back.trigger('click')
     await flushPromises()

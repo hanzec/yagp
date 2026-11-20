@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"yagp/internal/model"
+	"yagp/internal/repository"
 
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -32,7 +33,9 @@ func TestDashboardSummariesPreserveCountsWithFiveQueries(t *testing.T) {
 		{Name: "offline", Status: model.NodeStatusOffline},
 		{Name: "error", Status: model.NodeStatusError},
 		{Name: "deleted", Status: model.NodeStatusOnline},
+		{Name: "another offline", Status: model.NodeStatusOffline},
 	}
+	saveServiceFixtures(t, db, &nodes)
 	rules := []model.GostRule{
 		{Name: "running forward", Type: model.RuleTypeForward, Status: model.RuleStatusRunning},
 		{Name: "stopped forward", Type: model.RuleTypeForward, Status: model.RuleStatusStopped},
@@ -41,17 +44,19 @@ func TestDashboardSummariesPreserveCountsWithFiveQueries(t *testing.T) {
 		{Name: "deleted", Type: model.RuleTypeForward, Status: model.RuleStatusRunning},
 	}
 	tunnels := []model.GostTunnel{
-		{Name: "running", Status: model.TunnelStatusRunning},
-		{Name: "stopped", Status: model.TunnelStatusStopped},
-		{Name: "error", Status: model.TunnelStatusError},
-		{Name: "deleted", Status: model.TunnelStatusRunning},
+		{Name: "running", EntryNodeID: nodes[0].ID, ExitNodeID: nodes[1].ID, Status: model.TunnelStatusRunning},
+		{Name: "parallel", EntryNodeID: nodes[0].ID, ExitNodeID: nodes[1].ID, Status: model.TunnelStatusRunning},
+		{Name: "stopped", EntryNodeID: nodes[0].ID, ExitNodeID: nodes[2].ID, Status: model.TunnelStatusStopped},
+		{Name: "error", EntryNodeID: nodes[0].ID, ExitNodeID: nodes[4].ID, Status: model.TunnelStatusError},
+		{Name: "deleted", EntryNodeID: nodes[1].ID, ExitNodeID: nodes[2].ID, Status: model.TunnelStatusRunning},
 	}
-	saveServiceFixtures(t, db, &nodes, &rules, &tunnels)
-	for _, row := range []any{&nodes[3], &rules[4], &tunnels[3]} {
+	saveServiceFixtures(t, db, &rules, &tunnels)
+	for _, row := range []any{&nodes[3], &rules[4], &tunnels[4]} {
 		requireServiceError(t, db.Delete(row).Error, nil)
 	}
+	requireServiceError(t, repository.MigrateTunnelGroups(db), nil)
 	// Preserve the existing API's non-running/non-online buckets, including errors.
-	check(NodeStats{Total: 3, Online: 1, Offline: 2},
+	check(NodeStats{Total: 4, Online: 1, Offline: 3},
 		RuleStats{Total: 4, Running: 2, Stopped: 2, ForwardType: 2, TunnelType: 2},
 		TunnelStats{Total: 3, Running: 1, Stopped: 2})
 }

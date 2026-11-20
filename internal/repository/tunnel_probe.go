@@ -17,10 +17,10 @@ func (r *TunnelRepository) SaveProbeSamples(ctx context.Context, samples []model
 	return r.DB.WithContext(ctx).Create(&samples).Error
 }
 
-func (r *TunnelRepository) WalkProbeHistory(ctx context.Context, tunnelID uint, from, to int64, visit func(model.TunnelProbeSample)) error {
+func (r *TunnelRepository) WalkProbeHistory(ctx context.Context, tunnelIDs []uint, from, to int64, visit func(model.TunnelProbeSample)) error {
 	rows, err := r.DB.WithContext(ctx).Model(&model.TunnelProbeSample{}).
 		Select("sampled_at, status, latency_ms, ttl").
-		Where("tunnel_id = ? AND sampled_at BETWEEN ? AND ?", tunnelID, from, to).
+		Where("tunnel_id IN ? AND sampled_at BETWEEN ? AND ?", tunnelIDs, from, to).
 		Order("sampled_at, id").Rows()
 	if err != nil {
 		return err

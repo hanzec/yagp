@@ -23,7 +23,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func (s *TunnelService) createEndpointTunnel(req *dto.CreateTunnelReq, nodeIDs []uint, username, ip, userAgent string) (*model.GostTunnel, error) {
+func (s *TunnelService) prepareEndpointConnection(req *dto.CreateTunnelReq, nodeIDs []uint) (*model.GostTunnel, error) {
 	tunnel := &model.GostTunnel{
 		Name: req.Name, Remark: req.Remark, Status: model.TunnelStatusStopped,
 		RelaySecret: rand.Text(), AllowlistNodeIDs: nodeIDs, Protocol: req.Protocol,
@@ -45,21 +45,7 @@ func (s *TunnelService) createEndpointTunnel(req *dto.CreateTunnelReq, nodeIDs [
 	if err := s.setTunnelTargets(tunnel, req.Targets, useOriginal, req.UseClashRuleset, req.RulesetIDs, req.ManualDomains, req.Strategy); err != nil {
 		return nil, err
 	}
-	if err := endpointNodesOnline(tunnel); err != nil {
-		return nil, err
-	}
-	if err := s.tunnelRepo.Create(tunnel); err != nil {
-		return nil, err
-	}
-	if err := s.startEndpointTunnel(tunnel); err != nil {
-		// Keep the association if remote cleanup could not be confirmed, so it can be retried.
-		if tunnel.Status != model.TunnelStatusError {
-			_ = s.tunnelRepo.Delete(tunnel.ID)
-		}
-		return nil, err
-	}
-	s.recordTunnelAction(tunnel, model.ActionCreate, "创建并启动", username, ip, userAgent)
-	return s.tunnelRepo.FindByID(tunnel.ID)
+	return tunnel, nil
 }
 
 func (s *TunnelService) setTunnelEndpoints(tunnel *model.GostTunnel, entryID, exitID uint) error {

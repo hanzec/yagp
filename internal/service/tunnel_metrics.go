@@ -70,20 +70,20 @@ func (s *TunnelService) Metrics(ctx context.Context, id uint, span string) (*Tun
 	if !ok {
 		return nil, errors.ErrTunnelMetricRange
 	}
-	exists, err := s.tunnelRepo.Exists(ctx, id)
+	connectionIDs, err := s.tunnelRepo.GroupConnectionIDs(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if !exists {
+	if len(connectionIDs) == 0 {
 		return nil, errors.ErrTunnelNotFound
 	}
 
 	to := time.Now().UTC().Truncate(time.Second)
 	from := to.Add(-window.duration)
-	return s.readTunnelMetrics(ctx, id, from, to, window.bucket)
+	return s.readTunnelMetrics(ctx, connectionIDs, from, to, window.bucket)
 }
 
-func (s *TunnelService) readTunnelMetrics(ctx context.Context, id uint, from, to time.Time, bucket time.Duration) (*TunnelMetrics, error) {
+func (s *TunnelService) readTunnelMetrics(ctx context.Context, connectionIDs []uint, from, to time.Time, bucket time.Duration) (*TunnelMetrics, error) {
 	metrics := &TunnelMetrics{
 		From:            from,
 		To:              to,
@@ -98,7 +98,7 @@ func (s *TunnelService) readTunnelMetrics(ctx context.Context, id uint, from, to
 	var latencies []float64
 	var latest model.TunnelProbeSample
 	summary := &metrics.Summary
-	err := s.tunnelRepo.WalkProbeHistory(ctx, id, from.Unix(), to.Unix(), func(sample model.TunnelProbeSample) {
+	err := s.tunnelRepo.WalkProbeHistory(ctx, connectionIDs, from.Unix(), to.Unix(), func(sample model.TunnelProbeSample) {
 		latest = sample
 		sampledAt := time.Unix(sample.SampledAt, 0).UTC()
 		// The right edge is inclusive, so a sample taken exactly at `to` belongs to the final bucket.

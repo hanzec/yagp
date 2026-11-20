@@ -54,7 +54,7 @@ func newHandlerHTTPFixture(t *testing.T) *handlerHTTPFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	if err := db.AutoMigrate(&model.GostNode{}, &model.GostRule{}, &model.GostTunnel{}, &model.ExitRelayHistory{}, &model.OperationLog{}, &model.SystemConfig{}, &model.GostRuleset{}); err != nil {
+	if err := db.AutoMigrate(&model.GostNode{}, &model.GostRule{}, &model.GostTunnel{}, &model.TunnelGroup{}, &model.ExitRelayHistory{}, &model.OperationLog{}, &model.SystemConfig{}, &model.GostRuleset{}); err != nil {
 		t.Fatal(err)
 	}
 	engine := gin.New()
@@ -63,6 +63,13 @@ func newHandlerHTTPFixture(t *testing.T) *handlerHTTPFixture {
 		c.Next()
 	})
 	return &handlerHTTPFixture{engine: engine, db: db}
+}
+
+func (f *handlerHTTPFixture) migrateTunnelGroups(t *testing.T) {
+	t.Helper()
+	if err := repository.MigrateTunnelGroups(f.db); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type handlerReply struct {
@@ -290,7 +297,7 @@ func TestForwardingHTTPInventoryAndOfflineNodes(t *testing.T) {
 	f.request(t, "GET", tunnelPath, "", 404)
 	f.request(t, "PUT", tunnelPath, updateTunnel, 404)
 	f.request(t, "DELETE", tunnelPath, "", 404)
-	f.request(t, "POST", tunnelPath+"/stop", "", 500)
+	f.request(t, "POST", tunnelPath+"/stop", "", 404)
 }
 
 func TestHTTPRejectsMalformedParameters(t *testing.T) {
@@ -355,6 +362,7 @@ func TestForwardingHTTPStartIsIdempotent(t *testing.T) {
 	if err := f.db.Create(&tunnel).Error; err != nil {
 		t.Fatal(err)
 	}
+	f.migrateTunnelGroups(t)
 	rule := model.GostRule{
 		Name: "active rule", Type: model.RuleTypeTunnel, TunnelID: &tunnel.ID,
 		Protocol: model.RuleProtocolTCP, Status: model.RuleStatusRunning, ServiceID: "existing-service",
@@ -389,7 +397,7 @@ func TestTunnelHTTPAllowlistIsIndependentAndEditableWhileRunning(t *testing.T) {
 	if !slices.Equal(first.AllowlistNodeIDs, []uint{entry.ID}) {
 		t.Fatalf("created allowlist = %v", first.AllowlistNodeIDs)
 	}
-	body = fmt.Sprintf(`{"name":"second","entry_node_id":%d,"exit_node_id":%d,"protocol":"tcp","relay_port":8444}`, entry.ID, exit.ID)
+	body = fmt.Sprintf(`{"name":"second","entry_node_id":%d,"exit_node_id":%d,"protocol":"tcp","relay_port":8444}`, entry.ID, noIP.ID)
 	second := handlerData[model.GostTunnel](t, f.request(t, "POST", "/tunnels", body, 200))
 	secondPath := fmt.Sprintf("/tunnels/%d", second.ID)
 	if second.AllowlistNodeIDs == nil || len(second.AllowlistNodeIDs) != 0 {

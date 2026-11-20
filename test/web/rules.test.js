@@ -711,9 +711,9 @@ describe('forwarding rule editor and actions', () => {
     await flushPromises()
 
     const activeRow = row(wrapper, exit.name)
-    expect(activeRow.text()).toContain('关联 2 条隧道')
+    expect(activeRow.text()).toContain('关联 2 条连接')
     expect(activeRow.find('a[href="/tunnels"]').exists()).toBe(false)
-    expect(row(wrapper, idleExit.name).text()).toContain('关联 2 条隧道')
+    expect(row(wrapper, idleExit.name).text()).toContain('关联 2 条连接')
     await activeRow.get('[aria-label="编辑 Shared exit"]').trigger('click')
     const editor = editDialog(wrapper)
     expect(editor.text()).toContain('共用出口继续使用已生效配置，关联链路全部停止后，下次启动时应用变更。')

@@ -5,8 +5,6 @@ export function layoutTunnelTopology(tunnels, compact = false) {
   const rowGap = compact ? 32 : 56
   const padding = compact ? 8 : 16
   const headerHeight = 40
-  const labelWidth = compact ? 32 : 152
-  const labelHeight = compact ? 24 : 28
   const nodes = new Map()
   const endpoint = (tunnel, side) => {
     const reported = tunnel[`${side}_node`] || tunnel[`${side}_rule`]?.node
@@ -21,7 +19,7 @@ export function layoutTunnelTopology(tunnels, compact = false) {
     source.outgoing++
     target.incoming++
     source.next.push(target)
-    return { id: tunnel.id, name: tunnel.name || `链路 #${tunnel.id}`, source, target }
+    return { id: tunnel.id, source, target }
   })
   assignColumns(nodes)
   const columns = []
@@ -49,20 +47,14 @@ export function layoutTunnelTopology(tunnels, compact = false) {
     if (parents?.size === 1) members[0].y = parents.values().next().value.y
   }
   const pairs = new Map()
-  const directedCounts = new Map()
   for (const link of links) {
     const key = [link.source.id, link.target.id].sort().join('\0')
     if (!pairs.has(key)) pairs.set(key, [])
     pairs.get(key).push(link)
-    link.directionKey = `${link.source.id}\0${link.target.id}`
-    link.parallelIndex = (directedCounts.get(link.directionKey) || 0) + 1
-    directedCounts.set(link.directionKey, link.parallelIndex)
   }
   let outsideLane = 0
   for (const pair of pairs.values()) pair.forEach((link, index) => {
     const { source, target } = link
-    link.parallelCount = directedCounts.get(link.directionKey)
-    delete link.directionKey
     let sx, sy, tx, ty, c1x, c1y, c2x, c2y
     if (source === target) {
       sx = source.x + nodeWidth * .25
@@ -101,25 +93,7 @@ export function layoutTunnelTopology(tunnels, compact = false) {
       c2y = ty + offset
     }
     link.points = [{ x: sx, y: sy }, { x: c1x, y: c1y }, { x: c2x, y: c2y }, { x: tx, y: ty }]
-    link.anchorX = link.labelX = (sx + 3 * c1x + 3 * c2x + tx) / 8
-    link.anchorY = link.labelY = (sy + 3 * c1y + 3 * c2y + ty) / 8
-    link.description = `${link.name}：${source.name} → ${target.name}`
-    if (link.parallelCount > 1) link.description += `，相同入口与出口的第 ${link.parallelIndex}/${link.parallelCount} 条链路`
   })
-  // Crossings can share a midpoint. Move labels rather than changing the graph or keyboard order.
-  const positionedNodes = [...nodes.values()]
-  const labels = []
-  for (const link of links) {
-    for (let slot = 0; ; slot++) {
-      const y = link.anchorY + (slot ? Math.ceil(slot / 2) * (labelHeight + 8) * (slot % 2 ? -1 : 1) : 0)
-      const overlapsLabel = labels.some(label => Math.abs(label.x - link.anchorX) < labelWidth + 8 && Math.abs(label.y - y) < labelHeight + 6)
-      const overlapsNode = positionedNodes.some(node => link.anchorX + labelWidth / 2 > node.x - 3 && link.anchorX - labelWidth / 2 < node.x + nodeWidth + 3 && y + labelHeight / 2 > node.y - 3 && y - labelHeight / 2 < node.y + nodeHeight + 3)
-      if (overlapsLabel || overlapsNode) continue
-      link.labelY = y
-      labels.push({ x: link.labelX, y })
-      break
-    }
-  }
   let minX = 0, minY = 0, maxX = nodeWidth, maxY = contentHeight
   const include = point => {
     minX = Math.min(minX, point.x)
@@ -134,8 +108,6 @@ export function layoutTunnelTopology(tunnels, compact = false) {
   for (const link of links) {
     // A Bézier curve stays inside the convex hull of its four control points.
     for (const point of link.points) include(point)
-    include({ x: link.labelX - labelWidth / 2, y: link.labelY - labelHeight / 2 })
-    include({ x: link.labelX + labelWidth / 2, y: link.labelY + labelHeight / 2 })
   }
   const offsetX = padding - minX, offsetY = headerHeight + padding - minY
   for (const node of nodes.values()) {
@@ -146,14 +118,10 @@ export function layoutTunnelTopology(tunnels, compact = false) {
   for (const link of links) {
     const p = link.points.map(point => ({ x: point.x + offsetX, y: point.y + offsetY }))
     link.path = `M ${p[0].x} ${p[0].y} C ${p[1].x} ${p[1].y}, ${p[2].x} ${p[2].y}, ${p[3].x} ${p[3].y}`
-    link.anchorX += offsetX
-    link.labelX += offsetX
-    link.anchorY += offsetY
-    link.labelY += offsetY
     delete link.points
   }
   return {
-    nodes: positionedNodes, links, labelWidth, labelHeight,
+    nodes: [...nodes.values()], links,
     columns: columns.map((members, index) => ({ index, ...columnTitle(members), centerX: offsetX + index * (nodeWidth + columnGap) + nodeWidth / 2 })),
     width: maxX - minX + padding * 2, height: maxY - minY + headerHeight + padding * 2
   }

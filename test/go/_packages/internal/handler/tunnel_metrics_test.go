@@ -16,14 +16,19 @@ func TestTunnelMetricsHTTPUsesSelectedRange(t *testing.T) {
 	if err := f.db.AutoMigrate(&model.TunnelProbeSample{}); err != nil {
 		t.Fatal(err)
 	}
-	tunnel := model.GostTunnel{Name: "monitored tunnel"}
-	other := model.GostTunnel{Name: "other monitored tunnel"}
-	empty := model.GostTunnel{Name: "no samples"}
+	nodes := []model.GostNode{{Name: "entry"}, {Name: "exit"}, {Name: "other exit"}, {Name: "other entry"}}
+	if err := f.db.Create(&nodes).Error; err != nil {
+		t.Fatal(err)
+	}
+	tunnel := model.GostTunnel{Name: "monitored tunnel", EntryNodeID: nodes[0].ID, ExitNodeID: nodes[1].ID}
+	other := model.GostTunnel{Name: "other monitored tunnel", EntryNodeID: nodes[0].ID, ExitNodeID: nodes[2].ID}
+	empty := model.GostTunnel{Name: "no samples", EntryNodeID: nodes[3].ID, ExitNodeID: nodes[1].ID}
 	for _, row := range []*model.GostTunnel{&tunnel, &other, &empty} {
 		if err := f.db.Create(row).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
+	f.migrateTunnelGroups(t)
 
 	now := time.Now().Truncate(time.Second)
 	lastSample := now.Add(-time.Minute)

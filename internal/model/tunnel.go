@@ -28,6 +28,7 @@ type RelayTraffic struct {
 // 启动隧道时：在出口节点创建 Relay 服务，在入口节点创建 Chain 连接到出口节点
 type GostTunnel struct {
 	ID          uint         `gorm:"primaryKey" json:"id"`
+	GroupID     uint         `gorm:"index;not null;default:0" json:"-"`
 	Name        string       `gorm:"size:100;not null" json:"name"`       // 隧道名称
 	EntryNodeID uint         `gorm:"not null;index" json:"entry_node_id"` // 入口节点 ID
 	ExitNodeID  uint         `gorm:"not null;index" json:"exit_node_id"`  // 出口节点 ID

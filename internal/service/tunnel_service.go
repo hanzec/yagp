@@ -43,6 +43,13 @@ func NewTunnelService(db *gorm.DB) *TunnelService {
 
 // Create 创建隧道
 func (s *TunnelService) Create(req *dto.CreateTunnelReq, username, ip, userAgent string) (*model.GostTunnel, error) {
+	endpointTunnelRuntime.Lock()
+	defer endpointTunnelRuntime.Unlock()
+	_, tunnel, err := s.createGroupConnection(req, username, ip, userAgent)
+	return tunnel, err
+}
+
+func (s *TunnelService) prepareNewConnection(req *dto.CreateTunnelReq) (*model.GostTunnel, error) {
 	nodeIDs, err := s.allowlist.validateNodeIDs(context.Background(), req.AllowlistNodeIDs)
 	if err != nil {
 		return nil, err
@@ -51,9 +58,7 @@ func (s *TunnelService) Create(req *dto.CreateTunnelReq, username, ip, userAgent
 		if req.EntryNodeID != 0 || req.ExitNodeID != 0 || req.RelayPort != 0 {
 			return nil, errors.ErrTunnelEndpointsRequired
 		}
-		endpointTunnelRuntime.Lock()
-		defer endpointTunnelRuntime.Unlock()
-		return s.createEndpointTunnel(req, nodeIDs, username, ip, userAgent)
+		return s.prepareEndpointConnection(req, nodeIDs)
 	}
 	if req.UseOriginalTarget || len(req.RulesetIDs) != 0 || len(req.ManualDomains) != 0 {
 		return nil, errors.ErrTunnelEndpointsRequired
@@ -96,26 +101,12 @@ func (s *TunnelService) Create(req *dto.CreateTunnelReq, username, ip, userAgent
 		Status:           model.TunnelStatusStopped,
 		AllowlistNodeIDs: nodeIDs,
 		AutoAllowlist:    req.AllowlistNodeIDs == nil,
+		EntryNode:        entryNode,
+		ExitNode:         exitNode,
 	}
 	if tunnel.AutoAllowlist {
 		tunnel.RelaySecret = rand.Text()
 	}
-
-	if err = s.tunnelRepo.Create(tunnel); err != nil {
-		return nil, err
-	}
-
-	// 记录操作日志
-	s.logService.Record(
-		username,
-		model.ActionCreate,
-		model.ResourceTypeTunnel,
-		tunnel.ID,
-		fmt.Sprintf("创建隧道: %s (%s -> %s)", tunnel.Name, entryNode.Name, exitNode.Name),
-		ip,
-		userAgent)
-
-	logger.Infof("创建隧道成功: %s", tunnel.Name)
 	return tunnel, nil
 }
 
@@ -123,6 +114,18 @@ func (s *TunnelService) Create(req *dto.CreateTunnelReq, username, ip, userAgent
 func (s *TunnelService) Update(id uint, req *dto.UpdateTunnelReq, username, ip, userAgent string) (*model.GostTunnel, error) {
 	endpointTunnelRuntime.Lock()
 	defer endpointTunnelRuntime.Unlock()
+	tunnel, err := s.prepareConnectionUpdate(id, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.tunnelRepo.Update(tunnel, req.AllowlistNodeIDs != nil); err != nil {
+		return nil, err
+	}
+	s.recordTunnelAction(tunnel, model.ActionUpdate, "更新", username, ip, userAgent)
+	return tunnel, nil
+}
+
+func (s *TunnelService) prepareConnectionUpdate(id uint, req *dto.UpdateTunnelReq) (*model.GostTunnel, error) {
 	tunnel, err := s.tunnelRepo.FindByID(id)
 	if err != nil {
 		if stderrors.Is(err, gorm.ErrRecordNotFound) {
@@ -180,20 +183,6 @@ func (s *TunnelService) Update(id uint, req *dto.UpdateTunnelReq, username, ip, 
 	// 更新隧道（不能修改入口/出口节点）
 	tunnel.Name = req.Name
 	tunnel.Remark = req.Remark
-
-	if err = s.tunnelRepo.Update(tunnel, req.AllowlistNodeIDs != nil); err != nil {
-		return nil, err
-	}
-
-	s.logService.Record(
-		username,
-		model.ActionUpdate,
-		model.ResourceTypeTunnel,
-		tunnel.ID,
-		fmt.Sprintf("更新隧道: %s", tunnel.Name),
-		ip,
-		userAgent)
-
 	return tunnel, nil
 }
 
@@ -314,24 +303,27 @@ func (s *TunnelService) List(req *dto.TunnelListReq) ([]model.GostTunnel, int64,
 
 // Start 启动隧道
 // 在出口节点创建 Relay 服务，在入口节点创建 Chain 连接到出口节点
-func (s *TunnelService) Start(id uint, username, ip, userAgent string) (err error) {
+func (s *TunnelService) Start(id uint, username, ip, userAgent string) error {
 	endpointTunnelRuntime.Lock()
 	defer endpointTunnelRuntime.Unlock()
 	tunnel, err := s.tunnelRepo.FindByID(id)
 	if err != nil {
 		return err
 	}
+	if err := s.startConnection(tunnel); err != nil {
+		return err
+	}
+	s.recordTunnelAction(tunnel, model.ActionStart, "启动", username, ip, userAgent)
+	return nil
+}
 
+func (s *TunnelService) startConnection(tunnel *model.GostTunnel) (err error) {
 	// 已在运行中则跳过
 	if tunnel.Status == model.TunnelStatusRunning {
 		return nil
 	}
 	if tunnel.EntryRuleID != nil {
-		if err := s.startEndpointTunnel(tunnel); err != nil {
-			return err
-		}
-		s.recordTunnelAction(tunnel, model.ActionStart, "启动", username, ip, userAgent)
-		return nil
+		return s.startEndpointTunnel(tunnel)
 	}
 
 	// 获取入口和出口节点
@@ -363,6 +355,7 @@ func (s *TunnelService) Start(id uint, username, ip, userAgent string) (err erro
 			return err
 		}
 	}
+	id := tunnel.ID
 	relayName, chainName := relayServiceName(id), tunnelChainName(id)
 	// Persist deterministic resource names before provisioning, including for a failed rollback.
 	if err := s.tunnelRepo.UpdateFields(tunnel, id, map[string]any{
@@ -443,16 +436,6 @@ func (s *TunnelService) Start(id uint, username, ip, userAgent string) (err erro
 	if err := s.tunnelRepo.UpdateStatus(id, model.TunnelStatusRunning); err != nil {
 		return err
 	}
-
-	s.logService.Record(
-		username,
-		model.ActionStart,
-		model.ResourceTypeTunnel,
-		id,
-		fmt.Sprintf("启动隧道: %s", tunnel.Name),
-		ip,
-		userAgent)
-
 	logger.Infof("启动隧道成功: %s (Relay: %s -> Chain: %s)", tunnel.Name, relayName, chainName)
 	return nil
 }
@@ -482,17 +465,20 @@ func (s *TunnelService) stop(id uint, username, ip, userAgent string) error {
 	if err != nil {
 		return err
 	}
+	if err := s.stopConnection(tunnel); err != nil {
+		return err
+	}
+	s.recordTunnelAction(tunnel, model.ActionStop, "停止", username, ip, userAgent)
+	return nil
+}
+
+func (s *TunnelService) stopConnection(tunnel *model.GostTunnel) error {
 	if tunnel.EntryRuleID != nil {
 		if tunnel.Status == model.TunnelStatusStopped {
 			return nil
 		}
-		if err := s.stopEndpointTunnel(tunnel); err != nil {
-			return err
-		}
-		s.recordTunnelAction(tunnel, model.ActionStop, "停止", username, ip, userAgent)
-		return nil
+		return s.stopEndpointTunnel(tunnel)
 	}
-
 	if tunnel.Status == model.TunnelStatusStopped && tunnel.ServiceID == "" && tunnel.ChainID == "" {
 		return nil
 	}
@@ -501,21 +487,11 @@ func (s *TunnelService) stop(id uint, username, ip, userAgent string) error {
 		return err
 	}
 
-	if err := s.tunnelRepo.UpdateFields(tunnel, id, map[string]any{
+	if err := s.tunnelRepo.UpdateFields(tunnel, tunnel.ID, map[string]any{
 		"service_id": "", "chain_id": "", "status": model.TunnelStatusStopped,
 	}); err != nil {
 		return err
 	}
-
-	s.logService.Record(
-		username,
-		model.ActionStop,
-		model.ResourceTypeTunnel,
-		id,
-		fmt.Sprintf("停止隧道: %s", tunnel.Name),
-		ip,
-		userAgent)
-
 	logger.Infof("停止隧道成功: %s", tunnel.Name)
 	return nil
 }
